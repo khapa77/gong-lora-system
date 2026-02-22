@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gong LoRa Server</title>
+<style>
+:root {
+  --bg:     #0f1117;
+  --card:   #1a1d27;
+  --border: #2a2d3a;
+  --accent: #4f9ef8;
+  --green:  #34c97e;
+  --red:    #f85f5f;
+  --yellow: #f8c34f;
+  --text:   #e0e4f0;
+  --muted:  #7a7f9a;
+  --radius: 10px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg); color: var(--text);
+  min-height: 100vh; padding: 0 0 40px;
+}
+header {
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  padding: 16px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px;
+}
+header h1 { font-size: 1.4rem; font-weight: 700; letter-spacing: .02em; }
+header h1 span { color: var(--accent); }
+#statusBar {
+  display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+  font-size: .82rem; color: var(--muted);
+}
+.dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  display: inline-block; margin-right: 5px;
+}
+.dot-green  { background: var(--green); }
+.dot-yellow { background: var(--yellow); }
+.dot-red    { background: var(--red); }
+.main { max-width: 900px; margin: 0 auto; padding: 24px 16px; display: grid; gap: 20px; }
+.card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 20px;
+}
+.card-title {
+  font-size: 1rem; font-weight: 600; color: var(--accent);
+  margin-bottom: 16px; padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.row { display: flex; gap: 12px; flex-wrap: wrap; }
+.col { flex: 1; min-width: 140px; }
+label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: 6px; }
+input[type=text], input[type=password], input[type=number], select {
+  width: 100%; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--text); padding: 9px 12px; font-size: .9rem;
+}
+input:focus, select:focus { outline: none; border-color: var(--accent); }
+input[type=range] {
+  width: 100%; accent-color: var(--accent); cursor: pointer;
+}
+.range-row { display: flex; align-items: center; gap: 10px; }
+.range-val { min-width: 28px; text-align: center; font-weight: 600; color: var(--accent); }
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 9px 18px; border: none; border-radius: 6px; cursor: pointer;
+  font-size: .88rem; font-weight: 600; transition: opacity .15s, transform .1s;
+}
+.btn:hover { opacity: .85; }
+.btn:active { transform: scale(.97); }
+.btn-primary  { background: var(--accent); color: #fff; }
+.btn-green    { background: var(--green);  color: #0f1117; }
+.btn-red      { background: var(--red);    color: #fff; }
+.btn-yellow   { background: var(--yellow); color: #0f1117; }
+.btn-ghost    { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.btn-sm       { padding: 5px 12px; font-size: .8rem; }
+.btn-group    { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+/* Schedule table */
+table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+th { text-align: left; color: var(--muted); font-weight: 500;
+     padding: 8px 10px; border-bottom: 1px solid var(--border); }
+td { padding: 10px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: rgba(79,158,248,.04); }
+.time-badge {
+  font-size: 1.1rem; font-weight: 700; color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.tag {
+  display: inline-block; padding: 2px 10px; border-radius: 20px;
+  font-size: .75rem; font-weight: 600;
+}
+.tag-on  { background: rgba(52,201,126,.15); color: var(--green); }
+.tag-off { background: rgba(248,95,95,.12);  color: var(--red); }
+.empty-row { color: var(--muted); text-align: center; padding: 24px; font-size: .88rem; }
+/* Clients */
+.client-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(200px,1fr)); }
+.client-card {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px; font-size: .85rem;
+}
+.client-name { font-weight: 600; color: var(--text); margin-bottom: 4px; }
+.client-meta { color: var(--muted); font-size: .78rem; }
+.rssi-good   { color: var(--green); }
+.rssi-ok     { color: var(--yellow); }
+.rssi-bad    { color: var(--red); }
+/* Modal */
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.6);
+  display: none; align-items: center; justify-content: center; z-index: 100;
+}
+.overlay.open { display: flex; }
+.modal {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 24px; width: 90%; max-width: 440px;
+}
+.modal-title { font-size: 1rem; font-weight: 600; margin-bottom: 18px; }
+.form-group  { margin-bottom: 14px; }
+/* Toast */
+#toast {
+  position: fixed; bottom: 24px; right: 24px; z-index: 200;
+  padding: 12px 20px; border-radius: 8px; font-size: .88rem;
+  font-weight: 500; opacity: 0; transition: opacity .3s;
+  pointer-events: none; max-width: 320px;
+}
+#toast.show { opacity: 1; }
+#toast.ok  { background: var(--green); color: #0f1117; }
+#toast.err { background: var(--red);   color: #fff; }
+@media (max-width: 600px) {
+  .row { flex-direction: column; }
+  header h1 { font-size: 1.1rem; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>&#128276; Gong <span>LoRa</span> Server</h1>
+  <div id="statusBar">
+    <span id="wifiStat">&#8212; loading &#8212;</span>
+    <span id="clientStat">Clients: &#8212;</span>
+    <span id="heapStat"></span>
+    <span id="clock" style="font-variant-numeric:tabular-nums"></span>
+  </div>
+</header>
+
+<div class="main">
+
+  <!-- ── Manual Control ── -->
+  <div class="card">
+    <div class="card-title">Manual Control</div>
+    <div class="row">
+      <div class="col">
+        <label>Track</label>
+        <input type="number" id="ctrlTrack" value="1" min="1" max="99">
+      </div>
+      <div class="col">
+        <label>Volume <span id="ctrlVolVal">25</span> / 30</label>
+        <div class="range-row">
+          <input type="range" id="ctrlVol" min="0" max="30" value="25"
+                 oninput="document.getElementById('ctrlVolVal').textContent=this.value">
+        </div>
+      </div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="playLocal()">&#9654; Local</button>
+      <button class="btn btn-yellow"  onclick="playLoRa()">&#128246; LoRa broadcast</button>
+      <button class="btn btn-green"   onclick="playAll()">&#127925; All (Local + LoRa)</button>
+      <button class="btn btn-ghost"   onclick="syncSchedule()" title="Push schedule to all clients">&#8635; Sync Schedule</button>
+    </div>
+  </div>
+
+  <!-- ── Schedule ── -->
+  <div class="card">
+    <div class="card-title">
+      Schedule
+      <button class="btn btn-primary btn-sm" onclick="openAddModal()">+ Add</button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Description</th>
+          <th>Track</th>
+          <th>Status</th>
+          <th style="text-align:right">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="schedBody">
+        <tr><td colspan="5" class="empty-row">Loading&#8230;</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ── LoRa Clients ── -->
+  <div class="card">
+    <div class="card-title">LoRa Clients <span id="cliCount" style="color:var(--muted);font-size:.8rem"></span></div>
+    <div id="clientGrid" class="client-grid">
+      <p style="color:var(--muted);font-size:.85rem">No clients seen yet. Clients appear after first ACK.</p>
+    </div>
+  </div>
+
+  <!-- ── WiFi Settings ── -->
+  <div class="card">
+    <div class="card-title">WiFi Settings</div>
+    <div class="row">
+      <div class="col">
+        <div class="form-group">
+          <label>SSID</label>
+          <input type="text" id="wSSID" placeholder="Network name">
+        </div>
+      </div>
+      <div class="col">
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="wPass" placeholder="Password">
+        </div>
+      </div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="saveWifi()">Save & Restart</button>
+      <button class="btn btn-red"     onclick="resetWifi()">Reset WiFi</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Add/Edit Modal ── -->
+<div class="overlay" id="overlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modal-title" id="modalTitle">Add Schedule</div>
+    <div class="row">
+      <div class="col form-group">
+        <label>Hour (0-23)</label>
+        <input type="number" id="mHour" min="0" max="23" value="8">
+      </div>
+      <div class="col form-group">
+        <label>Minute (0-59)</label>
+        <input type="number" id="mMin" min="0" max="59" value="0">
+      </div>
+      <div class="col form-group">
+        <label>Track</label>
+        <input type="number" id="mTrack" min="1" max="99" value="1">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Description</label>
+      <input type="text" id="mDesc" placeholder="e.g. Morning bell">
+    </div>
+    <div class="form-group" id="mEnRow" style="display:none">
+      <label>
+        <input type="checkbox" id="mEnabled" checked>
+        Enabled
+      </label>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="saveModal()">Save</button>
+      <button class="btn btn-ghost"   onclick="closeModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ─────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────
+let schedules = [];
+let editId    = null;
+
+// ─────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  refreshAll();
+  setInterval(refreshAll, 5000);
+  setInterval(updateClock, 1000);
+});
+
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent =
+    now.toLocaleTimeString('ru-RU', { hour12: false });
+}
+
+async function refreshAll() {
+  await Promise.all([loadStatus(), loadSchedules(), loadClients()]);
+}
+
+// ─────────────────────────────────────────────
+// Status
+// ─────────────────────────────────────────────
+async function loadStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    const wEl = document.getElementById('wifiStat');
+    if (d.mode === 'AP') {
+      wEl.innerHTML = '<span class="dot dot-yellow"></span>AP: ' + d.ssid + ' (' + d.ip + ')';
+    } else {
+      wEl.innerHTML = '<span class="dot dot-green"></span>' + d.ssid + ' ' + d.ip;
+    }
+    document.getElementById('clientStat').textContent = 'Clients: ' + d.clients;
+    const kb = Math.round(d.heap / 1024);
+    document.getElementById('heapStat').textContent = 'Heap: ' + kb + 'KB';
+  } catch { /* ignore */ }
+}
+
+// ─────────────────────────────────────────────
+// Schedule
+// ─────────────────────────────────────────────
+async function loadSchedules() {
+  try {
+    const r = await fetch('/api/schedule');
+    schedules = await r.json();
+    renderSchedule();
+  } catch { /* ignore */ }
+}
+
+function renderSchedule() {
+  const tbody = document.getElementById('schedBody');
+  if (!schedules.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty-row">No schedules yet. Click "+ Add".</td></tr>';
+    return;
+  }
+  // Sort by time
+  const sorted = [...schedules].sort((a, b) => a.hour * 60 + a.min - (b.hour * 60 + b.min));
+  tbody.innerHTML = sorted.map(s => `
+    <tr>
+      <td><span class="time-badge">${pad(s.hour)}:${pad(s.min)}</span></td>
+      <td>${esc(s.desc)}</td>
+      <td style="color:var(--muted)">&#127925;&nbsp;${s.track}</td>
+      <td><span class="tag ${s.en ? 'tag-on' : 'tag-off'}">${s.en ? 'ON' : 'OFF'}</span></td>
+      <td style="text-align:right">
+        <button class="btn btn-ghost btn-sm" onclick="openEditModal(${s.id})">Edit</button>
+        <button class="btn btn-red btn-sm"   onclick="deleteSched(${s.id})" style="margin-left:6px">Del</button>
+      </td>
+    </tr>`).join('');
+}
+
+async function deleteSched(id) {
+  if (!confirm('Delete this schedule?')) return;
+  const r = await fetch('/api/schedule?id=' + id, { method: 'DELETE' });
+  if (r.ok) { toast('Deleted', 'ok'); await loadSchedules(); }
+  else        toast('Error', 'err');
+}
+
+// ─────────────────────────────────────────────
+// Clients
+// ─────────────────────────────────────────────
+async function loadClients() {
+  try {
+    const r = await fetch('/api/clients');
+    const clients = await r.json();
+    document.getElementById('cliCount').textContent =
+      clients.length ? '(' + clients.length + ')' : '';
+    const grid = document.getElementById('clientGrid');
+    if (!clients.length) {
+      grid.innerHTML = '<p style="color:var(--muted);font-size:.85rem">No clients seen yet. Clients appear after first ACK.</p>';
+      return;
+    }
+    grid.innerHTML = clients.map(c => {
+      const sec  = Math.round(c.seen_ms / 1000);
+      const seen = sec < 60 ? sec + 's ago' : Math.round(sec / 60) + 'm ago';
+      const cls  = c.rssi > -60 ? 'rssi-good' : c.rssi > -80 ? 'rssi-ok' : 'rssi-bad';
+      return `<div class="client-card">
+        <div class="client-name">&#128246; ${esc(c.id)}</div>
+        <div class="client-meta ${cls}">RSSI: ${c.rssi} dBm</div>
+        <div class="client-meta">Last seen: ${seen}</div>
+      </div>`;
+    }).join('');
+  } catch { /* ignore */ }
+}
+
+// ─────────────────────────────────────────────
+// Manual controls
+// ─────────────────────────────────────────────
+function ctrlParams() {
+  return {
+    track: parseInt(document.getElementById('ctrlTrack').value) || 1,
+    vol:   parseInt(document.getElementById('ctrlVol').value)
+  };
+}
+async function playLocal() {
+  await postJSON('/api/play',      ctrlParams()); toast('Playing locally', 'ok');
+}
+async function playLoRa() {
+  await postJSON('/api/play/lora', ctrlParams()); toast('LoRa broadcast sent', 'ok');
+}
+async function playAll() {
+  await postJSON('/api/play/all',  ctrlParams()); toast('Playing everywhere', 'ok');
+}
+async function syncSchedule() {
+  const r = await fetch('/api/sync', { method: 'POST' });
+  if (r.ok) toast('Schedule sent to all clients', 'ok');
+  else      toast('Sync failed', 'err');
+}
+
+// ─────────────────────────────────────────────
+// WiFi
+// ─────────────────────────────────────────────
+async function saveWifi() {
+  const ssid = document.getElementById('wSSID').value.trim();
+  const pass = document.getElementById('wPass').value;
+  if (!ssid) { toast('Enter SSID', 'err'); return; }
+  if (!confirm('Save WiFi and restart ESP32?')) return;
+  const r = await postJSON('/api/wifi/save', { ssid, password: pass });
+  if (r && r.ok) toast('Saved — restarting…', 'ok');
+  else toast('Error saving', 'err');
+}
+async function resetWifi() {
+  if (!confirm('Reset WiFi config? Device will restart in AP mode.')) return;
+  await fetch('/api/wifi/reset', { method: 'POST' });
+  toast('Reset — restarting in AP mode…', 'ok');
+}
+
+// ─────────────────────────────────────────────
+// Modal
+// ─────────────────────────────────────────────
+function openAddModal() {
+  editId = null;
+  document.getElementById('modalTitle').textContent = 'Add Schedule';
+  document.getElementById('mHour').value  = 8;
+  document.getElementById('mMin').value   = 0;
+  document.getElementById('mTrack').value = 1;
+  document.getElementById('mDesc').value  = '';
+  document.getElementById('mEnRow').style.display = 'none';
+  document.getElementById('overlay').classList.add('open');
+}
+
+function openEditModal(id) {
+  const s = schedules.find(x => x.id === id);
+  if (!s) return;
+  editId = id;
+  document.getElementById('modalTitle').textContent = 'Edit Schedule';
+  document.getElementById('mHour').value    = s.hour;
+  document.getElementById('mMin').value     = s.min;
+  document.getElementById('mTrack').value   = s.track;
+  document.getElementById('mDesc').value    = s.desc;
+  document.getElementById('mEnabled').checked = s.en;
+  document.getElementById('mEnRow').style.display = 'block';
+  document.getElementById('overlay').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('overlay').classList.remove('open');
+}
+
+async function saveModal() {
+  const payload = {
+    hour:  parseInt(document.getElementById('mHour').value),
+    min:   parseInt(document.getElementById('mMin').value),
+    track: parseInt(document.getElementById('mTrack').value),
+    desc:  document.getElementById('mDesc').value.trim(),
+    en:    document.getElementById('mEnabled').checked
+  };
+  if (isNaN(payload.hour) || isNaN(payload.min)) { toast('Enter valid time', 'err'); return; }
+  if (!payload.desc) { toast('Enter description', 'err'); return; }
+
+  let r;
+  if (editId) {
+    r = await postJSON('/api/schedule?id=' + editId, payload, 'PUT');
+  } else {
+    r = await postJSON('/api/schedule', payload, 'POST');
+  }
+  if (r && r.ok) {
+    toast(editId ? 'Updated' : 'Added', 'ok');
+    closeModal();
+    await loadSchedules();
+  } else {
+    toast('Error saving schedule', 'err');
+  }
+}
+
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
+async function postJSON(url, body, method = 'POST') {
+  try {
+    const r = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    return await r.json();
+  } catch { return null; }
+}
+
+function pad(n) { return String(n).padStart(2, '0'); }
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+let toastTimer;
+function toast(msg, type) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className   = 'show ' + type;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = ''; }, 3000);
+}
+</script>
+</body>
+</html>
