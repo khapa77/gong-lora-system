@@ -35,9 +35,15 @@
 // WiFi STA connection timeout
 #define WIFI_TIMEOUT_MS 30000
 
-// NTP
+// NTP timezone offset in seconds from UTC
+// UTC+0:   0       (London)
+// UTC+3:   10800   (Moscow)
+// UTC+5:   18000   (Pakistan)
+// UTC+5:30 19800   (India)
+// UTC+6:30 23400   (Myanmar)
+// UTC+7:   25200   (Bangkok/Jakarta)
 #define NTP_SERVER       "pool.ntp.org"
-#define NTP_UTC_OFFSET   0       // seconds (e.g. 10800 = UTC+3)
+#define NTP_UTC_OFFSET   19800   // seconds — измени под свой часовой пояс!
 #define NTP_INTERVAL_MS  60000
 
 // SPIFFS file paths
@@ -53,3 +59,7 @@
 
 // How often server broadcasts heartbeat to clients
 #define HEARTBEAT_INTERVAL_MS 30000
+
+// Dead client timeout: remove from list after this many ms without ACK (1 hour)
+#define CLIENT_TIMEOUT_MS 3600000UL
+

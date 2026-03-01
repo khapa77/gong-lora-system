@@ -20,24 +20,42 @@ static ClientInfo clients[MAX_CLIENTS];
 static uint8_t    cliCount = 0;
 
 static void upsertClient(const String& id, int rssi) {
+    unsigned long now = millis();
+
+    // Update existing client
     for (uint8_t i = 0; i < cliCount; i++) {
         if (clients[i].id == id) {
             clients[i].rssi       = rssi;
-            clients[i].lastSeenMs = millis();
+            clients[i].lastSeenMs = now;
             return;
         }
     }
-    if (cliCount < MAX_CLIENTS) {
-        clients[cliCount++] = { id, rssi, millis() };
-        Serial.printf("[LORA] New client registered: %s\n", id.c_str());
+
+    // Evict timed-out client if list is full
+    if (cliCount >= MAX_CLIENTS) {
+        uint8_t oldest = 0;
+        for (uint8_t i = 1; i < cliCount; i++) {
+            if (now - clients[i].lastSeenMs > now - clients[oldest].lastSeenMs)
+                oldest = i;
+        }
+        if (now - clients[oldest].lastSeenMs > CLIENT_TIMEOUT_MS) {
+            Serial.printf("[LORA] Evicting stale client: %s\n",
+                          clients[oldest].id.c_str());
+            clients[oldest] = { id, rssi, now };
+            return;
+        }
+        Serial.println("[LORA] MAX_CLIENTS reached, new client ignored");
+        return;
     }
+
+    clients[cliCount++] = { id, rssi, now };
+    Serial.printf("[LORA] New client registered: %s\n", id.c_str());
 }
 
 // -------------------------------------------------------
 // Low-level send
 // -------------------------------------------------------
 static void loraSend(uint8_t type, const String& payload) {
-    // First byte = message type, rest = payload
     LoRa.beginPacket();
     LoRa.write(type);
     LoRa.print(payload);
@@ -58,7 +76,6 @@ static void handleACK(const String& payload, int rssi) {
 
 // -------------------------------------------------------
 void lora_setup() {
-    // Use VSPI bus: SCK=18 MISO=19 MOSI=23
     SPI.begin(18, 19, 23, LORA_SS);
     LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);
 
@@ -80,7 +97,7 @@ void lora_loop() {
     int pktSize = LoRa.parsePacket();
     if (pktSize == 0) return;
 
-    uint8_t type = LoRa.read();   // first byte = type
+    uint8_t type = LoRa.read();
     String  payload = "";
     while (LoRa.available()) payload += (char)LoRa.read();
     int rssi = LoRa.packetRssi();
@@ -136,14 +153,24 @@ String lora_clientsJSON() {
     JsonArray arr = doc.to<JsonArray>();
     unsigned long now = millis();
     for (uint8_t i = 0; i < cliCount; i++) {
+        unsigned long age = now - clients[i].lastSeenMs;
+        if (age > CLIENT_TIMEOUT_MS) continue;  // skip stale clients
         JsonObject o = arr.createNestedObject();
         o["id"]      = clients[i].id;
         o["rssi"]    = clients[i].rssi;
-        o["seen_ms"] = now - clients[i].lastSeenMs;
+        o["seen_ms"] = age;
     }
     String s;
     serializeJson(doc, s);
     return s;
 }
 
-int lora_clientCount() { return cliCount; }
+int lora_clientCount() {
+    unsigned long now = millis();
+    int active = 0;
+    for (uint8_t i = 0; i < cliCount; i++) {
+        if (now - clients[i].lastSeenMs <= CLIENT_TIMEOUT_MS) active++;
+    }
+    return active;
+}
+
