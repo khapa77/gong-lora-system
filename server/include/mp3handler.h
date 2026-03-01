@@ -7,3 +7,4 @@ void mp3_stop();
 void mp3_setVolume(uint8_t vol);
 bool mp3_isBusy();
 void mp3_loop();
+

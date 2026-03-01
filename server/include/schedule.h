@@ -26,3 +26,4 @@ void   sched_load();
 // Callback: fired when a scheduled gong triggers
 // Argument: track number to play
 extern void (*onScheduleTrigger)(uint8_t track);
+
