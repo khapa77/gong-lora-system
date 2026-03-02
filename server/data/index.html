@@ -36,6 +36,35 @@ header h1 span { color: var(--accent); }
   display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
   font-size: .82rem; color: var(--muted);
 }
+/* Password toggle */
+.pwd-wrap {
+  display: flex;
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.pwd-wrap input {
+  border: none;
+  flex: 1;
+  background: transparent;
+}
+
+.pwd-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 1rem;
+  padding: 0 10px;
+  height: 100%;
+}
+
+.pwd-btn:hover {
+  color: var(--accent);
+}
 .dot {
   width: 9px; height: 9px; border-radius: 50%;
   display: inline-block; margin-right: 5px;
@@ -216,14 +245,16 @@ tr:hover td { background: rgba(79,158,248,.04); }
           <input type="text" id="wSSID" placeholder="Network name">
         </div>
       </div>
-      <div class="col">
-        <div class="form-group">
-          <label>Password</label>
+    <div class="col">
+      <div class="form-group">
+        <label>Password</label>
+        <div class="pwd-wrap">
           <input type="password" id="wPass" placeholder="Password">
+          <button type="button" class="pwd-btn" onclick="toggleWifiPass()">👁</button>
         </div>
       </div>
     </div>
-    <div class="btn-group">
+       <div class="btn-group">
       <button class="btn btn-primary" onclick="saveWifi()">Save & Restart</button>
       <button class="btn btn-red"     onclick="resetWifi()">Reset WiFi</button>
     </div>
@@ -506,6 +537,18 @@ function toast(msg, type) {
   el.className   = 'show ' + type;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.className = ''; }, 3000);
+}
+function toggleWifiPass() {
+  const input = document.getElementById('wPass');
+  const btn   = event.currentTarget;
+
+  if (input.type === 'password') {
+    input.type = 'text';
+    btn.textContent = '🙈'; // hide
+  } else {
+    input.type = 'password';
+    btn.textContent = '👁'; // view
+  }
 }
 </script>
 </body>
