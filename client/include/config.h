@@ -24,13 +24,12 @@
 #define MSG_SCHEDULE   0x03
 #define MSG_ACK        0x04
 
-// MP3 module pins
-#define MP3_RX         16
-#define MP3_TX         17
-#define MP3_BUSY       4
+// I2S pins for MAX98357A
+#define I2S_BCLK       26   // Bit Clock
+#define I2S_LRC        25   // Left/Right Clock (Word Select)
+#define I2S_DOUT       33   // Data Out
 
-// Status LED (onboard LED on many boards is GPIO2, but that's DIO0)
-// Use GPIO33 or any free GPIO; set to -1 to disable
-#define STATUS_LED     33
+// Status LED; set to -1 to disable (GPIO33 used by I2S_DOUT)
+#define STATUS_LED     -1
 
 #define DEFAULT_VOLUME 25
