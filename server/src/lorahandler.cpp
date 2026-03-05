@@ -73,6 +73,8 @@ static void loraSend(uint8_t type, const String& payload) {
     } else {
         Serial.printf("[LORA] TX type=0x%02X payload_len=%u\n", type, (unsigned)(len - 1));
     }
+
+    radio.startReceive();  // return to RX mode after every TX
 }
 
 static void handleACK(const String& payload, int rssi) {
