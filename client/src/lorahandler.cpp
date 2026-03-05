@@ -2,8 +2,16 @@
 #include "config.h"
 #include "mp3handler.h"
 #include <SPI.h>
-#include <LoRa.h>
+#include <RadioLib.h>
 #include <ArduinoJson.h>
+
+#define LORA_PAYLOAD_MAX 256
+
+// -------------------------------------------------------
+// RadioLib: Module(cs, irq, rst, gpio)
+// -------------------------------------------------------
+static Module mod(LORA_SS, LORA_DIO0, LORA_RST, RADIOLIB_NC);
+static SX1278 radio(&mod);
 
 // -------------------------------------------------------
 // Incoming message handlers
@@ -20,13 +28,11 @@ static void handleGong(const String& payload, int rssi) {
     Serial.printf("[LORA] GONG received! track=%d vol=%d RSSI=%d dBm\n",
                   track, vol, rssi);
 
-    // Flash LED while playing
     if (STATUS_LED >= 0) digitalWrite(STATUS_LED, HIGH);
 
     mp3_setVolume(vol);
     mp3_play(track);
 
-    // Send ACK back to server
     lora_sendACK(rssi);
 }
 
@@ -40,49 +46,59 @@ static void handleHeartbeat(const String& payload) {
 }
 
 static void handleSchedule(const String& payload) {
-    // Clients receive schedule for informational purposes
-    // (could be used for local fallback — not implemented here)
     Serial.printf("[LORA] Schedule received (%d bytes)\n", payload.length());
 }
 
 // -------------------------------------------------------
 void lora_setup() {
-    SPI.begin(18, 19, 23, LORA_SS);   // VSPI: SCK MISO MOSI SS
-    LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);
+    SPI.begin(18, 19, 23, LORA_SS);
 
-    if (!LoRa.begin(LORA_FREQ)) {
-        Serial.println("[LORA] Init FAILED — check module wiring!");
+    float freqMHz = (float)(LORA_FREQ / 1e6);
+    float bwKHz   = (float)(LORA_BW / 1e3);
+    int state = radio.begin(freqMHz, bwKHz, LORA_SF, LORA_CR, LORA_SYNC_WORD, LORA_TX_POWER, 8, 0);
+
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[LORA] Init FAILED: %d — check module wiring!\n", state);
         return;
     }
-    LoRa.setSyncWord(LORA_SYNC_WORD);
-    LoRa.setSpreadingFactor(LORA_SF);
-    LoRa.setSignalBandwidth(LORA_BW);
-    LoRa.setCodingRate4(LORA_CR);
-    LoRa.setTxPower(LORA_TX_POWER, PA_OUTPUT_PA_BOOST_PIN);
 
-    Serial.printf("[LORA] Client '%s' listening @ %.0f MHz\n",
-                  CLIENT_ID, LORA_FREQ / 1e6);
+    Serial.printf("[LORA] Client '%s' listening @ %.0f MHz  SF=%d BW=%.0fk\n",
+                  CLIENT_ID, freqMHz, LORA_SF, bwKHz);
+
+    radio.startReceive();
 }
 
 void lora_loop() {
-    int pktSize = LoRa.parsePacket();
-    if (pktSize == 0) return;
+    uint8_t buf[LORA_PAYLOAD_MAX + 1];
+    int state = radio.readData(buf, sizeof(buf));
+    if (state != RADIOLIB_ERR_NONE) return;
 
-    uint8_t type    = LoRa.read();  // first byte = message type
+    size_t len = radio.getPacketLength(true);
+    if (len == 0 || len > sizeof(buf)) {
+        radio.startReceive();
+        return;
+    }
+
+    uint8_t type    = buf[0];
     String  payload = "";
-    while (LoRa.available()) payload += (char)LoRa.read();
-    int rssi = LoRa.packetRssi();
+    for (size_t i = 1; i < len; i++) payload += (char)buf[i];
+
+    int rssi = (int)radio.getRSSI();
+
+    Serial.printf("[LORA] RX type=0x%02X len=%u RSSI=%d\n",
+                  type, (unsigned)(len - 1), rssi);
 
     switch (type) {
-        case MSG_GONG:      handleGong(payload, rssi);      break;
-        case MSG_HEARTBEAT: handleHeartbeat(payload);        break;
-        case MSG_SCHEDULE:  handleSchedule(payload);         break;
+        case MSG_GONG:      handleGong(payload, rssi); break;
+        case MSG_HEARTBEAT: handleHeartbeat(payload);   break;
+        case MSG_SCHEDULE:  handleSchedule(payload);    break;
         default:
             Serial.printf("[LORA] Unknown type 0x%02X\n", type);
     }
 
-    // Turn off LED after message processed
     if (STATUS_LED >= 0) digitalWrite(STATUS_LED, LOW);
+
+    radio.startReceive();
 }
 
 void lora_sendACK(int rxRssi) {
@@ -93,12 +109,20 @@ void lora_sendACK(int rxRssi) {
     String payload;
     serializeJson(doc, payload);
 
-    delay(random(10, 80));  // small random delay to avoid collision if many clients
+    delay(random(10, 80));  // avoid collision if many clients
 
-    LoRa.beginPacket();
-    LoRa.write(MSG_ACK);
-    LoRa.print(payload);
-    LoRa.endPacket();
+    uint8_t buf[LORA_PAYLOAD_MAX + 1];
+    buf[0] = MSG_ACK;
+    size_t plen = payload.length();
+    if (plen > LORA_PAYLOAD_MAX) plen = LORA_PAYLOAD_MAX;
+    memcpy(buf + 1, payload.c_str(), plen);
 
-    Serial.printf("[LORA] ACK sent as '%s'\n", CLIENT_ID);
+    int state = radio.transmit(buf, 1 + plen);
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[LORA] ACK TX failed: %d\n", state);
+    } else {
+        Serial.printf("[LORA] ACK sent as '%s'\n", CLIENT_ID);
+    }
+
+    radio.startReceive();
 }
