@@ -39,15 +39,15 @@
 
 ## Железо
 
-### Одинаково для сервера и клиентов:
+### Компоненты
 
-| Компонент | Модель |
-|-----------|--------|
-| МК | ESP32 (любой, DevKit) |
-| LoRa | SX1278 / XL1278-SMT 433 МГц |
-| MP3 | DFPlayer Mini (MP3-TF-16P) |
-| SD-карта | MicroSD с MP3-файлами (001.mp3, 002.mp3 …) |
-| Динамик | 4–8 Ω |
+| Компонент | Сервер | Клиент |
+|-----------|--------|--------|
+| МК | ESP32 DevKit | ESP32 DevKit |
+| LoRa | SX1278 433 МГц | SX1278 433 МГц |
+| Аудио | MAX98357A (I2S) | MAX98357A (I2S) |
+| MP3-файлы | SPIFFS (`/0001.mp3` …) | SPIFFS (`/0001.mp3` …) |
+| Динамик | 4–8 Ω | 4–8 Ω |
 
 ### Распиновка — SERVER (ESP32 + LoRa + MAX98357A)
 
@@ -70,7 +70,7 @@ GPIO33  ──── DIN   (Data In)
 GND     ──── GND
 ```
 
-### Распиновка — CLIENT (ESP32 + LoRa + DFPlayer Mini)
+### Распиновка — CLIENT (ESP32 + LoRa + MAX98357A)
 
 ```
 ESP32          LoRa SX1278          (VSPI, RadioLib)
@@ -83,14 +83,12 @@ GPIO23  ──── MOSI
 3.3V    ──── VCC
 GND     ──── GND
 
-ESP32          DFPlayer Mini        (UART2)
-GPIO16  ──── RX_module (DFP TX)
-GPIO17  ──── TX_module (DFP RX)   ─── 1kΩ ─── DFP RX
-GPIO4   ──── BUSY
-5V      ──── VCC
+ESP32          MAX98357A            (I2S)
+GPIO26  ──── BCLK  (Bit Clock)
+GPIO25  ──── LRC   (Word Select)
+GPIO33  ──── DIN   (Data In)
+5V      ──── VDD
 GND     ──── GND
-
-GPIO33  ──── LED + 220Ω ──── GND  (статус-LED, опционально)
 ```
 
 ### LoRa RF-параметры (сервер и клиент должны совпадать)
@@ -126,11 +124,13 @@ pio run -t uploadfs
 Для каждого клиента:
 1. Открой `client/include/config.h`
 2. Измени `CLIENT_ID` на уникальное имя (например `"room_A"`, `"room_B"`)
-3. Залей прошивку:
+3. Положи MP3-файлы в `client/data/` (`0001.mp3`, `0002.mp3` …)
+4. Залей прошивку и SPIFFS:
 
 ```bash
 cd client
 pio run -t upload
+pio run -t uploadfs
 ```
 
 ---
