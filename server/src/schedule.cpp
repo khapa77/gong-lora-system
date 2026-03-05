@@ -3,6 +3,8 @@
 #include <SPIFFS.h>
 #include <WiFi.h>
 #include <time.h>
+#include <new>
+#include <ArduinoJson.h>
 
 void (*onScheduleTrigger)(uint8_t track) = nullptr;
 
@@ -13,6 +15,7 @@ static uint32_t      nextId  = 1;
 // Anti-double-trigger: remember which minute we last fired
 static int           lastFiredKey    = -1;
 static unsigned long lastFiredMillis = 0;
+static unsigned long lastTimeLog     = 0;
 
 // -------------------------------------------------------
 void sched_setup() {
@@ -25,14 +28,33 @@ void sched_setup() {
 // Uses system time configured via configTime() in wifi_connect()
 // -------------------------------------------------------
 void sched_check() {
-    if (WiFi.status() != WL_CONNECTED) return;
+    if (WiFi.status() != WL_CONNECTED) {
+        static unsigned long lastWarn = 0;
+        if (millis() - lastWarn >= 60000UL) {
+            Serial.println("[SCHED] Skip: no WiFi. Connect to router for schedule.");
+            lastWarn = millis();
+        }
+        return;
+    }
 
     struct tm ti;
-    if (!getLocalTime(&ti)) return;
+    if (!getLocalTime(&ti)) {
+        static unsigned long lastWarn = 0;
+        if (millis() - lastWarn >= 60000UL) {
+            Serial.println("[SCHED] Skip: time not set. Wait for NTP sync (1–2 min).");
+            lastWarn = millis();
+        }
+        return;
+    }
 
     int h   = ti.tm_hour;
     int m   = ti.tm_min;
     int key = h * 60 + m;
+
+    if (millis() - lastTimeLog >= 60000UL) {
+        Serial.printf("[SCHED] Time %02d:%02d (entries=%d)\n", h, m, count);
+        lastTimeLog = millis();
+    }
 
     // Guard: prevent re-triggering within the same minute.
     // Use 65 s window (5 s margin) to handle NTP clock jitter.
@@ -91,9 +113,12 @@ bool sched_del(uint32_t id) {
 }
 
 // -------------------------------------------------------
+// Use heap for large JSON to avoid stack overflow on ESP32 (was 4KB on stack)
+// -------------------------------------------------------
 String sched_toJSON() {
-    DynamicJsonDocument doc(4096);
-    JsonArray arr = doc.to<JsonArray>();
+    DynamicJsonDocument *doc = new (std::nothrow) DynamicJsonDocument(4096);
+    if (!doc) return "[]";
+    JsonArray arr = doc->to<JsonArray>();
     for (uint8_t i = 0; i < count; i++) {
         JsonObject o = arr.createNestedObject();
         o["id"]    = entries[i].id;
@@ -104,7 +129,8 @@ String sched_toJSON() {
         o["desc"]  = entries[i].description;
     }
     String s;
-    serializeJson(doc, s);
+    serializeJson(*doc, s);
+    delete doc;
     return s;
 }
 
@@ -124,16 +150,18 @@ void sched_load() {
     File f = SPIFFS.open(SCHEDULE_FILE, "r");
     if (!f) return;
 
-    DynamicJsonDocument doc(4096);
-    if (deserializeJson(doc, f)) {
+    DynamicJsonDocument *doc = new (std::nothrow) DynamicJsonDocument(4096);
+    if (!doc) { f.close(); return; }
+    if (deserializeJson(*doc, f)) {
         Serial.println("[SCHED] Parse error");
         f.close();
+        delete doc;
         return;
     }
     f.close();
 
     count = 0;
-    for (JsonObject o : doc.as<JsonArray>()) {
+    for (JsonObject o : doc->as<JsonArray>()) {
         if (count >= MAX_SCHEDULES) break;
         uint8_t track = o["track"] | 1;
         if (track < 1)  track = 1;
@@ -149,5 +177,6 @@ void sched_load() {
         };
         if (id >= nextId) nextId = id + 1;
     }
+    delete doc;
 }
 
