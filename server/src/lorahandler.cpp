@@ -105,7 +105,8 @@ void lora_setup() {
 }
 
 void lora_loop() {
-    if (!radio.available()) return;
+    // DIO0 goes HIGH when packet is received (mapped by startReceive())
+    if (!digitalRead(LORA_DIO0)) return;
 
     size_t len = radio.getPacketLength();
     if (len == 0 || len > LORA_PAYLOAD_MAX) {
