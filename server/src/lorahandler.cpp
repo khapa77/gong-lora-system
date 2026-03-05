@@ -1,9 +1,17 @@
 #include "lorahandler.h"
 #include "config.h"
 #include <SPI.h>
-#include <LoRa.h>
+#include <RadioLib.h>
 #include <ArduinoJson.h>
 #include <time.h>
+
+#define LORA_PAYLOAD_MAX 256
+
+// -------------------------------------------------------
+// RadioLib: Module(cs, irq, rst, gpio)
+// -------------------------------------------------------
+static Module mod(LORA_SS, LORA_DIO0, LORA_RST, RADIOLIB_NC);
+static SX1278 radio(&mod);
 
 // -------------------------------------------------------
 // Track known clients (by their ACK messages)
@@ -13,7 +21,7 @@
 struct ClientInfo {
     String   id;
     int      rssi;
-    uint32_t lastSeenMs;   // millis() of last ACK
+    uint32_t lastSeenMs;
 };
 
 static ClientInfo clients[MAX_CLIENTS];
@@ -22,7 +30,6 @@ static uint8_t    cliCount = 0;
 static void upsertClient(const String& id, int rssi) {
     unsigned long now = millis();
 
-    // Update existing client
     for (uint8_t i = 0; i < cliCount; i++) {
         if (clients[i].id == id) {
             clients[i].rssi       = rssi;
@@ -31,7 +38,6 @@ static void upsertClient(const String& id, int rssi) {
         }
     }
 
-    // Evict timed-out client if list is full
     if (cliCount >= MAX_CLIENTS) {
         uint8_t oldest = 0;
         for (uint8_t i = 1; i < cliCount; i++) {
@@ -53,19 +59,22 @@ static void upsertClient(const String& id, int rssi) {
 }
 
 // -------------------------------------------------------
-// Low-level send
+// Low-level send: packet = [type byte][payload string]
 // -------------------------------------------------------
 static void loraSend(uint8_t type, const String& payload) {
-    LoRa.beginPacket();
-    LoRa.write(type);
-    LoRa.print(payload);
-    LoRa.endPacket();
-    Serial.printf("[LORA] TX type=0x%02X payload_len=%d\n", type, payload.length());
+    size_t len = 1 + (payload.length() < LORA_PAYLOAD_MAX ? payload.length() : LORA_PAYLOAD_MAX);
+    uint8_t buf[LORA_PAYLOAD_MAX + 1];
+    buf[0] = type;
+    memcpy(buf + 1, payload.c_str(), len - 1);
+
+    int state = radio.transmit(buf, len);
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[LORA] TX failed: %d\n", state);
+    } else {
+        Serial.printf("[LORA] TX type=0x%02X payload_len=%u\n", type, (unsigned)(len - 1));
+    }
 }
 
-// -------------------------------------------------------
-// Incoming message handlers
-// -------------------------------------------------------
 static void handleACK(const String& payload, int rssi) {
     DynamicJsonDocument doc(256);
     if (deserializeJson(doc, payload)) return;
@@ -77,39 +86,53 @@ static void handleACK(const String& payload, int rssi) {
 // -------------------------------------------------------
 void lora_setup() {
     SPI.begin(18, 19, 23, LORA_SS);
-    LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);
 
-    if (!LoRa.begin(LORA_FREQ)) {
-        Serial.println("[LORA] Init FAILED — check module wiring!");
+    // RadioLib begin(freq_MHz, bw_kHz, sf, cr, syncWord, power_dBm, preambleLen, gain)
+    float freqMHz = (float)(LORA_FREQ / 1e6);
+    float bwKHz   = (float)(LORA_BW / 1e3);
+    int state = radio.begin(freqMHz, bwKHz, LORA_SF, LORA_CR, LORA_SYNC_WORD, LORA_TX_POWER, 8, 0);
+
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[LORA] Init FAILED: %d — check module wiring!\n", state);
         return;
     }
-    LoRa.setSyncWord(LORA_SYNC_WORD);
-    LoRa.setSpreadingFactor(LORA_SF);
-    LoRa.setSignalBandwidth(LORA_BW);
-    LoRa.setCodingRate4(LORA_CR);
-    LoRa.setTxPower(LORA_TX_POWER, PA_OUTPUT_PA_BOOST_PIN);
 
     Serial.printf("[LORA] Server ready @ %.0f MHz  SF=%d BW=%.0fk\n",
-                  LORA_FREQ / 1e6, LORA_SF, LORA_BW / 1e3);
+                  freqMHz, LORA_SF, bwKHz);
+
+    // Неблокирующий приём: не вызываем receive() в loop, иначе аудио не успевает
+    radio.startReceive();
 }
 
 void lora_loop() {
-    int pktSize = LoRa.parsePacket();
-    if (pktSize == 0) return;
+    uint8_t buf[LORA_PAYLOAD_MAX + 1];
+    // readData() не блокирует — сразу возвращает, если пакета нет
+    int state = radio.readData(buf, sizeof(buf));
 
-    uint8_t type = LoRa.read();
-    String  payload = "";
-    while (LoRa.available()) payload += (char)LoRa.read();
-    int rssi = LoRa.packetRssi();
+    if (state != RADIOLIB_ERR_NONE) return;
 
-    Serial.printf("[LORA] RX type=0x%02X len=%d RSSI=%d\n",
-                  type, payload.length(), rssi);
+    size_t len = radio.getPacketLength(true);
+    if (len == 0 || len > sizeof(buf)) {
+        radio.startReceive();
+        return;
+    }
+
+    uint8_t type = buf[0];
+    String payload;
+    for (size_t i = 1; i < len; i++) payload += (char)buf[i];
+
+    int rssi = (int)radio.getRSSI();
+
+    Serial.printf("[LORA] RX type=0x%02X len=%u RSSI=%d\n",
+                  type, (unsigned)(len - 1), rssi);
 
     switch (type) {
         case MSG_ACK: handleACK(payload, rssi); break;
         default:
             Serial.printf("[LORA] Unhandled type 0x%02X\n", type);
     }
+
+    radio.startReceive();  // снова слушаем
 }
 
 // -------------------------------------------------------
@@ -154,7 +177,7 @@ String lora_clientsJSON() {
     unsigned long now = millis();
     for (uint8_t i = 0; i < cliCount; i++) {
         unsigned long age = now - clients[i].lastSeenMs;
-        if (age > CLIENT_TIMEOUT_MS) continue;  // skip stale clients
+        if (age > CLIENT_TIMEOUT_MS) continue;
         JsonObject o = arr.createNestedObject();
         o["id"]      = clients[i].id;
         o["rssi"]    = clients[i].rssi;
@@ -173,4 +196,3 @@ int lora_clientCount() {
     }
     return active;
 }
-

@@ -3,11 +3,16 @@
 #include "schedule.h"
 #include "lorahandler.h"
 #include "mp3handler.h"
+#include <SPIFFS.h>
 #include <WiFi.h>
+#include <WiFiUdp.h>
+#include <NTPClient.h>
 #include <ArduinoJson.h>
 
 bool       apMode = false;
 static WebServer server(80);
+static WiFiUDP ntpUDP;
+static NTPClient ntp(ntpUDP, NTP_SERVER, NTP_UTC_OFFSET);
 
 // -------------------------------------------------------
 // Helpers
@@ -36,7 +41,8 @@ static void sendErr(const char* msg) {
 // -------------------------------------------------------
 static void handleOptions() {
     cors(server);
-    server.send(204);
+    // 200 + body избегает предупреждения "content length is zero" в WebServer
+    server.send(200, "text/plain", "OK");
 }
 
 // -------------------------------------------------------
@@ -150,6 +156,10 @@ static void handleStatus() {
     doc["clients"] = lora_clientCount();
     doc["heap"]    = (int)ESP.getFreeHeap();
     doc["uptime"]  = (uint32_t)(millis() / 1000);
+    if (WiFi.status() == WL_CONNECTED) {
+        ntp.update();
+        doc["ntp_time"] = ntp.getFormattedTime();
+    }
     String s;
     serializeJson(doc, s);
     sendJSON(200, s);
@@ -229,7 +239,8 @@ bool wifi_connect() {
 
     if (WiFi.status() == WL_CONNECTED) {
         Serial.printf("\n[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
-        // Sync ESP32 system clock via NTP
+        ntp.begin();
+        ntp.update();
         configTime(NTP_UTC_OFFSET, 0, NTP_SERVER);
         return true;
     }
