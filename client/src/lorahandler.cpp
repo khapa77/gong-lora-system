@@ -36,13 +36,14 @@ static void handleGong(const String& payload, int rssi) {
     lora_sendACK(rssi);
 }
 
-static void handleHeartbeat(const String& payload) {
+static void handleHeartbeat(const String& payload, int rssi) {
     DynamicJsonDocument doc(128);
     if (deserializeJson(doc, payload)) return;
     const char* t = doc["time"] | "--:--:--";
     int clients   = doc["clients"] | 0;
     Serial.printf("[LORA] Heartbeat — server time=%s known_clients=%d\n",
                   t, clients);
+    lora_sendACK(rssi);
 }
 
 static void handleSchedule(const String& payload) {
@@ -90,7 +91,7 @@ void lora_loop() {
 
     switch (type) {
         case MSG_GONG:      handleGong(payload, rssi); break;
-        case MSG_HEARTBEAT: handleHeartbeat(payload);   break;
+        case MSG_HEARTBEAT: handleHeartbeat(payload, rssi); break;
         case MSG_SCHEDULE:  handleSchedule(payload);    break;
         default:
             Serial.printf("[LORA] Unknown type 0x%02X\n", type);
