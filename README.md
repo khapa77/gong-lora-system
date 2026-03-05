@@ -49,11 +49,11 @@
 | SD-карта | MicroSD с MP3-файлами (001.mp3, 002.mp3 …) |
 | Динамик | 4–8 Ω |
 
-### Распиновка (одинаковая для сервера и клиентов):
+### Распиновка — SERVER (ESP32 + LoRa + MAX98357A)
 
 ```
-ESP32          LoRa SX1278
-GPIO5   ──── NSS (CS)
+ESP32          LoRa SX1278          (VSPI, RadioLib)
+GPIO5   ──── NSS / CS
 GPIO14  ──── RST
 GPIO2   ──── DIO0
 GPIO18  ──── SCK
@@ -62,17 +62,47 @@ GPIO23  ──── MOSI
 3.3V    ──── VCC
 GND     ──── GND
 
-ESP32          DFPlayer Mini
-GPIO16  ──── TX  (MP3 → ESP)
-GPIO17  ──── RX  (ESP → MP3)
+ESP32          MAX98357A            (I2S)
+GPIO26  ──── BCLK  (Bit Clock)
+GPIO25  ──── LRC   (Word Select)
+GPIO33  ──── DIN   (Data In)
+5V      ──── VDD
+GND     ──── GND
+```
+
+### Распиновка — CLIENT (ESP32 + LoRa + DFPlayer Mini)
+
+```
+ESP32          LoRa SX1278          (VSPI, RadioLib)
+GPIO5   ──── NSS / CS
+GPIO14  ──── RST
+GPIO2   ──── DIO0
+GPIO18  ──── SCK
+GPIO19  ──── MISO
+GPIO23  ──── MOSI
+3.3V    ──── VCC
+GND     ──── GND
+
+ESP32          DFPlayer Mini        (UART2)
+GPIO16  ──── RX_module (DFP TX)
+GPIO17  ──── TX_module (DFP RX)   ─── 1kΩ ─── DFP RX
 GPIO4   ──── BUSY
 5V      ──── VCC
 GND     ──── GND
-          ┗── 1kΩ резистор между GPIO17 и RX DFPlayer
 
-Client LED (опционально):
-GPIO33  ──── LED + (220Ω) ──── GND
+GPIO33  ──── LED + 220Ω ──── GND  (статус-LED, опционально)
 ```
+
+### LoRa RF-параметры (сервер и клиент должны совпадать)
+
+| Параметр | Значение |
+|----------|----------|
+| Частота | 433 МГц |
+| Spreading Factor | SF7 |
+| Bandwidth | 125 кГц |
+| Coding Rate | 4/5 |
+| Sync Word | `0xF3` |
+| TX Power | 20 дБм |
 
 ---
 
