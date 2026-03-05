@@ -105,14 +105,17 @@ void lora_setup() {
 }
 
 void lora_loop() {
+    if (!radio.available()) return;
+
+    size_t len = radio.getPacketLength();
+    if (len == 0 || len > LORA_PAYLOAD_MAX) {
+        radio.startReceive();
+        return;
+    }
+
     uint8_t buf[LORA_PAYLOAD_MAX + 1];
-    // readData() не блокирует — сразу возвращает, если пакета нет
-    int state = radio.readData(buf, sizeof(buf));
-
-    if (state != RADIOLIB_ERR_NONE) return;
-
-    size_t len = radio.getPacketLength(true);
-    if (len == 0 || len > sizeof(buf)) {
+    int state = radio.readData(buf, len);
+    if (state != RADIOLIB_ERR_NONE) {
         radio.startReceive();
         return;
     }
@@ -132,7 +135,7 @@ void lora_loop() {
             Serial.printf("[LORA] Unhandled type 0x%02X\n", type);
     }
 
-    radio.startReceive();  // снова слушаем
+    radio.startReceive();
 }
 
 // -------------------------------------------------------

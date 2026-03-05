@@ -70,12 +70,17 @@ void lora_setup() {
 }
 
 void lora_loop() {
-    uint8_t buf[LORA_PAYLOAD_MAX + 1];
-    int state = radio.readData(buf, sizeof(buf));
-    if (state != RADIOLIB_ERR_NONE) return;
+    if (!radio.available()) return;
 
-    size_t len = radio.getPacketLength(true);
-    if (len == 0 || len > sizeof(buf)) {
+    size_t len = radio.getPacketLength();
+    if (len == 0 || len > LORA_PAYLOAD_MAX) {
+        radio.startReceive();
+        return;
+    }
+
+    uint8_t buf[LORA_PAYLOAD_MAX + 1];
+    int state = radio.readData(buf, len);
+    if (state != RADIOLIB_ERR_NONE) {
         radio.startReceive();
         return;
     }
@@ -90,9 +95,9 @@ void lora_loop() {
                   type, (unsigned)(len - 1), rssi);
 
     switch (type) {
-        case MSG_GONG:      handleGong(payload, rssi); break;
+        case MSG_GONG:      handleGong(payload, rssi);      break;
         case MSG_HEARTBEAT: handleHeartbeat(payload, rssi); break;
-        case MSG_SCHEDULE:  handleSchedule(payload);    break;
+        case MSG_SCHEDULE:  handleSchedule(payload);        break;
         default:
             Serial.printf("[LORA] Unknown type 0x%02X\n", type);
     }
