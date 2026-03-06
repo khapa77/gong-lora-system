@@ -235,6 +235,40 @@ tr:hover td { background: rgba(79,158,248,.04); }
     </div>
   </div>
 
+  <!-- ── Security ── -->
+  <div class="card">
+    <div class="card-title">
+      Security
+      <span id="authBadge" class="tag" style="font-size:.75rem"></span>
+    </div>
+    <div id="authDisabledInfo" style="color:var(--muted);font-size:.85rem;margin-bottom:14px;display:none">
+      Web admin is open — anyone on the network can access it.
+    </div>
+    <div class="row">
+      <div class="col form-group">
+        <label>New password <span style="color:var(--muted)">(min 4 chars)</span></label>
+        <div class="pwd-wrap">
+          <input type="password" id="authPass" placeholder="Enter new password">
+          <button type="button" class="pwd-btn" onclick="togglePass('authPass',this)">👁</button>
+        </div>
+      </div>
+      <div class="col form-group">
+        <label>Confirm password</label>
+        <div class="pwd-wrap">
+          <input type="password" id="authPass2" placeholder="Repeat password">
+          <button type="button" class="pwd-btn" onclick="togglePass('authPass2',this)">👁</button>
+        </div>
+      </div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="saveAuth()">🔒 Set Password</button>
+      <button class="btn btn-red btn-sm" id="authDisableBtn" onclick="disableAuth()" style="display:none">Disable Auth</button>
+    </div>
+    <p style="color:var(--muted);font-size:.78rem;margin-top:10px">
+      Login: <b>admin</b> / your password. Stored on device, cleared only with "Disable Auth".
+    </p>
+  </div>
+
   <!-- ── WiFi Settings ── -->
   <div class="card">
     <div class="card-title">WiFi Settings</div>
@@ -322,7 +356,7 @@ function updateClock() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadStatus(), loadSchedules(), loadClients()]);
+  await Promise.all([loadStatus(), loadSchedules(), loadClients(), loadAuthStatus()]);
 }
 
 // ─────────────────────────────────────────────
@@ -435,6 +469,60 @@ async function syncSchedule() {
 }
 
 // ─────────────────────────────────────────────
+// Security / Auth
+// ─────────────────────────────────────────────
+async function loadAuthStatus() {
+  try {
+    const r = await fetch('/api/auth/status');
+    const d = await r.json();
+    const badge = document.getElementById('authBadge');
+    const disBtn = document.getElementById('authDisableBtn');
+    const disInfo = document.getElementById('authDisabledInfo');
+    if (d.enabled) {
+      badge.textContent = '🔒 Protected';
+      badge.style.background = 'rgba(52,201,126,.15)';
+      badge.style.color = 'var(--green)';
+      disBtn.style.display = '';
+      disInfo.style.display = 'none';
+    } else {
+      badge.textContent = '🔓 Open';
+      badge.style.background = 'rgba(248,195,79,.12)';
+      badge.style.color = 'var(--yellow)';
+      disBtn.style.display = 'none';
+      disInfo.style.display = '';
+    }
+  } catch { /* ignore */ }
+}
+
+async function saveAuth() {
+  const p1 = document.getElementById('authPass').value;
+  const p2 = document.getElementById('authPass2').value;
+  if (!p1) { toast('Enter a password', 'err'); return; }
+  if (p1.length < 4) { toast('Min 4 characters', 'err'); return; }
+  if (p1 !== p2) { toast('Passwords do not match', 'err'); return; }
+  const r = await postJSON('/api/auth/save', { password: p1 });
+  if (r && r.ok) {
+    toast('Password saved — re-login required', 'ok');
+    document.getElementById('authPass').value  = '';
+    document.getElementById('authPass2').value = '';
+    await loadAuthStatus();
+  } else {
+    toast(r?.err || 'Error', 'err');
+  }
+}
+
+async function disableAuth() {
+  if (!confirm('Disable password protection? Anyone on the network will have access.')) return;
+  const r = await postJSON('/api/auth/disable', {});
+  if (r && r.ok) {
+    toast('Auth disabled', 'ok');
+    await loadAuthStatus();
+  } else {
+    toast('Error', 'err');
+  }
+}
+
+// ─────────────────────────────────────────────
 // WiFi
 // ─────────────────────────────────────────────
 async function saveWifi() {
@@ -538,17 +626,19 @@ function toast(msg, type) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.className = ''; }, 3000);
 }
-function toggleWifiPass() {
-  const input = document.getElementById('wPass');
-  const btn   = event.currentTarget;
-
+function togglePass(id, btn) {
+  const input = document.getElementById(id);
   if (input.type === 'password') {
     input.type = 'text';
-    btn.textContent = '🙈'; // hide
+    btn.textContent = '🙈';
   } else {
     input.type = 'password';
-    btn.textContent = '👁'; // view
+    btn.textContent = '👁';
   }
+}
+
+function toggleWifiPass() {
+  togglePass('wPass', event.currentTarget);
 }
 </script>
 </body>
