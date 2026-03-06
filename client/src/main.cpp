@@ -32,6 +32,6 @@ void setup() {
 
 void loop() {
     lora_loop();
-    mp3_loop();
-    delay(5);
+    // Audio needs frequent feeding — multiple calls per cycle, no delay
+    for (int i = 0; i < 8; i++) mp3_loop();
 }

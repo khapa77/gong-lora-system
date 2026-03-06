@@ -65,8 +65,13 @@ void mp3_stop() {
 
 void mp3_loop() {
     audio.loop();
-    // Silence idle to remove I2S hiss from MAX98357A when not playing
-    if (!audio.isRunning()) {
+    // Mute only after sustained silence to avoid glitches between DMA chunks
+    static uint8_t idleCount = 0;
+    if (audio.isRunning()) {
+        idleCount = 0;
+    } else if (idleCount < 20) {
+        idleCount++;
+    } else {
         audio.setVolume(0);
     }
 }
