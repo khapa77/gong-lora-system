@@ -4,6 +4,7 @@
 #include <RadioLib.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include "mbedtls/md.h"
 
 #define LORA_PAYLOAD_MAX 256
 
@@ -59,19 +60,61 @@ static void upsertClient(const String& id, int rssi) {
 }
 
 // -------------------------------------------------------
+// HMAC-SHA256: sign [type_byte | payload], return 8-byte hex (16 chars)
+// -------------------------------------------------------
+static String computeHMAC(uint8_t msgType, const String& payload) {
+    uint8_t hmac[32];
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+    mbedtls_md_hmac_starts(&ctx,
+        (const uint8_t*)LORA_HMAC_KEY, strlen(LORA_HMAC_KEY));
+    mbedtls_md_hmac_update(&ctx, &msgType, 1);
+    mbedtls_md_hmac_update(&ctx,
+        (const uint8_t*)payload.c_str(), payload.length());
+    mbedtls_md_hmac_finish(&ctx, hmac);
+    mbedtls_md_free(&ctx);
+    char hex[17];
+    for (int i = 0; i < 8; i++) snprintf(hex + i * 2, 3, "%02x", hmac[i]);
+    hex[16] = '\0';
+    return String(hex);
+}
+
+// Return unix timestamp; fallback to millis/1000 when NTP not synced
+static uint32_t nowTs() {
+    time_t t = time(nullptr);
+    return (t > 100000UL) ? (uint32_t)t : (uint32_t)(millis() / 1000);
+}
+
+// -------------------------------------------------------
 // Low-level send: packet = [type byte][payload string]
+// Signs GONG / HEARTBEAT / STOP before transmitting.
 // -------------------------------------------------------
 static void loraSend(uint8_t type, const String& payload) {
-    size_t len = 1 + (payload.length() < LORA_PAYLOAD_MAX ? payload.length() : LORA_PAYLOAD_MAX);
+    String finalPayload = payload;
+
+    if (type == MSG_GONG || type == MSG_HEARTBEAT || type == MSG_STOP) {
+        String sig = computeHMAC(type, payload);
+        // Append sig field before the closing '}'
+        finalPayload = payload.substring(0, payload.length() - 1)
+                       + ",\"sig\":\"" + sig + "\"}";
+    }
+
+    size_t plen = finalPayload.length();
+    if (plen > LORA_PAYLOAD_MAX) plen = LORA_PAYLOAD_MAX;
+    size_t len  = 1 + plen;
+
     uint8_t buf[LORA_PAYLOAD_MAX + 1];
     buf[0] = type;
-    memcpy(buf + 1, payload.c_str(), len - 1);
+    memcpy(buf + 1, finalPayload.c_str(), plen);
 
     int state = radio.transmit(buf, len);
     if (state != RADIOLIB_ERR_NONE) {
         Serial.printf("[LORA] TX failed: %d\n", state);
     } else {
-        Serial.printf("[LORA] TX type=0x%02X payload_len=%u\n", type, (unsigned)(len - 1));
+        Serial.printf("[LORA] TX type=0x%02X payload_len=%u signed=%s\n",
+            type, (unsigned)plen,
+            (type == MSG_GONG || type == MSG_HEARTBEAT || type == MSG_STOP) ? "yes" : "no");
     }
 
     radio.startReceive();  // return to RX mode after every TX
@@ -147,7 +190,7 @@ void lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop) {
     doc["track"] = track;
     doc["vol"]   = vol;
     doc["loop"]  = loop;
-    doc["ts"]    = (uint32_t)millis();
+    doc["ts"]    = nowTs();
     String s;
     serializeJson(doc, s);
     loraSend(MSG_GONG, s);
@@ -156,7 +199,11 @@ void lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop) {
 }
 
 void lora_sendStop() {
-    loraSend(MSG_STOP, "{}");
+    DynamicJsonDocument doc(64);
+    doc["ts"] = nowTs();
+    String s;
+    serializeJson(doc, s);
+    loraSend(MSG_STOP, s);
     Serial.println("[LORA] STOP broadcast");
 }
 
@@ -172,6 +219,7 @@ void lora_sendHeartbeat() {
         doc["time"] = "--:--:--";
     }
     doc["clients"] = cliCount;
+    doc["ts"]      = nowTs();
     String s;
     serializeJson(doc, s);
     loraSend(MSG_HEARTBEAT, s);

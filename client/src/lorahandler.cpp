@@ -4,6 +4,7 @@
 #include <SPI.h>
 #include <RadioLib.h>
 #include <ArduinoJson.h>
+#include "mbedtls/md.h"
 
 #define LORA_PAYLOAD_MAX 256
 
@@ -12,6 +13,60 @@
 // -------------------------------------------------------
 static Module mod(LORA_SS, LORA_DIO0, LORA_RST, RADIOLIB_NC);
 static SX1278 radio(&mod);
+
+// -------------------------------------------------------
+// HMAC verification (mirrors server implementation)
+// -------------------------------------------------------
+static String computeHMAC(uint8_t msgType, const String& payload) {
+    uint8_t hmac[32];
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+    mbedtls_md_hmac_starts(&ctx,
+        (const uint8_t*)LORA_HMAC_KEY, strlen(LORA_HMAC_KEY));
+    mbedtls_md_hmac_update(&ctx, &msgType, 1);
+    mbedtls_md_hmac_update(&ctx,
+        (const uint8_t*)payload.c_str(), payload.length());
+    mbedtls_md_hmac_finish(&ctx, hmac);
+    mbedtls_md_free(&ctx);
+    char hex[17];
+    for (int i = 0; i < 8; i++) snprintf(hex + i * 2, 3, "%02x", hmac[i]);
+    hex[16] = '\0';
+    return String(hex);
+}
+
+// Verify signature and replay protection.
+// doc is parsed payload; on success sig field is removed and ts is checked.
+// Returns true if packet is authentic and fresh.
+static uint32_t lastServerTs = 0;
+
+static bool verifyMsg(uint8_t type, DynamicJsonDocument& doc) {
+    String sig = doc["sig"] | "";
+    if (sig.length() == 0) {
+        Serial.printf("[LORA] No sig on 0x%02X — rejected\n", type);
+        return false;
+    }
+
+    // Reconstruct payload without sig (same field order as server sent)
+    doc.remove("sig");
+    String payload;
+    serializeJson(doc, payload);
+
+    if (sig != computeHMAC(type, payload)) {
+        Serial.printf("[LORA] Bad sig on 0x%02X — rejected\n", type);
+        return false;
+    }
+
+    // Replay check: ts must strictly increase
+    uint32_t ts = doc["ts"] | 0;
+    if (ts > 0 && ts <= lastServerTs) {
+        Serial.printf("[LORA] Replay ts=%u last=%u — rejected\n", ts, lastServerTs);
+        return false;
+    }
+    if (ts > 0) lastServerTs = ts;
+
+    return true;
+}
 
 // -------------------------------------------------------
 // Incoming message handlers
@@ -96,12 +151,23 @@ void lora_loop() {
     Serial.printf("[LORA] RX type=0x%02X len=%u RSSI=%d\n",
                   type, (unsigned)(len - 1), rssi);
 
+    // Verify HMAC signature on all command packets
+    if (type == MSG_GONG || type == MSG_HEARTBEAT || type == MSG_STOP) {
+        DynamicJsonDocument doc(512);
+        if (deserializeJson(doc, payload) || !verifyMsg(type, doc)) {
+            radio.startReceive();
+            return;
+        }
+        // Re-serialize without sig field for downstream handlers
+        serializeJson(doc, payload);
+    }
+
     switch (type) {
         case MSG_GONG:      handleGong(payload, rssi);      break;
         case MSG_HEARTBEAT: handleHeartbeat(payload, rssi); break;
         case MSG_SCHEDULE:  handleSchedule(payload);        break;
         case MSG_STOP:
-            Serial.println("[LORA] STOP received");
+            Serial.println("[LORA] STOP verified — stopping");
             mp3_stop();
             break;
         default:
