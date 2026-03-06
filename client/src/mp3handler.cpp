@@ -3,8 +3,10 @@
 #include <SPIFFS.h>
 #include <Audio.h>
 
-static Audio  audio;
-static uint8_t curVol = DEFAULT_VOLUME;
+static Audio    audio;
+static uint8_t  curVol    = DEFAULT_VOLUME;
+static bool     ramping   = false;
+static uint32_t rampStart = 0;
 
 // ESP32-audioI2S volume 0–21; we use 0–30 externally
 static void applyVolume() {
@@ -30,7 +32,7 @@ void mp3_setup() {
 void mp3_setVolume(uint8_t vol) {
     if (vol > 30) vol = 30;
     curVol = vol;
-    applyVolume();
+    if (!ramping) applyVolume();
     Serial.printf("[MP3] Volume = %d/30\n", curVol);
 }
 
@@ -49,8 +51,11 @@ void mp3_play(uint8_t track) {
         return;
     }
 
-    applyVolume();
+    // Start silent, ramp up after I2S bus has settled (~40 ms)
+    audio.setVolume(0);
     if (audio.connecttoFS(SPIFFS, path)) {
+        ramping   = true;
+        rampStart = millis();
         Serial.printf("[MP3] Playing: %s\n", path);
     } else {
         Serial.printf("[MP3] Failed to start: %s\n", path);
@@ -61,10 +66,20 @@ void mp3_stop() {
     if (audio.isRunning()) {
         audio.stopSong();
     }
+    ramping = false;
 }
 
 void mp3_loop() {
     audio.loop();
+
+    if (ramping) {
+        if (millis() - rampStart >= 40) {
+            applyVolume();
+            ramping = false;
+        }
+        return;
+    }
+
     // Mute only after sustained silence to avoid glitches between DMA chunks
     static uint8_t idleCount = 0;
     if (audio.isRunning()) {
