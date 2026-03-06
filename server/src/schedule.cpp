@@ -82,6 +82,7 @@ bool sched_add(uint8_t h, uint8_t m, const String& desc, uint8_t track, uint8_t 
     if (count >= MAX_SCHEDULES || h > 23 || m > 59) return false;
     if (track < 1 || track > 99) return false;
     if (loop < 1) loop = 1;
+    if (loop > 7) loop = 7;
     entries[count++] = { nextId++, h, m, track, loop, true, desc };
     sched_save();
     return true;
@@ -92,6 +93,7 @@ bool sched_edit(uint32_t id, uint8_t h, uint8_t m,
     if (h > 23 || m > 59) return false;
     if (track < 1 || track > 99) return false;
     if (loop < 1) loop = 1;
+    if (loop > 7) loop = 7;
     for (uint8_t i = 0; i < count; i++) {
         if (entries[i].id == id) {
             entries[i] = { id, h, m, track, loop, enabled, desc };
@@ -171,6 +173,7 @@ void sched_load() {
         if (track > 99) track = 99;
         uint8_t loop = o["loop"] | 1;
         if (loop < 1) loop = 1;
+    if (loop > 7) loop = 7;
         uint32_t id = o["id"] | nextId;
         entries[count++] = {
             id,
