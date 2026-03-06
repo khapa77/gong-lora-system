@@ -112,8 +112,9 @@ static void handleSchedulePOST() {
     uint8_t h     = doc["hour"]  | 0;
     uint8_t m     = doc["min"]   | 0;
     uint8_t track = doc["track"] | 1;
+    uint8_t loop  = doc["loop"]  | 1;
     String  desc  = doc["desc"]  | "";
-    if (sched_add(h, m, desc, track)) sendOK();
+    if (sched_add(h, m, desc, track, loop)) sendOK();
     else sendErr("failed (full or bad time)");
 }
 
@@ -126,9 +127,10 @@ static void handleSchedulePUT() {
     uint8_t h     = doc["hour"]  | 0;
     uint8_t m     = doc["min"]   | 0;
     uint8_t track = doc["track"] | 1;
+    uint8_t loop  = doc["loop"]  | 1;
     bool    en    = doc["en"]    | true;
     String  desc  = doc["desc"]  | "";
-    if (sched_edit(id, h, m, desc, track, en)) sendOK();
+    if (sched_edit(id, h, m, desc, track, loop, en)) sendOK();
     else sendErr("not found");
 }
 

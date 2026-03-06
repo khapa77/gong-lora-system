@@ -24,14 +24,15 @@ static void handleGong(const String& payload, int rssi) {
     }
     uint8_t track = doc["track"] | 1;
     uint8_t vol   = doc["vol"]   | DEFAULT_VOLUME;
+    uint8_t loop  = doc["loop"]  | 1;
 
-    Serial.printf("[LORA] GONG received! track=%d vol=%d RSSI=%d dBm\n",
-                  track, vol, rssi);
+    Serial.printf("[LORA] GONG received! track=%d vol=%d loop=%d RSSI=%d dBm\n",
+                  track, vol, loop, rssi);
 
     if (STATUS_LED >= 0) digitalWrite(STATUS_LED, HIGH);
 
     mp3_setVolume(vol);
-    mp3_play(track);
+    mp3_play(track, loop);
 
     lora_sendACK(rssi);
 }

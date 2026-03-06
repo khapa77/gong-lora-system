@@ -236,12 +236,13 @@ tr:hover td { background: rgba(79,158,248,.04); }
             <th>Time</th>
             <th>Description</th>
             <th>Track</th>
+            <th>Loop</th>
             <th>Status</th>
             <th style="text-align:right">Actions</th>
           </tr>
         </thead>
         <tbody id="schedBody">
-          <tr><td colspan="5" class="empty-row">Loading&#8230;</td></tr>
+          <tr><td colspan="6" class="empty-row">Loading&#8230;</td></tr>
         </tbody>
       </table>
     </div>
@@ -349,6 +350,10 @@ tr:hover td { background: rgba(79,158,248,.04); }
         <label>Track</label>
         <input type="number" id="mTrack" min="1" max="99" value="1">
       </div>
+      <div class="col form-group">
+        <label>Loop</label>
+        <input type="number" id="mLoop" min="1" max="99" value="1">
+      </div>
     </div>
     <div class="form-group">
       <label>Description</label>
@@ -429,7 +434,7 @@ async function loadSchedules() {
 function renderSchedule() {
   const tbody = document.getElementById('schedBody');
   if (!schedules.length) {
-    tbody.innerHTML = '<tr><td colspan="5" class="empty-row">No schedules yet. Click "+ Add".</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-row">No schedules yet. Click "+ Add".</td></tr>';
     return;
   }
   // Sort by time
@@ -439,6 +444,7 @@ function renderSchedule() {
       <td><span class="time-badge">${pad(s.hour)}:${pad(s.min)}</span></td>
       <td>${esc(s.desc)}</td>
       <td style="color:var(--muted)">&#127925;&nbsp;${s.track}</td>
+      <td style="color:var(--muted)">${s.loop > 1 ? '&#x21BA;&nbsp;' + s.loop : '1'}</td>
       <td><span class="tag ${s.en ? 'tag-on' : 'tag-off'}">${s.en ? 'ON' : 'OFF'}</span></td>
       <td style="text-align:right">
         <button class="btn btn-ghost btn-sm" onclick="openEditModal(${s.id})">Edit</button>
@@ -586,6 +592,7 @@ function openAddModal() {
   document.getElementById('mHour').value  = 8;
   document.getElementById('mMin').value   = 0;
   document.getElementById('mTrack').value = 1;
+  document.getElementById('mLoop').value  = 1;
   document.getElementById('mDesc').value  = '';
   document.getElementById('mEnRow').style.display = 'none';
   document.getElementById('overlay').classList.add('open');
@@ -599,6 +606,7 @@ function openEditModal(id) {
   document.getElementById('mHour').value    = s.hour;
   document.getElementById('mMin').value     = s.min;
   document.getElementById('mTrack').value   = s.track;
+  document.getElementById('mLoop').value    = s.loop || 1;
   document.getElementById('mDesc').value    = s.desc;
   document.getElementById('mEnabled').checked = s.en;
   document.getElementById('mEnRow').style.display = 'block';
@@ -614,6 +622,7 @@ async function saveModal() {
     hour:  parseInt(document.getElementById('mHour').value),
     min:   parseInt(document.getElementById('mMin').value),
     track: parseInt(document.getElementById('mTrack').value),
+    loop:  parseInt(document.getElementById('mLoop').value) || 1,
     desc:  document.getElementById('mDesc').value.trim(),
     en:    document.getElementById('mEnabled').checked
   };

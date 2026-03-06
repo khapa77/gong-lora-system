@@ -142,16 +142,17 @@ void lora_loop() {
 }
 
 // -------------------------------------------------------
-void lora_sendGong(uint8_t track, uint8_t vol) {
+void lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop) {
     DynamicJsonDocument doc(128);
     doc["track"] = track;
     doc["vol"]   = vol;
+    doc["loop"]  = loop;
     doc["ts"]    = (uint32_t)millis();
     String s;
     serializeJson(doc, s);
     loraSend(MSG_GONG, s);
-    Serial.printf("[LORA] GONG broadcast — track=%d vol=%d clients=%d\n",
-                  track, vol, cliCount);
+    Serial.printf("[LORA] GONG broadcast — track=%d vol=%d loop=%d clients=%d\n",
+                  track, vol, loop, cliCount);
 }
 
 void lora_sendHeartbeat() {
