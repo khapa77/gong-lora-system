@@ -69,6 +69,7 @@ GPIO25  ──── LRC   (Word Select)
 GPIO33  ──── DIN   (Data In)
 5V      ──── VDD
 GND     ──── GND
+3.3V    ──── SD
 ```
 ### Распиновка — CLIENT (ESP32 + LoRa + MAX98357A)
 
@@ -90,6 +91,7 @@ GPIO25  ──── LRC   (Word Select)
 GPIO33  ──── DIN   (Data In)
 5V      ──── VDD
 GND     ──── GND
+3.3V    ──── SD
 ```
 
 ### LoRa RF-параметры (сервер и клиент должны совпадать)
