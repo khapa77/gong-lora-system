@@ -15,6 +15,42 @@ static WiFiUDP ntpUDP;
 static NTPClient ntp(ntpUDP, NTP_SERVER, NTP_UTC_OFFSET);
 
 // -------------------------------------------------------
+// Auth
+// -------------------------------------------------------
+static bool   authEnabled  = false;
+static String authPassword = "";
+
+static void loadAuth() {
+    if (!SPIFFS.exists(AUTH_CONFIG_FILE)) return;
+    File f = SPIFFS.open(AUTH_CONFIG_FILE, "r");
+    if (!f) return;
+    DynamicJsonDocument doc(256);
+    if (!deserializeJson(doc, f)) {
+        authEnabled  = doc["enabled"]  | false;
+        authPassword = doc["password"] | String("");
+    }
+    f.close();
+    Serial.printf("[AUTH] %s\n", authEnabled ? "enabled" : "disabled");
+}
+
+static void saveAuth() {
+    File f = SPIFFS.open(AUTH_CONFIG_FILE, "w");
+    if (!f) return;
+    DynamicJsonDocument doc(256);
+    doc["enabled"]  = authEnabled;
+    doc["password"] = authPassword;
+    serializeJson(doc, f);
+    f.close();
+}
+
+static bool checkAuth() {
+    if (!authEnabled || authPassword.length() == 0) return true;
+    if (server.authenticate("admin", authPassword.c_str())) return true;
+    server.requestAuthentication(BASIC_AUTH, AUTH_REALM, "Login required");
+    return false;
+}
+
+// -------------------------------------------------------
 // Helpers
 // -------------------------------------------------------
 static void cors(WebServer& s) {
@@ -49,6 +85,7 @@ static void handleOptions() {
 // Static files
 // -------------------------------------------------------
 static void handleRoot() {
+    if (!checkAuth()) return;
     if (SPIFFS.exists("/index.html")) {
         File f = SPIFFS.open("/index.html", "r");
         server.streamFile(f, "text/html");
@@ -64,10 +101,12 @@ static void handleRoot() {
 // /api/schedule
 // -------------------------------------------------------
 static void handleScheduleGET() {
+    if (!checkAuth()) return;
     sendJSON(200, sched_toJSON());
 }
 
 static void handleSchedulePOST() {
+    if (!checkAuth()) return;
     DynamicJsonDocument doc(512);
     if (deserializeJson(doc, server.arg("plain"))) { sendErr("bad json"); return; }
     uint8_t h     = doc["hour"]  | 0;
@@ -79,6 +118,7 @@ static void handleSchedulePOST() {
 }
 
 static void handleSchedulePUT() {
+    if (!checkAuth()) return;
     uint32_t id = server.arg("id").toInt();
     if (!id) { sendErr("missing id"); return; }
     DynamicJsonDocument doc(512);
@@ -93,6 +133,7 @@ static void handleSchedulePUT() {
 }
 
 static void handleScheduleDELETE() {
+    if (!checkAuth()) return;
     uint32_t id = server.arg("id").toInt();
     if (!id) { sendErr("missing id"); return; }
     if (sched_del(id)) sendOK();
@@ -103,6 +144,7 @@ static void handleScheduleDELETE() {
 // /api/play  /api/play/lora  /api/play/all
 // -------------------------------------------------------
 static void handlePlayLocal() {
+    if (!checkAuth()) return;
     DynamicJsonDocument doc(128);
     deserializeJson(doc, server.arg("plain"));
     uint8_t track = doc["track"] | DEFAULT_TRACK;
@@ -113,6 +155,7 @@ static void handlePlayLocal() {
 }
 
 static void handlePlayLoRa() {
+    if (!checkAuth()) return;
     DynamicJsonDocument doc(128);
     deserializeJson(doc, server.arg("plain"));
     uint8_t track = doc["track"] | DEFAULT_TRACK;
@@ -122,6 +165,7 @@ static void handlePlayLoRa() {
 }
 
 static void handlePlayAll() {
+    if (!checkAuth()) return;
     DynamicJsonDocument doc(128);
     deserializeJson(doc, server.arg("plain"));
     uint8_t track = doc["track"] | DEFAULT_TRACK;
@@ -136,6 +180,7 @@ static void handlePlayAll() {
 // /api/sync  — push schedule to all LoRa clients
 // -------------------------------------------------------
 static void handleSync() {
+    if (!checkAuth()) return;
     lora_sendSchedule(sched_toJSON());
     sendOK();
 }
@@ -144,10 +189,12 @@ static void handleSync() {
 // /api/clients  /api/status
 // -------------------------------------------------------
 static void handleClients() {
+    if (!checkAuth()) return;
     sendJSON(200, lora_clientsJSON());
 }
 
 static void handleStatus() {
+    if (!checkAuth()) return;
     DynamicJsonDocument doc(256);
     doc["mode"]    = apMode ? "AP" : "STA";
     doc["ip"]      = apMode ? WiFi.softAPIP().toString()
@@ -169,6 +216,7 @@ static void handleStatus() {
 // /api/wifi/*
 // -------------------------------------------------------
 static void handleWiFiStatus() {
+    if (!checkAuth()) return;
     DynamicJsonDocument doc(256);
     doc["ap_mode"]   = apMode;
     doc["connected"] = (WiFi.status() == WL_CONNECTED);
@@ -181,6 +229,7 @@ static void handleWiFiStatus() {
 }
 
 static void handleWiFiSave() {
+    if (!checkAuth()) return;
     DynamicJsonDocument doc(256);
     if (deserializeJson(doc, server.arg("plain"))) { sendErr("bad json"); return; }
     String ssid = doc["ssid"] | "";
@@ -201,10 +250,45 @@ static void handleWiFiSave() {
 }
 
 static void handleWiFiReset() {
+    if (!checkAuth()) return;
     SPIFFS.remove(WIFI_CONFIG_FILE);
     sendOK();
     delay(500);
     ESP.restart();
+}
+
+// -------------------------------------------------------
+// /api/auth/*
+// -------------------------------------------------------
+static void handleAuthStatus() {
+    // No auth check — needed to show lock state in UI before login
+    DynamicJsonDocument doc(64);
+    doc["enabled"] = authEnabled;
+    String s;
+    serializeJson(doc, s);
+    sendJSON(200, s);
+}
+
+static void handleAuthSave() {
+    if (!checkAuth()) return;
+    DynamicJsonDocument doc(256);
+    if (deserializeJson(doc, server.arg("plain"))) { sendErr("bad json"); return; }
+    String pwd = doc["password"] | "";
+    if (pwd.length() < 4) { sendErr("password too short (min 4)"); return; }
+    authPassword = pwd;
+    authEnabled  = true;
+    saveAuth();
+    sendOK();
+    Serial.println("[AUTH] Password updated, auth enabled");
+}
+
+static void handleAuthDisable() {
+    if (!checkAuth()) return;
+    authEnabled  = false;
+    authPassword = "";
+    saveAuth();
+    sendOK();
+    Serial.println("[AUTH] Auth disabled");
 }
 
 static void handleNotFound() {
@@ -264,6 +348,8 @@ void web_setup() {
         wifi_startAP();
     }
 
+    loadAuth();
+
     // OPTIONS preflight for CORS
     server.on("/api/schedule",    HTTP_OPTIONS, handleOptions);
     server.on("/api/play",        HTTP_OPTIONS, handleOptions);
@@ -288,6 +374,10 @@ void web_setup() {
     server.on("/api/wifi/status", HTTP_GET,    handleWiFiStatus);
     server.on("/api/wifi/save",   HTTP_POST,   handleWiFiSave);
     server.on("/api/wifi/reset",  HTTP_POST,   handleWiFiReset);
+
+    server.on("/api/auth/status", HTTP_GET,    handleAuthStatus);
+    server.on("/api/auth/save",   HTTP_POST,   handleAuthSave);
+    server.on("/api/auth/disable",HTTP_POST,   handleAuthDisable);
 
     server.onNotFound(handleNotFound);
     server.begin();
