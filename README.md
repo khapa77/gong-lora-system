@@ -51,6 +51,9 @@
 
 ### Распиновка — SERVER (ESP32 + LoRa + MAX98357A)
 
+![Альтернативный текст](./images/lora_pinout.png)
+
+
 ```
 ESP32          LoRa SX1278          (VSPI, RadioLib)
 GPIO5   ──── NSS / CS
@@ -69,6 +72,7 @@ GPIO33  ──── DIN   (Data In)
 5V      ──── VDD
 GND     ──── GND
 ```
+![Альтернативный текст](путь_к_изображению)
 
 ### Распиновка — CLIENT (ESP32 + LoRa + MAX98357A)
 
