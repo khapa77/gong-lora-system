@@ -161,6 +161,16 @@ tr:hover td { background: rgba(79,158,248,.04); }
 #toast.show { opacity: 1; }
 #toast.ok  { background: var(--green); color: #0f1117; }
 #toast.err { background: var(--red);   color: #fff; }
+/* Collapsible cards */
+.collapse-btn {
+  background: none; border: none; cursor: pointer;
+  color: var(--muted); font-size: 1.1rem; padding: 2px 4px;
+  line-height: 1; transition: transform .25s, color .15s; flex-shrink: 0;
+}
+.collapse-btn:hover { color: var(--accent); }
+.card.collapsed .collapse-btn { transform: rotate(-90deg); }
+.card.collapsed .card-title { margin-bottom: 0; padding-bottom: 0; border-bottom-color: transparent; }
+.card.collapsed .card-body   { display: none; }
 @media (max-width: 600px) {
   .row { flex-direction: column; }
   header h1 { font-size: 1.1rem; }
@@ -182,115 +192,141 @@ tr:hover td { background: rgba(79,158,248,.04); }
 <div class="main">
 
   <!-- ── Manual Control ── -->
-  <div class="card">
-    <div class="card-title">Manual Control</div>
-    <div class="row">
-      <div class="col">
-        <label>Track</label>
-        <input type="number" id="ctrlTrack" value="1" min="1" max="99">
-      </div>
-      <div class="col">
-        <label>Volume <span id="ctrlVolVal">30</span> / 30</label>
-        <div class="range-row">
-          <input type="range" id="ctrlVol" min="0" max="30" value="30"
-                 oninput="document.getElementById('ctrlVolVal').textContent=this.value">
+  <div class="card" id="sectionControl">
+    <div class="card-title">
+      Manual Control
+      <button class="collapse-btn" onclick="toggleCard('sectionControl')">&#9662;</button>
+    </div>
+    <div class="card-body">
+      <div class="row">
+        <div class="col">
+          <label>Track</label>
+          <input type="number" id="ctrlTrack" value="1" min="1" max="99">
+        </div>
+        <div class="col">
+          <label>Volume <span id="ctrlVolVal">30</span> / 30</label>
+          <div class="range-row">
+            <input type="range" id="ctrlVol" min="0" max="30" value="30"
+                   oninput="document.getElementById('ctrlVolVal').textContent=this.value">
+          </div>
         </div>
       </div>
-    </div>
-    <div class="btn-group">
-      <button class="btn btn-primary" onclick="playLocal()">&#9654; Local</button>
-      <button class="btn btn-yellow"  onclick="playLoRa()">&#128246; LoRa broadcast</button>
-      <button class="btn btn-green"   onclick="playAll()">&#127925; All (Local + LoRa)</button>
-      <button class="btn btn-ghost"   onclick="syncSchedule()" title="Push schedule to all clients">&#8635; Sync Schedule</button>
+      <div class="btn-group">
+        <button class="btn btn-primary" onclick="playLocal()">&#9654; Local</button>
+        <button class="btn btn-yellow"  onclick="playLoRa()">&#128246; LoRa broadcast</button>
+        <button class="btn btn-green"   onclick="playAll()">&#127925; All (Local + LoRa)</button>
+        <button class="btn btn-ghost"   onclick="syncSchedule()" title="Push schedule to all clients">&#8635; Sync Schedule</button>
+      </div>
     </div>
   </div>
 
   <!-- ── Schedule ── -->
-  <div class="card">
+  <div class="card" id="sectionSchedule">
     <div class="card-title">
       Schedule
-      <button class="btn btn-primary btn-sm" onclick="openAddModal()">+ Add</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-primary btn-sm" onclick="openAddModal()">+ Add</button>
+        <button class="collapse-btn" onclick="toggleCard('sectionSchedule')">&#9662;</button>
+      </div>
     </div>
-    <table>
-      <thead>
-        <tr>
-          <th>Time</th>
-          <th>Description</th>
-          <th>Track</th>
-          <th>Status</th>
-          <th style="text-align:right">Actions</th>
-        </tr>
-      </thead>
-      <tbody id="schedBody">
-        <tr><td colspan="5" class="empty-row">Loading&#8230;</td></tr>
-      </tbody>
-    </table>
+    <div class="card-body">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Description</th>
+            <th>Track</th>
+            <th>Status</th>
+            <th style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="schedBody">
+          <tr><td colspan="5" class="empty-row">Loading&#8230;</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 
   <!-- ── LoRa Clients ── -->
-  <div class="card">
-    <div class="card-title">LoRa Clients <span id="cliCount" style="color:var(--muted);font-size:.8rem"></span></div>
-    <div id="clientGrid" class="client-grid">
-      <p style="color:var(--muted);font-size:.85rem">No clients seen yet. Clients appear after first ACK.</p>
+  <div class="card" id="sectionClients">
+    <div class="card-title">
+      LoRa Clients <span id="cliCount" style="color:var(--muted);font-size:.8rem"></span>
+      <button class="collapse-btn" onclick="toggleCard('sectionClients')">&#9662;</button>
+    </div>
+    <div class="card-body">
+      <div id="clientGrid" class="client-grid">
+        <p style="color:var(--muted);font-size:.85rem">No clients seen yet. Clients appear after first ACK.</p>
+      </div>
     </div>
   </div>
 
   <!-- ── Security ── -->
-  <div class="card">
+  <div class="card" id="sectionSecurity">
     <div class="card-title">
       Security
-      <span id="authBadge" class="tag" style="font-size:.75rem"></span>
-    </div>
-    <div id="authDisabledInfo" style="color:var(--muted);font-size:.85rem;margin-bottom:14px;display:none">
-      Web admin is open — anyone on the network can access it.
-    </div>
-    <div class="row">
-      <div class="col form-group">
-        <label>New password <span style="color:var(--muted)">(min 4 chars)</span></label>
-        <div class="pwd-wrap">
-          <input type="password" id="authPass" placeholder="Enter new password">
-          <button type="button" class="pwd-btn" onclick="togglePass('authPass',this)">👁</button>
-        </div>
-      </div>
-      <div class="col form-group">
-        <label>Confirm password</label>
-        <div class="pwd-wrap">
-          <input type="password" id="authPass2" placeholder="Repeat password">
-          <button type="button" class="pwd-btn" onclick="togglePass('authPass2',this)">👁</button>
-        </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="authBadge" class="tag" style="font-size:.75rem"></span>
+        <button class="collapse-btn" onclick="toggleCard('sectionSecurity')">&#9662;</button>
       </div>
     </div>
-    <div class="btn-group">
-      <button class="btn btn-primary" onclick="saveAuth()">🔒 Set Password</button>
-      <button class="btn btn-red btn-sm" id="authDisableBtn" onclick="disableAuth()" style="display:none">Disable Auth</button>
+    <div class="card-body">
+      <div id="authDisabledInfo" style="color:var(--muted);font-size:.85rem;margin-bottom:14px;display:none">
+        Web admin is open — anyone on the network can access it.
+      </div>
+      <div class="row">
+        <div class="col form-group">
+          <label>New password <span style="color:var(--muted)">(min 4 chars)</span></label>
+          <div class="pwd-wrap">
+            <input type="password" id="authPass" placeholder="Enter new password">
+            <button type="button" class="pwd-btn" onclick="togglePass('authPass',this)">👁</button>
+          </div>
+        </div>
+        <div class="col form-group">
+          <label>Confirm password</label>
+          <div class="pwd-wrap">
+            <input type="password" id="authPass2" placeholder="Repeat password">
+            <button type="button" class="pwd-btn" onclick="togglePass('authPass2',this)">👁</button>
+          </div>
+        </div>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-primary" onclick="saveAuth()">🔒 Set Password</button>
+        <button class="btn btn-red btn-sm" id="authDisableBtn" onclick="disableAuth()" style="display:none">Disable Auth</button>
+      </div>
+      <p style="color:var(--muted);font-size:.78rem;margin-top:10px">
+        Login: <b>admin</b> / your password. Stored on device, cleared only with "Disable Auth".
+      </p>
     </div>
-    <p style="color:var(--muted);font-size:.78rem;margin-top:10px">
-      Login: <b>admin</b> / your password. Stored on device, cleared only with "Disable Auth".
-    </p>
   </div>
 
   <!-- ── WiFi Settings ── -->
-  <div class="card">
-    <div class="card-title">WiFi Settings</div>
-    <div class="row">
-      <div class="col">
-        <div class="form-group">
-          <label>SSID</label>
-          <input type="text" id="wSSID" placeholder="Network name">
-        </div>
-      </div>
-    <div class="col">
-      <div class="form-group">
-        <label>Password</label>
-        <div class="pwd-wrap">
-          <input type="password" id="wPass" placeholder="Password">
-          <button type="button" class="pwd-btn" onclick="toggleWifiPass()">👁</button>
-        </div>
-      </div>
+  <div class="card" id="sectionWifi">
+    <div class="card-title">
+      WiFi Settings
+      <button class="collapse-btn" onclick="toggleCard('sectionWifi')">&#9662;</button>
     </div>
-       <div class="btn-group">
-      <button class="btn btn-primary" onclick="saveWifi()">Save & Restart</button>
-      <button class="btn btn-red"     onclick="resetWifi()">Reset WiFi</button>
+    <div class="card-body">
+      <div class="row">
+        <div class="col">
+          <div class="form-group">
+            <label>SSID</label>
+            <input type="text" id="wSSID" placeholder="Network name">
+          </div>
+        </div>
+        <div class="col">
+          <div class="form-group">
+            <label>Password</label>
+            <div class="pwd-wrap">
+              <input type="password" id="wPass" placeholder="Password">
+              <button type="button" class="pwd-btn" onclick="toggleWifiPass()">👁</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-primary" onclick="saveWifi()">Save & Restart</button>
+        <button class="btn btn-red"     onclick="resetWifi()">Reset WiFi</button>
+      </div>
     </div>
   </div>
 
@@ -344,6 +380,7 @@ let editId    = null;
 // Init
 // ─────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  initCards();
   refreshAll();
   setInterval(refreshAll, 5000);
   setInterval(updateClock, 1000);
@@ -610,6 +647,23 @@ async function postJSON(url, body, method = 'POST') {
     });
     return await r.json();
   } catch { return null; }
+}
+
+// ─────────────────────────────────────────────
+// Collapsible cards
+// ─────────────────────────────────────────────
+const CARD_IDS = ['sectionControl','sectionSchedule','sectionClients','sectionSecurity','sectionWifi'];
+
+function initCards() {
+  CARD_IDS.forEach(id => {
+    if (localStorage.getItem('card_' + id) === '1')
+      document.getElementById(id).classList.add('collapsed');
+  });
+}
+
+function toggleCard(id) {
+  const collapsed = document.getElementById(id).classList.toggle('collapsed');
+  localStorage.setItem('card_' + id, collapsed ? '1' : '0');
 }
 
 function pad(n) { return String(n).padStart(2, '0'); }
