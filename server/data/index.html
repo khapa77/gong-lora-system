@@ -215,6 +215,7 @@ tr:hover td { background: rgba(79,158,248,.04); }
         <button class="btn btn-primary" onclick="playLocal()">&#9654; Local</button>
         <button class="btn btn-yellow"  onclick="playLoRa()">&#128246; LoRa broadcast</button>
         <button class="btn btn-green"   onclick="playAll()">&#127925; All (Local + LoRa)</button>
+        <button class="btn btn-red"     onclick="stopAll()">&#9646;&#9646; Stop</button>
         <button class="btn btn-ghost"   onclick="syncSchedule()" title="Push schedule to all clients">&#8635; Sync Schedule</button>
       </div>
     </div>
@@ -504,6 +505,11 @@ async function playLoRa() {
 }
 async function playAll() {
   await postJSON('/api/play/all',  ctrlParams()); toast('Playing everywhere', 'ok');
+}
+async function stopAll() {
+  const r = await fetch('/api/stop', { method: 'POST' });
+  if (r.ok) toast('Stopped', 'ok');
+  else      toast('Stop failed', 'err');
 }
 async function syncSchedule() {
   const r = await fetch('/api/sync', { method: 'POST' });

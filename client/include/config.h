@@ -23,6 +23,7 @@
 #define MSG_HEARTBEAT  0x02
 #define MSG_SCHEDULE   0x03
 #define MSG_ACK        0x04
+#define MSG_STOP       0x05
 
 // I2S pins for MAX98357A
 #define I2S_BCLK       26   // Bit Clock
