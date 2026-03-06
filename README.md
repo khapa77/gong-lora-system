@@ -30,10 +30,11 @@
 
 | Тип | Hex | Направление | JSON пример |
 |-----|-----|-------------|-------------|
-| GONG | `0x01` | Server → Clients | `{"track":1,"vol":25,"ts":12345}` |
+| GONG | `0x01` | Server → Clients | `{"track":1,"vol":25,"loop":3,"ts":12345}` |
 | HEARTBEAT | `0x02` | Server → Clients | `{"time":"08:00:15","clients":3}` |
 | SCHEDULE | `0x03` | Server → Clients | `[{"id":1,"hour":8,"min":0,...}]` |
 | ACK | `0x04` | Client → Server | `{"id":"client_001","rssi":-52}` |
+| STOP | `0x05` | Server → Clients | `{}` |
 
 ---
 
@@ -158,34 +159,48 @@ pio run -t uploadfs
 
 `http://<SERVER_IP>/`
 
-- **Manual Control** — запустить звонок локально / по LoRa / везде
-- **Schedule** — добавить/редактировать/удалить расписание. Будильник срабатывает только при **подключении к роутеру (WiFi STA)** и после синхронизации NTP (1–2 мин). В режиме точки доступа (AP) расписание не проверяется. В Serial выводится `[SCHED] Time HH:MM` раз в минуту — сверь с локальным временем; если не совпадает, задай `NTP_UTC_OFFSET` в `server/src/config.h` (например, 10800 для UTC+3).
-- **LoRa Clients** — видит все клиенты, их RSSI и время последнего ответа
+Все секции сворачиваются/разворачиваются кликом по заголовку. Состояние сохраняется в `localStorage`.
+
+- **Manual Control** — выбор трека и громкости, кнопки:
+  - **Local** — воспроизвести локально на сервере
+  - **LoRa broadcast** — отправить команду всем клиентам
+  - **All (Local + LoRa)** — воспроизвести везде одновременно
+  - **Stop** — остановить воспроизведение на сервере и на всех клиентах
+  - **Sync Schedule** — принудительно разослать расписание по LoRa
+- **Schedule** — добавить/редактировать/удалить записи расписания. Поля: час, минута, трек, loop (1–7 повторов), описание, включён/выключен. Срабатывает только при **подключении к роутеру (WiFi STA)** и после синхронизации NTP (1–2 мин). В режиме AP расписание не проверяется. Часовой пояс задаётся через `NTP_UTC_OFFSET` в `server/src/config.h` (например, `10800` для UTC+3).
+- **LoRa Clients** — все активные клиенты, их RSSI и время последнего ответа
+- **Security** — установка пароля на веб-интерфейс (HTTP Basic Auth). Логин всегда `admin`. Пароль хранится в SPIFFS (`/auth.conf`). Аутентификация отключается кнопкой «Disable Auth».
 - **WiFi Settings** — смена сети без перепрошивки
-- **Sync Schedule** — принудительно разослать расписание всем клиентам
 
 ---
 
 ## REST API
 
 ```
-GET  /api/schedule          — список записей расписания
-POST /api/schedule          — добавить  {hour, min, track, desc}
-PUT  /api/schedule?id=N     — изменить  {hour, min, track, desc, en}
-DELETE /api/schedule?id=N   — удалить
+GET    /api/schedule          — список записей расписания
+POST   /api/schedule          — добавить  {hour, min, track, loop, desc}
+PUT    /api/schedule?id=N     — изменить  {hour, min, track, loop, desc, en}
+DELETE /api/schedule?id=N     — удалить
 
-POST /api/play              — играть локально    {track, vol}
-POST /api/play/lora         — LoRa broadcast     {track, vol}
-POST /api/play/all          — локально + LoRa    {track, vol}
-POST /api/sync              — разослать расписание по LoRa
+POST   /api/play              — играть локально    {track, vol}
+POST   /api/play/lora         — LoRa broadcast     {track, vol}
+POST   /api/play/all          — локально + LoRa    {track, vol}
+POST   /api/stop              — стоп локально + LoRa broadcast
+POST   /api/sync              — разослать расписание по LoRa
 
-GET  /api/clients           — список известных клиентов
-GET  /api/status            — статус сервера
+GET    /api/clients           — список известных клиентов
+GET    /api/status            — статус сервера (режим, IP, heap, uptime, ntp_time)
 
-GET  /api/wifi/status       — статус WiFi
-POST /api/wifi/save         — {ssid, password}
-POST /api/wifi/reset        — сброс WiFi
+GET    /api/wifi/status       — статус WiFi
+POST   /api/wifi/save         — {ssid, password}
+POST   /api/wifi/reset        — сброс WiFi → перезагрузка в AP-режиме
+
+GET    /api/auth/status       — {"enabled": true/false}
+POST   /api/auth/save         — {password}  (мин. 4 символа)
+POST   /api/auth/disable      — отключить аутентификацию
 ```
+
+> Все эндпоинты кроме `/api/auth/status` защищены HTTP Basic Auth, если он включён (логин `admin`).
 
 ---
 
