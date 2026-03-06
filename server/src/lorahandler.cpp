@@ -155,6 +155,11 @@ void lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop) {
                   track, vol, loop, cliCount);
 }
 
+void lora_sendStop() {
+    loraSend(MSG_STOP, "{}");
+    Serial.println("[LORA] STOP broadcast");
+}
+
 void lora_sendHeartbeat() {
     DynamicJsonDocument doc(128);
     struct tm ti;

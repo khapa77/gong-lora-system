@@ -7,6 +7,9 @@ void   lora_loop();
 // Broadcast GONG command to all listening clients
 void   lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop = 1);
 
+// Broadcast STOP command to all listening clients
+void   lora_sendStop();
+
 // Broadcast heartbeat with current server time
 void   lora_sendHeartbeat();
 

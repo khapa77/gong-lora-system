@@ -100,6 +100,10 @@ void lora_loop() {
         case MSG_GONG:      handleGong(payload, rssi);      break;
         case MSG_HEARTBEAT: handleHeartbeat(payload, rssi); break;
         case MSG_SCHEDULE:  handleSchedule(payload);        break;
+        case MSG_STOP:
+            Serial.println("[LORA] STOP received");
+            mp3_stop();
+            break;
         default:
             Serial.printf("[LORA] Unknown type 0x%02X\n", type);
     }

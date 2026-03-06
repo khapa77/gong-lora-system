@@ -179,6 +179,16 @@ static void handlePlayAll() {
 }
 
 // -------------------------------------------------------
+// /api/stop  — stop playback locally and on all LoRa clients
+// -------------------------------------------------------
+static void handleStop() {
+    if (!checkAuth()) return;
+    mp3_stop();
+    lora_sendStop();
+    sendOK();
+}
+
+// -------------------------------------------------------
 // /api/sync  — push schedule to all LoRa clients
 // -------------------------------------------------------
 static void handleSync() {
@@ -357,6 +367,7 @@ void web_setup() {
     server.on("/api/play",        HTTP_OPTIONS, handleOptions);
     server.on("/api/play/lora",   HTTP_OPTIONS, handleOptions);
     server.on("/api/play/all",    HTTP_OPTIONS, handleOptions);
+    server.on("/api/stop",        HTTP_OPTIONS, handleOptions);
     server.on("/api/sync",        HTTP_OPTIONS, handleOptions);
 
     // Routes
@@ -370,6 +381,7 @@ void web_setup() {
     server.on("/api/play/lora",   HTTP_POST,   handlePlayLoRa);
     server.on("/api/play/all",    HTTP_POST,   handlePlayAll);
 
+    server.on("/api/stop",        HTTP_POST,   handleStop);
     server.on("/api/sync",        HTTP_POST,   handleSync);
     server.on("/api/clients",     HTTP_GET,    handleClients);
     server.on("/api/status",      HTTP_GET,    handleStatus);
