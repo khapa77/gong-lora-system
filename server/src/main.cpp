@@ -13,11 +13,11 @@ static unsigned long lastSchedCheck   = 0;
 // Called when a schedule entry fires
 // Plays locally AND broadcasts to all LoRa clients
 // -------------------------------------------------------
-static void onGongFire(uint8_t track) {
-    Serial.printf("[MAIN] Schedule fired: track=%d\n", track);
+static void onGongFire(uint8_t track, uint8_t loop) {
+    Serial.printf("[MAIN] Schedule fired: track=%d loop=%d\n", track, loop);
     mp3_setVolume(DEFAULT_VOLUME);
-    mp3_play(track);
-    lora_sendGong(track, DEFAULT_VOLUME);
+    mp3_play(track, loop);
+    lora_sendGong(track, DEFAULT_VOLUME, loop);
 }
 
 void setup() {
