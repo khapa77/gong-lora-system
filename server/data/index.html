@@ -162,15 +162,12 @@ tr:hover td { background: rgba(79,158,248,.04); }
 #toast.ok  { background: var(--green); color: #0f1117; }
 #toast.err { background: var(--red);   color: #fff; }
 /* Collapsible cards */
-.card-title { cursor: pointer; user-select: none; }
 .collapse-btn {
-  background: var(--border); border: none; cursor: pointer;
-  color: var(--text); font-size: .75rem; font-weight: 700;
-  width: 26px; height: 26px; border-radius: 6px;
-  display: inline-flex; align-items: center; justify-content: center;
-  transition: transform .25s, background .15s; flex-shrink: 0;
+  background: none; border: none; cursor: pointer;
+  color: var(--muted); font-size: 1.1rem; padding: 2px 4px;
+  line-height: 1; transition: transform .25s, color .15s; flex-shrink: 0;
 }
-.collapse-btn:hover { background: var(--accent); color: #fff; }
+.collapse-btn:hover { color: var(--accent); }
 .card.collapsed .collapse-btn { transform: rotate(-90deg); }
 .card.collapsed .card-title { margin-bottom: 0; padding-bottom: 0; border-bottom-color: transparent; }
 .card.collapsed .card-body   { display: none; }
@@ -198,7 +195,7 @@ tr:hover td { background: rgba(79,158,248,.04); }
   <div class="card" id="sectionControl">
     <div class="card-title">
       Manual Control
-      <button class="collapse-btn" onclick="toggleCard('sectionControl')">▼</button>
+      <button class="collapse-btn" onclick="toggleCard('sectionControl')">&#9662;</button>
     </div>
     <div class="card-body">
       <div class="row">
@@ -229,7 +226,7 @@ tr:hover td { background: rgba(79,158,248,.04); }
       Schedule
       <div style="display:flex;gap:8px;align-items:center">
         <button class="btn btn-primary btn-sm" onclick="openAddModal()">+ Add</button>
-        <button class="collapse-btn" onclick="toggleCard('sectionSchedule')">▼</button>
+        <button class="collapse-btn" onclick="toggleCard('sectionSchedule')">&#9662;</button>
       </div>
     </div>
     <div class="card-body">
@@ -254,7 +251,7 @@ tr:hover td { background: rgba(79,158,248,.04); }
   <div class="card" id="sectionClients">
     <div class="card-title">
       LoRa Clients <span id="cliCount" style="color:var(--muted);font-size:.8rem"></span>
-      <button class="collapse-btn" onclick="toggleCard('sectionClients')">▼</button>
+      <button class="collapse-btn" onclick="toggleCard('sectionClients')">&#9662;</button>
     </div>
     <div class="card-body">
       <div id="clientGrid" class="client-grid">
@@ -269,7 +266,7 @@ tr:hover td { background: rgba(79,158,248,.04); }
       Security
       <div style="display:flex;gap:8px;align-items:center">
         <span id="authBadge" class="tag" style="font-size:.75rem"></span>
-        <button class="collapse-btn" onclick="toggleCard('sectionSecurity')">▼</button>
+        <button class="collapse-btn" onclick="toggleCard('sectionSecurity')">&#9662;</button>
       </div>
     </div>
     <div class="card-body">
@@ -306,7 +303,7 @@ tr:hover td { background: rgba(79,158,248,.04); }
   <div class="card" id="sectionWifi">
     <div class="card-title">
       WiFi Settings
-      <button class="collapse-btn" onclick="toggleCard('sectionWifi')">▼</button>
+      <button class="collapse-btn" onclick="toggleCard('sectionWifi')">&#9662;</button>
     </div>
     <div class="card-body">
       <div class="row">
