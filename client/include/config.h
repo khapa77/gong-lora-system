@@ -34,3 +34,6 @@
 #define STATUS_LED     -1
 
 #define DEFAULT_VOLUME 25
+
+// LoRa HMAC-подпись — должен совпадать с сервером!
+#define LORA_HMAC_KEY  "change_me_before_deploy_32chars!"

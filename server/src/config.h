@@ -45,6 +45,11 @@
 #define AUTH_CONFIG_FILE  "/auth.conf"
 #define AUTH_REALM        "Gong Server"
 
+// ── LoRa HMAC-подпись ─────────────────────────────────────────────────────
+// Секретный ключ — одинаковый на сервере и на ВСЕХ клиентах.
+// Смените перед развёртыванием (минимум 16 символов)!
+#define LORA_HMAC_KEY           "change_me_before_deploy_32chars!"
+
 // ── Тайминги ──────────────────────────────────────────────────────────────
 #define HEARTBEAT_INTERVAL_MS   30000UL
 #define CLIENT_TIMEOUT_MS       90000UL
