@@ -40,6 +40,10 @@
 #define MAX_SCHEDULES     32
 #define SCHEDULE_FILE     "/gong.conf"
 
+// ── Аутентификация веб-админки ────────────────────────────────────────────
+#define AUTH_CONFIG_FILE  "/auth.conf"
+#define AUTH_REALM        "Gong Server"
+
 // ── Тайминги ──────────────────────────────────────────────────────────────
 #define HEARTBEAT_INTERVAL_MS   30000UL
 #define CLIENT_TIMEOUT_MS       90000UL
