@@ -180,6 +180,33 @@ static void handlePlayAll() {
 }
 
 // -------------------------------------------------------
+// /api/time  — set system time manually (for AP / no-NTP mode)
+// -------------------------------------------------------
+static void handleTimeSet() {
+    if (!checkAuth()) return;
+    DynamicJsonDocument doc(128);
+    if (deserializeJson(doc, server.arg("plain"))) { sendErr("bad json"); return; }
+    int h = doc["hour"] | -1;
+    int m = doc["min"]  | -1;
+    if (h < 0 || h > 23 || m < 0 || m > 59) { sendErr("invalid time"); return; }
+
+    // Set ESP32 system clock; use 2024-01-01 as date (only HH:MM matters for schedule)
+    struct tm ti = {};
+    ti.tm_year = 124;   // 2024
+    ti.tm_mon  = 0;
+    ti.tm_mday = 1;
+    ti.tm_hour = h;
+    ti.tm_min  = m;
+    ti.tm_sec  = 0;
+    time_t t = mktime(&ti);
+    struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
+    settimeofday(&tv, nullptr);
+
+    sendOK();
+    Serial.printf("[TIME] Manual time set: %02d:%02d\n", h, m);
+}
+
+// -------------------------------------------------------
 // /api/stop  — stop playback locally and on all LoRa clients
 // -------------------------------------------------------
 static void handleStop() {
@@ -218,7 +245,19 @@ static void handleStatus() {
     doc["uptime"]  = (uint32_t)(millis() / 1000);
     if (WiFi.status() == WL_CONNECTED) {
         ntp.update();
-        doc["ntp_time"] = ntp.getFormattedTime();
+        doc["ntp_time"]    = ntp.getFormattedTime();
+        doc["time_source"] = "ntp";
+    } else {
+        struct tm ti;
+        if (getLocalTime(&ti) && ti.tm_year >= 124) {
+            char tbuf[9];
+            snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d",
+                     ti.tm_hour, ti.tm_min, ti.tm_sec);
+            doc["ntp_time"]    = tbuf;
+            doc["time_source"] = "manual";
+        } else {
+            doc["time_source"] = "none";
+        }
     }
     String s;
     serializeJson(doc, s);
@@ -368,6 +407,7 @@ void web_setup() {
     server.on("/api/play",        HTTP_OPTIONS, handleOptions);
     server.on("/api/play/lora",   HTTP_OPTIONS, handleOptions);
     server.on("/api/play/all",    HTTP_OPTIONS, handleOptions);
+    server.on("/api/time",        HTTP_OPTIONS, handleOptions);
     server.on("/api/stop",        HTTP_OPTIONS, handleOptions);
     server.on("/api/sync",        HTTP_OPTIONS, handleOptions);
 
@@ -382,6 +422,7 @@ void web_setup() {
     server.on("/api/play/lora",   HTTP_POST,   handlePlayLoRa);
     server.on("/api/play/all",    HTTP_POST,   handlePlayAll);
 
+    server.on("/api/time",        HTTP_POST,   handleTimeSet);
     server.on("/api/stop",        HTTP_POST,   handleStop);
     server.on("/api/sync",        HTTP_POST,   handleSync);
     server.on("/api/clients",     HTTP_GET,    handleClients);
