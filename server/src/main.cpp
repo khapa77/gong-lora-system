@@ -15,9 +15,11 @@ static unsigned long lastSchedCheck   = 0;
 // -------------------------------------------------------
 static void onGongFire(uint8_t track, uint8_t loop) {
     Serial.printf("[MAIN] Schedule fired: track=%d loop=%d\n", track, loop);
+    // Send LoRa FIRST (blocking TX ~170ms), then start local playback.
+    // Both server and client will begin audio after TX completes → in sync.
+    lora_sendGong(track, DEFAULT_VOLUME, loop);
     mp3_setVolume(DEFAULT_VOLUME);
     mp3_play(track, loop);
-    lora_sendGong(track, DEFAULT_VOLUME, loop);
 }
 
 void setup() {

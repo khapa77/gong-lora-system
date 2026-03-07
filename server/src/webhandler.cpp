@@ -172,9 +172,10 @@ static void handlePlayAll() {
     deserializeJson(doc, server.arg("plain"));
     uint8_t track = doc["track"] | DEFAULT_TRACK;
     uint8_t vol   = doc["vol"]   | DEFAULT_VOLUME;
+    // LoRa TX first (blocking), then local — both start audio in sync
+    lora_sendGong(track, vol);
     mp3_setVolume(vol);
     mp3_play(track);
-    lora_sendGong(track, vol);
     sendOK();
 }
 
