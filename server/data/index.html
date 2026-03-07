@@ -479,9 +479,13 @@ async function loadClients() {
       const sec  = Math.round(c.seen_ms / 1000);
       const seen = sec < 60 ? sec + 's ago' : Math.round(sec / 60) + 'm ago';
       const cls  = c.rssi > -60 ? 'rssi-good' : c.rssi > -80 ? 'rssi-ok' : 'rssi-bad';
+      const rttStr = c.rtt_ms > 0
+        ? `RTT: ${c.rtt_ms}ms &nbsp;|&nbsp; &#8594; ${c.one_way_ms}ms`
+        : 'RTT: measuring&hellip;';
       return `<div class="client-card">
         <div class="client-name">&#128246; ${esc(c.id)}</div>
         <div class="client-meta ${cls}">RSSI: ${c.rssi} dBm</div>
+        <div class="client-meta">${rttStr}</div>
         <div class="client-meta">Last seen: ${seen}</div>
       </div>`;
     }).join('');

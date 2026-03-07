@@ -23,18 +23,39 @@ struct ClientInfo {
     String   id;
     int      rssi;
     uint32_t lastSeenMs;
+    uint32_t rttMs;      // smoothed round-trip time (ms), 0 = not yet measured
+    uint32_t oneWayMs;   // estimated one-way propagation delay = (rtt - ack_delay) / 2
 };
 
 static ClientInfo clients[MAX_CLIENTS];
 static uint8_t    cliCount = 0;
 
-static void upsertClient(const String& id, int rssi) {
+// Timestamp of the last heartbeat TX — used to compute RTT when ACK arrives
+static uint32_t lastHeartbeatSentMs = 0;
+
+// Average random delay the client adds before sending ACK (random(10,80) → avg 45ms)
+static const uint32_t ACK_RANDOM_DELAY_AVG_MS = 45;
+
+static void upsertClient(const String& id, int rssi, uint32_t rtt) {
     unsigned long now = millis();
 
     for (uint8_t i = 0; i < cliCount; i++) {
         if (clients[i].id == id) {
             clients[i].rssi       = rssi;
             clients[i].lastSeenMs = now;
+            // Update RTT only when we have a valid heartbeat timestamp
+            if (rtt > 0) {
+                // Subtract average ACK random delay to get true RTT
+                uint32_t trueRtt = (rtt > ACK_RANDOM_DELAY_AVG_MS)
+                                   ? rtt - ACK_RANDOM_DELAY_AVG_MS : 0;
+                // Exponential moving average (α ≈ 0.3)
+                clients[i].rttMs    = (clients[i].rttMs == 0)
+                                      ? trueRtt
+                                      : (clients[i].rttMs * 7 + trueRtt * 3) / 10;
+                clients[i].oneWayMs = clients[i].rttMs / 2;
+                Serial.printf("[LORA] RTT '%s': raw=%ums true=%ums one-way=%ums\n",
+                              id.c_str(), rtt, trueRtt, clients[i].oneWayMs);
+            }
             return;
         }
     }
@@ -55,7 +76,7 @@ static void upsertClient(const String& id, int rssi) {
         return;
     }
 
-    clients[cliCount++] = { id, rssi, now };
+    clients[cliCount++] = { id, rssi, now, 0, 0 };
     Serial.printf("[LORA] New client registered: %s\n", id.c_str());
 }
 
@@ -124,7 +145,10 @@ static void handleACK(const String& payload, int rssi) {
     DynamicJsonDocument doc(256);
     if (deserializeJson(doc, payload)) return;
     String id = doc["id"] | "unknown";
-    upsertClient(id, rssi);
+    // RTT = time since last heartbeat was sent
+    uint32_t rtt = (lastHeartbeatSentMs > 0)
+                   ? (uint32_t)(millis() - lastHeartbeatSentMs) : 0;
+    upsertClient(id, rssi, rtt);
     Serial.printf("[LORA] ACK from '%s' RSSI=%d dBm\n", id.c_str(), rssi);
 }
 
@@ -222,6 +246,7 @@ void lora_sendHeartbeat() {
     doc["ts"]      = nowTs();
     String s;
     serializeJson(doc, s);
+    lastHeartbeatSentMs = millis();   // record send time for RTT measurement
     loraSend(MSG_HEARTBEAT, s);
 }
 
@@ -239,9 +264,11 @@ String lora_clientsJSON() {
         unsigned long age = now - clients[i].lastSeenMs;
         if (age > CLIENT_TIMEOUT_MS) continue;
         JsonObject o = arr.createNestedObject();
-        o["id"]      = clients[i].id;
-        o["rssi"]    = clients[i].rssi;
-        o["seen_ms"] = age;
+        o["id"]         = clients[i].id;
+        o["rssi"]       = clients[i].rssi;
+        o["seen_ms"]    = age;
+        o["rtt_ms"]     = clients[i].rttMs;
+        o["one_way_ms"] = clients[i].oneWayMs;
     }
     String s;
     serializeJson(doc, s);
@@ -255,4 +282,20 @@ int lora_clientCount() {
         if (now - clients[i].lastSeenMs <= CLIENT_TIMEOUT_MS) active++;
     }
     return active;
+}
+
+// Average one-way propagation delay across active clients with RTT data.
+// Returns 0 if no measurements available yet.
+uint32_t lora_getAvgOneWayMs() {
+    unsigned long now = millis();
+    uint32_t sum = 0;
+    uint8_t  n   = 0;
+    for (uint8_t i = 0; i < cliCount; i++) {
+        if (now - clients[i].lastSeenMs <= CLIENT_TIMEOUT_MS
+            && clients[i].oneWayMs > 0) {
+            sum += clients[i].oneWayMs;
+            n++;
+        }
+    }
+    return n ? sum / n : 0;
 }
