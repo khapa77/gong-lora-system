@@ -5,6 +5,7 @@
 #include "schedule.h"
 #include "lorahandler.h"
 #include "webhandler.h"
+#include "rtchandler.h"
 
 static unsigned long lastHeartbeat    = 0;
 static unsigned long lastSchedCheck   = 0;
@@ -36,10 +37,11 @@ void setup() {
 
     onScheduleTrigger = onGongFire;
 
+    rtc_setup();     // probe DS3231; if found, load time into system clock
     mp3_setup();
     lora_setup();
     sched_setup();
-    web_setup();     // connects WiFi, starts HTTP server
+    web_setup();     // connects WiFi, starts HTTP server; NTP will overwrite RTC time if available
 
     Serial.println("[MAIN] All modules ready. Entering main loop.");
 }

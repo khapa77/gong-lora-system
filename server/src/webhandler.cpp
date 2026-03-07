@@ -3,6 +3,7 @@
 #include "schedule.h"
 #include "lorahandler.h"
 #include "mp3handler.h"
+#include "rtchandler.h"
 #include <SPIFFS.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
@@ -201,6 +202,7 @@ static void handleTimeSet() {
     time_t t = mktime(&ti);
     struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
     settimeofday(&tv, nullptr);
+    rtc_syncFromSystem();   // persist to DS3231 so it survives next reboot
 
     sendOK();
     Serial.printf("[TIME] Manual time set: %02d:%02d\n", h, m);
@@ -254,7 +256,8 @@ static void handleStatus() {
             snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d",
                      ti.tm_hour, ti.tm_min, ti.tm_sec);
             doc["ntp_time"]    = tbuf;
-            doc["time_source"] = "manual";
+            // RTC takes priority over manual if module is present and has valid time
+            doc["time_source"] = rtc_hasValidTime() ? "rtc" : "manual";
         } else {
             doc["time_source"] = "none";
         }
@@ -378,6 +381,8 @@ bool wifi_connect() {
         ntp.begin();
         ntp.update();
         configTime(NTP_UTC_OFFSET, 0, NTP_SERVER);
+        delay(200);           // let configTime propagate
+        rtc_syncFromSystem(); // persist NTP time to DS3231 for next power cycle
         return true;
     }
     Serial.println("\n[WIFI] Connection failed");

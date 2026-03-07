@@ -232,8 +232,8 @@ tr:hover td { background: rgba(79,158,248,.04); }
     </div>
     <div class="card-body">
       <p style="color:var(--muted);font-size:.85rem;margin-bottom:14px">
-        Используется для расписания. При наличии WiFi время берётся из NTP автоматически.
-        В режиме AP задайте время вручную с точностью до минуты.
+        Приоритет: <b>NTP</b> (WiFi) &rarr; <b>RTC</b> (DS3231, батарейка) &rarr; <b>Manual</b>.<br>
+        Без WiFi и RTC задайте время вручную. При наличии DS3231 время сохраняется между перезагрузками.
       </p>
       <div class="row">
         <div class="col" style="max-width:120px">
@@ -453,6 +453,10 @@ async function loadStatus() {
     const badge = document.getElementById('clockSourceBadge');
     if (d.time_source === 'ntp') {
       badge.textContent = '🌐 NTP';
+      badge.style.background = 'rgba(52,201,126,.15)';
+      badge.style.color = 'var(--green)';
+    } else if (d.time_source === 'rtc') {
+      badge.textContent = '🔋 RTC';
       badge.style.background = 'rgba(52,201,126,.15)';
       badge.style.color = 'var(--green)';
     } else if (d.time_source === 'manual') {
