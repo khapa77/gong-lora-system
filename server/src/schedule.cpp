@@ -28,20 +28,22 @@ void sched_setup() {
 // Uses system time configured via configTime() in wifi_connect()
 // -------------------------------------------------------
 void sched_check() {
-    if (WiFi.status() != WL_CONNECTED) {
+    struct tm ti;
+    if (!getLocalTime(&ti)) {
         static unsigned long lastWarn = 0;
         if (millis() - lastWarn >= 60000UL) {
-            Serial.println("[SCHED] Skip: no WiFi. Connect to router for schedule.");
+            Serial.println("[SCHED] Skip: time not available.");
             lastWarn = millis();
         }
         return;
     }
 
-    struct tm ti;
-    if (!getLocalTime(&ti)) {
+    // Accept time from NTP (WiFi connected) or manually set by user (year >= 2024)
+    bool timeValid = (WiFi.status() == WL_CONNECTED) || (ti.tm_year >= 124);
+    if (!timeValid) {
         static unsigned long lastWarn = 0;
         if (millis() - lastWarn >= 60000UL) {
-            Serial.println("[SCHED] Skip: time not set. Wait for NTP sync (1–2 min).");
+            Serial.println("[SCHED] Skip: no NTP and no manual time set.");
             lastWarn = millis();
         }
         return;

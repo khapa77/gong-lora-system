@@ -221,6 +221,36 @@ tr:hover td { background: rgba(79,158,248,.04); }
     </div>
   </div>
 
+  <!-- ── Clock ── -->
+  <div class="card" id="sectionClock">
+    <div class="card-title">
+      Clock
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="clockSourceBadge" class="tag" style="font-size:.75rem"></span>
+        <button class="collapse-btn" onclick="toggleCard('sectionClock')">&#9662;</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <p style="color:var(--muted);font-size:.85rem;margin-bottom:14px">
+        Используется для расписания. При наличии WiFi время берётся из NTP автоматически.
+        В режиме AP задайте время вручную с точностью до минуты.
+      </p>
+      <div class="row">
+        <div class="col" style="max-width:120px">
+          <label>Hour (0–23)</label>
+          <input type="number" id="tHour" min="0" max="23" value="8">
+        </div>
+        <div class="col" style="max-width:120px">
+          <label>Minute (0–59)</label>
+          <input type="number" id="tMin" min="0" max="59" value="0">
+        </div>
+        <div class="col" style="display:flex;align-items:flex-end">
+          <button class="btn btn-primary" onclick="setTime()">&#128336; Set Time</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Schedule ── -->
   <div class="card" id="sectionSchedule">
     <div class="card-title">
@@ -418,6 +448,22 @@ async function loadStatus() {
     document.getElementById('clientStat').textContent = 'Clients: ' + d.clients;
     const kb = Math.round(d.heap / 1024);
     document.getElementById('heapStat').textContent = 'Heap: ' + kb + 'KB';
+
+    // Clock source badge
+    const badge = document.getElementById('clockSourceBadge');
+    if (d.time_source === 'ntp') {
+      badge.textContent = '🌐 NTP';
+      badge.style.background = 'rgba(52,201,126,.15)';
+      badge.style.color = 'var(--green)';
+    } else if (d.time_source === 'manual') {
+      badge.textContent = '✏️ Manual';
+      badge.style.background = 'rgba(248,195,79,.12)';
+      badge.style.color = 'var(--yellow)';
+    } else {
+      badge.textContent = '⚠️ Not set';
+      badge.style.background = 'rgba(248,95,95,.12)';
+      badge.style.color = 'var(--red)';
+    }
   } catch { /* ignore */ }
 }
 
@@ -509,6 +555,14 @@ async function playLoRa() {
 }
 async function playAll() {
   await postJSON('/api/play/all',  ctrlParams()); toast('Playing everywhere', 'ok');
+}
+async function setTime() {
+  const h = parseInt(document.getElementById('tHour').value);
+  const m = parseInt(document.getElementById('tMin').value);
+  if (isNaN(h) || isNaN(m)) { toast('Enter valid time', 'err'); return; }
+  const r = await postJSON('/api/time', { hour: h, min: m });
+  if (r && r.ok) { toast(`Time set to ${pad(h)}:${pad(m)}`, 'ok'); await loadStatus(); }
+  else toast(r?.err || 'Error', 'err');
 }
 async function stopAll() {
   const r = await fetch('/api/stop', { method: 'POST' });
@@ -671,7 +725,7 @@ async function postJSON(url, body, method = 'POST') {
 // ─────────────────────────────────────────────
 // Collapsible cards
 // ─────────────────────────────────────────────
-const CARD_IDS = ['sectionControl','sectionSchedule','sectionClients','sectionSecurity','sectionWifi'];
+const CARD_IDS = ['sectionControl','sectionClock','sectionSchedule','sectionClients','sectionSecurity','sectionWifi'];
 
 function initCards() {
   CARD_IDS.forEach(id => {
