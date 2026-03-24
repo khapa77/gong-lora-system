@@ -1,0 +1,6 @@
+[1] MISO     [2] VCC (3.3V)
+[3] SCK      [4] MOSI
+[5] NSS      [6] DIO0
+[7] RST      [8] GND
+
+PinHeader_2x04_P2.54mm
