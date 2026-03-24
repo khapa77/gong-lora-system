@@ -10,17 +10,21 @@ def uid():
 shapes = []
 
 def rect(x, y, w, h, fill='#eef0ff', stroke='#000000'):
-    shapes.append(f'RECT~{x}~{y}~{w}~{h}~{stroke}~1~{fill}~{uid()}~0')
+    # EasyEDA Standard: RECT~x~y~rx~ry~width~height~stroke~fill~strokeWidth~strokeStyle~id~locked
+    shapes.append(f'RECT~{x}~{y}~0~0~{w}~{h}~{stroke}~{fill}~1~none~{uid()}~0')
 
 def text(x, y, s, anchor='center', size='9pt', bold='normal', color='#000000'):
     s = str(s).replace('~', '-')
+    # EasyEDA Standard: T~x~y~rotation~anchor~color~fontSize~bold~italic~underline~text~id~locked
     shapes.append(f'T~{x}~{y}~0~{anchor}~{color}~{size}~{bold}~normal~none~{s}~{uid()}~0')
 
 def wire(x1, y1, x2, y2):
-    shapes.append(f'W~{x1} {y1} {x2} {y2}~#000000~~1~~{uid()}~0')
+    # EasyEDA Standard: W~x1 y1 x2 y2~color~strokeStyle~strokeWidth~fillColor~id~locked
+    shapes.append(f'W~{x1} {y1} {x2} {y2}~#000000~none~1~none~{uid()}~0')
 
 def netlabel(x, y, name, rot=0):
-    shapes.append(f'N~{x}~{y}~{rot}~{name}~#0000FF~9pt~~normal~{uid()}~0')
+    # EasyEDA Standard: N~x~y~rotation~text~color~fontSize~fontStyle~fontWeight~id~locked
+    shapes.append(f'N~{x}~{y}~{rot}~{name}~#0000FF~9pt~normal~normal~{uid()}~0')
 
 def nc_mark(x, y):
     """Крестик NC на конце провода."""
@@ -240,16 +244,20 @@ passive(70,  640, 'R3', '1M',        '+5V',  'MAX_SD',  fill='#fff0f0')
 # ─────────────────────────────────────────
 # BUILD JSON
 # ─────────────────────────────────────────
+CANVAS = "CA~1000~1000~#ffffff~yes~#cccccc~10~1200~900~line~10~pixel~5~0~0"
 schematic = {
     "head": {
         "type": "schematic",
         "title": "Gong LoRa Server",
         "description": "ESP32-DevKitC-V4 + Ra-01 LoRa + MAX98357A + DS3231 + HLK-10M05",
-        "canvas": "CA~0~0~#ffffff~yes~#cccccc~10~850~780~line~10~pixel~5~0~0",
-        "version": "6.5.38"
+        "canvas": CANVAS,
+        "version": "6.5.38",
+        "encryptedDataCompliant": False
     },
-    "canvas": "CA~0~0~#ffffff~yes~#cccccc~10~850~780~line~10~pixel~5~0~0",
-    "shape": shapes
+    "canvas": CANVAS,
+    "shape": shapes,
+    "BBox": None,
+    "netFlag": ""
 }
 
 OUT = '/root/test1-gong/gong-lora-system/footprint/gong_server_schematic.json'
