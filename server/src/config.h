@@ -16,9 +16,9 @@
 #define LORA_DIO0         2
 #define LORA_FREQ         433E6      // 433 МГц; меняй на 868E6 / 915E6
 #define LORA_SYNC_WORD    0xF3
-#define LORA_SF           7
-#define LORA_BW           125E3
-#define LORA_CR           5
+#define LORA_SF           12
+#define LORA_BW           62.5E3
+#define LORA_CR           6
 #define LORA_TX_POWER     20
 
 // ── LoRa типы сообщений ───────────────────────────────────────────────────
