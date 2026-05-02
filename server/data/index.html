@@ -232,13 +232,12 @@ tr:hover td { background: rgba(79,158,248,.04); }
     </div>
     <div class="card-body">
       <div style="display:flex;gap:6px;margin-bottom:14px">
-        <button id="tabNtp"    class="btn btn-sm" onclick="switchClockTab('ntp')">&#127760; NTP</button>
+        <button id="tabNtp"    class="btn btn-sm" onclick="setTimeSource('ntp')">&#127760; NTP</button>
         <button id="tabRtc"    class="btn btn-sm" onclick="switchClockTab('rtc')">&#128267; RTC</button>
-        <button id="tabManual" class="btn btn-sm" onclick="switchClockTab('manual')">&#9998; Manual</button>
+        <button id="tabManual" class="btn btn-sm" onclick="setTimeSource('manual')">&#9998; Manual</button>
       </div>
       <div id="panelNtp" style="display:none">
-        <p style="color:#34c97e;font-size:.9rem;margin:0">&#10003; Время синхронизировано по NTP (UTC+3).</p>
-        <p style="color:#aaa;font-size:.82rem;margin:6px 0 0">Для переключения на другой режим отключите WiFi или нажмите Manual.</p>
+        <p style="color:#34c97e;font-size:.9rem;margin:0">&#10003; NTP включён. Время синхронизировано по сети (UTC+3).</p>
       </div>
       <div id="panelRtc" style="display:none">
         <p style="color:#f8c34f;font-size:.9rem;margin:0">&#128267; DS3231 RTC.</p>
@@ -492,6 +491,12 @@ async function refreshAll() {
 // ─────────────────────────────────────────────
 // Status
 // ─────────────────────────────────────────────
+async function setTimeSource(src) {
+  await fetch('/api/time/source?s=' + src, { method: 'POST' });
+  switchClockTab(src === 'ntp' ? 'ntp' : 'manual');
+  await loadStatus();
+}
+
 function switchClockTab(tab) {
   ['ntp','rtc','manual'].forEach(t => {
     document.getElementById('panel' + t.charAt(0).toUpperCase() + t.slice(1)).style.display = (t === tab) ? '' : 'none';

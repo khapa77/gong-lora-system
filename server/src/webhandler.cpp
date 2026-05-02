@@ -9,11 +9,13 @@
 #include <WiFiUdp.h>
 #include <NTPClient.h>
 #include <ArduinoJson.h>
+#include <lwip/apps/sntp.h>
 
 bool       apMode = false;
 static WebServer server(80);
 static WiFiUDP ntpUDP;
 static NTPClient ntp(ntpUDP, NTP_SERVER, NTP_UTC_OFFSET);
+static bool ntpDisabled = false;  // when true: SNTP stopped, manual time active
 
 // -------------------------------------------------------
 // Auth
@@ -208,6 +210,24 @@ static void handleTimeSet() {
     Serial.printf("[TIME] Manual time set: %02d:%02d\n", h, m);
 }
 
+// POST /api/time/source?s=ntp|manual
+static void handleTimeSource() {
+    if (!checkAuth()) return;
+    String src = server.arg("s");
+    if (src == "manual") {
+        ntpDisabled = true;
+        sntp_stop();
+        Serial.println("[TIME] NTP disabled, manual mode active");
+    } else {
+        ntpDisabled = false;
+        configTime(NTP_UTC_OFFSET, 0, NTP_SERVER);
+        ntp.begin();
+        ntp.forceUpdate();
+        Serial.println("[TIME] NTP re-enabled");
+    }
+    sendOK();
+}
+
 // -------------------------------------------------------
 // /api/stop  — stop playback locally and on all LoRa clients
 // -------------------------------------------------------
@@ -245,7 +265,7 @@ static void handleStatus() {
     doc["clients"] = lora_clientCount();
     doc["heap"]    = (int)ESP.getFreeHeap();
     doc["uptime"]  = (uint32_t)(millis() / 1000);
-    if (WiFi.status() == WL_CONNECTED) {
+    if (WiFi.status() == WL_CONNECTED && !ntpDisabled) {
         ntp.update();
         doc["ntp_time"]    = ntp.getFormattedTime();
         doc["time_source"] = "ntp";
@@ -459,6 +479,7 @@ void web_setup() {
     server.on("/api/play/lora",   HTTP_OPTIONS, handleOptions);
     server.on("/api/play/all",    HTTP_OPTIONS, handleOptions);
     server.on("/api/time",        HTTP_OPTIONS, handleOptions);
+    server.on("/api/time/source", HTTP_OPTIONS, handleOptions);
     server.on("/api/stop",        HTTP_OPTIONS, handleOptions);
     server.on("/api/sync",        HTTP_OPTIONS, handleOptions);
     server.on("/api/wifi/save",   HTTP_OPTIONS, handleOptions);
@@ -478,6 +499,7 @@ void web_setup() {
     server.on("/api/play/all",    HTTP_POST,   handlePlayAll);
 
     server.on("/api/time",        HTTP_POST,   handleTimeSet);
+    server.on("/api/time/source", HTTP_POST,   handleTimeSource);
     server.on("/api/stop",        HTTP_POST,   handleStop);
     server.on("/api/sync",        HTTP_POST,   handleSync);
     server.on("/api/clients",     HTTP_GET,    handleClients);
