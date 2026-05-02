@@ -470,11 +470,20 @@ function updateClock() {
   updateCountdown();
 }
 
+function espNowSec() {
+  if (espTime && Date.now() - espTimestamp < 10000) {
+    const [hh, mm, ss] = espTime.split(':').map(Number);
+    const elapsed = Math.round((Date.now() - espTimestamp) / 1000);
+    return (hh * 3600 + mm * 60 + ss + elapsed) % 86400;
+  }
+  const now = new Date();
+  return now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+}
+
 function computeNextGong() {
   const active = schedules.filter(s => s.en);
   if (!active.length) return null;
-  const now = new Date();
-  const nowSec = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+  const nowSec = espNowSec();
   let best = null, bestDiff = Infinity;
   for (const s of active) {
     let diff = s.hour * 3600 + s.min * 60 - nowSec;
