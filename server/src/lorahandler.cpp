@@ -8,14 +8,28 @@
 
 #define LORA_PAYLOAD_MAX 256
 
-// -------------------------------------------------------
-// RadioLib: Module(cs, irq, rst, gpio)
-// -------------------------------------------------------
 static Module mod(LORA_SS, LORA_DIO0, LORA_RST, RADIOLIB_NC);
 static SX1278 radio(&mod);
 
 // -------------------------------------------------------
-// Track known clients (by their ACK messages)
+// Non-blocking TX queue (single slot)
+// -------------------------------------------------------
+static uint8_t  txBuf[LORA_PAYLOAD_MAX + 1];
+static size_t   txLen     = 0;
+static bool     txPending = false;
+static bool     txBusy    = false;
+static uint8_t  txType    = 0;
+
+static void txEnqueue(uint8_t type, const uint8_t* buf, size_t len) {
+    if (len > LORA_PAYLOAD_MAX + 1) len = LORA_PAYLOAD_MAX + 1;
+    memcpy(txBuf, buf, len);
+    txLen     = len;
+    txType    = type;
+    txPending = true;
+}
+
+// -------------------------------------------------------
+// Track known clients
 // -------------------------------------------------------
 #define MAX_CLIENTS 16
 
@@ -23,17 +37,14 @@ struct ClientInfo {
     String   id;
     int      rssi;
     uint32_t lastSeenMs;
-    uint32_t rttMs;      // smoothed round-trip time (ms), 0 = not yet measured
-    uint32_t oneWayMs;   // estimated one-way propagation delay = (rtt - ack_delay) / 2
+    uint32_t rttMs;
+    uint32_t oneWayMs;
 };
 
 static ClientInfo clients[MAX_CLIENTS];
 static uint8_t    cliCount = 0;
 
-// Timestamp of the last heartbeat TX — used to compute RTT when ACK arrives
 static uint32_t lastHeartbeatSentMs = 0;
-
-// Average random delay the client adds before sending ACK (random(10,80) → avg 45ms)
 static const uint32_t ACK_RANDOM_DELAY_AVG_MS = 45;
 
 static void upsertClient(const String& id, int rssi, uint32_t rtt) {
@@ -43,12 +54,9 @@ static void upsertClient(const String& id, int rssi, uint32_t rtt) {
         if (clients[i].id == id) {
             clients[i].rssi       = rssi;
             clients[i].lastSeenMs = now;
-            // Update RTT only when we have a valid heartbeat timestamp
             if (rtt > 0) {
-                // Subtract average ACK random delay to get true RTT
                 uint32_t trueRtt = (rtt > ACK_RANDOM_DELAY_AVG_MS)
                                    ? rtt - ACK_RANDOM_DELAY_AVG_MS : 0;
-                // Exponential moving average (α ≈ 0.3)
                 clients[i].rttMs    = (clients[i].rttMs == 0)
                                       ? trueRtt
                                       : (clients[i].rttMs * 7 + trueRtt * 3) / 10;
@@ -69,7 +77,7 @@ static void upsertClient(const String& id, int rssi, uint32_t rtt) {
         if (now - clients[oldest].lastSeenMs > CLIENT_TIMEOUT_MS) {
             Serial.printf("[LORA] Evicting stale client: %s\n",
                           clients[oldest].id.c_str());
-            clients[oldest] = { id, rssi, now };
+            clients[oldest] = { id, rssi, now, 0, 0 };
             return;
         }
         Serial.println("[LORA] MAX_CLIENTS reached, new client ignored");
@@ -101,51 +109,41 @@ static String computeHMAC(uint8_t msgType, const String& payload) {
     return String(hex);
 }
 
-// Return unix timestamp; fallback to millis/1000 when NTP not synced
 static uint32_t nowTs() {
     time_t t = time(nullptr);
     return (t > 100000UL) ? (uint32_t)t : (uint32_t)(millis() / 1000);
 }
 
 // -------------------------------------------------------
-// Low-level send: packet = [type byte][payload string]
-// Signs GONG / HEARTBEAT / STOP before transmitting.
+// Prepare packet and enqueue (non-blocking)
 // -------------------------------------------------------
 static void loraSend(uint8_t type, const String& payload) {
     String finalPayload = payload;
 
     if (type == MSG_GONG || type == MSG_HEARTBEAT || type == MSG_STOP) {
         String sig = computeHMAC(type, payload);
-        // Append sig field before the closing '}'
         finalPayload = payload.substring(0, payload.length() - 1)
                        + ",\"sig\":\"" + sig + "\"}";
     }
 
     size_t plen = finalPayload.length();
     if (plen > LORA_PAYLOAD_MAX) plen = LORA_PAYLOAD_MAX;
-    size_t len  = 1 + plen;
 
     uint8_t buf[LORA_PAYLOAD_MAX + 1];
     buf[0] = type;
     memcpy(buf + 1, finalPayload.c_str(), plen);
 
-    int state = radio.transmit(buf, len);
-    if (state != RADIOLIB_ERR_NONE) {
-        Serial.printf("[LORA] TX failed: %d\n", state);
-    } else {
-        Serial.printf("[LORA] TX type=0x%02X payload_len=%u signed=%s\n",
-            type, (unsigned)plen,
-            (type == MSG_GONG || type == MSG_HEARTBEAT || type == MSG_STOP) ? "yes" : "no");
-    }
+    txEnqueue(type, buf, 1 + plen);
 
-    radio.startReceive();  // return to RX mode after every TX
+    Serial.printf("[LORA] TX queued type=0x%02X payload_len=%u\n",
+                  type, (unsigned)plen);
 }
 
+// -------------------------------------------------------
 static void handleACK(const String& payload, int rssi) {
     DynamicJsonDocument doc(256);
     if (deserializeJson(doc, payload)) return;
     String id = doc["id"] | "unknown";
-    // RTT = time since last heartbeat was sent
     uint32_t rtt = (lastHeartbeatSentMs > 0)
                    ? (uint32_t)(millis() - lastHeartbeatSentMs) : 0;
     upsertClient(id, rssi, rtt);
@@ -156,10 +154,10 @@ static void handleACK(const String& payload, int rssi) {
 void lora_setup() {
     SPI.begin(18, 19, 23, LORA_SS);
 
-    // RadioLib begin(freq_MHz, bw_kHz, sf, cr, syncWord, power_dBm, preambleLen, gain)
     float freqMHz = (float)(LORA_FREQ / 1e6);
     float bwKHz   = (float)(LORA_BW / 1e3);
-    int state = radio.begin(freqMHz, bwKHz, LORA_SF, LORA_CR, LORA_SYNC_WORD, LORA_TX_POWER, 8, 0);
+    int state = radio.begin(freqMHz, bwKHz, LORA_SF, LORA_CR,
+                            LORA_SYNC_WORD, LORA_TX_POWER, 8, 0);
 
     if (state != RADIOLIB_ERR_NONE) {
         Serial.printf("[LORA] Init FAILED: %d — check module wiring!\n", state);
@@ -169,12 +167,44 @@ void lora_setup() {
     Serial.printf("[LORA] Server ready @ %.0f MHz  SF=%d BW=%.0fk\n",
                   freqMHz, LORA_SF, bwKHz);
 
-    // Неблокирующий приём: не вызываем receive() в loop, иначе аудио не успевает
     radio.startReceive();
 }
 
+// -------------------------------------------------------
+// lora_loop — non-blocking TX state machine + RX
+// -------------------------------------------------------
 void lora_loop() {
-    // DIO0 goes HIGH when packet is received (mapped by startReceive())
+
+    // ── TX ──────────────────────────────────────────────
+    if (txBusy) {
+        // DIO0 HIGH = TX done
+        if (digitalRead(LORA_DIO0)) {
+            int state = radio.finishTransmit();
+            txBusy = false;
+            if (state != RADIOLIB_ERR_NONE) {
+                Serial.printf("[LORA] TX finish error: %d\n", state);
+            } else {
+                Serial.printf("[LORA] TX done type=0x%02X\n", txType);
+            }
+            radio.startReceive();
+        }
+        return;
+    }
+
+    if (txPending) {
+        txPending = false;
+        txBusy    = true;
+        int state = radio.startTransmit(txBuf, txLen);
+        if (state != RADIOLIB_ERR_NONE) {
+            Serial.printf("[LORA] TX start error: %d\n", state);
+            txBusy = false;
+            radio.startReceive();
+        }
+        return;
+    }
+
+    // ── RX ──────────────────────────────────────────────
+    // DIO0 HIGH = packet received (startReceive mode)
     if (!digitalRead(LORA_DIO0)) return;
 
     size_t len = radio.getPacketLength();
@@ -190,8 +220,8 @@ void lora_loop() {
         return;
     }
 
-    uint8_t type = buf[0];
-    String payload;
+    uint8_t type    = buf[0];
+    String  payload = "";
     for (size_t i = 1; i < len; i++) payload += (char)buf[i];
 
     int rssi = (int)radio.getRSSI();
@@ -218,8 +248,12 @@ void lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop) {
     String s;
     serializeJson(doc, s);
     loraSend(MSG_GONG, s);
-    Serial.printf("[LORA] GONG broadcast — track=%d vol=%d loop=%d clients=%d\n",
+    Serial.printf("[LORA] GONG TX — track=%d vol=%d loop=%d clients=%d\n",
                   track, vol, loop, cliCount);
+
+    // Block until TX completes so mp3_play() starts after client receives the packet.
+    // This preserves audio sync: client begins playback at TX-end, same as server.
+    while (txPending || txBusy) lora_loop();
 }
 
 void lora_sendStop() {
@@ -228,10 +262,13 @@ void lora_sendStop() {
     String s;
     serializeJson(doc, s);
     loraSend(MSG_STOP, s);
-    Serial.println("[LORA] STOP broadcast");
+    Serial.println("[LORA] STOP queued");
 }
 
 void lora_sendHeartbeat() {
+    // Skip if TX busy — don't preempt a gong or stop command
+    if (txBusy || txPending) return;
+
     DynamicJsonDocument doc(128);
     struct tm ti;
     if (getLocalTime(&ti)) {
@@ -246,13 +283,13 @@ void lora_sendHeartbeat() {
     doc["ts"]      = nowTs();
     String s;
     serializeJson(doc, s);
-    lastHeartbeatSentMs = millis();   // record send time for RTT measurement
+    lastHeartbeatSentMs = millis();
     loraSend(MSG_HEARTBEAT, s);
 }
 
 void lora_sendSchedule(const String& scheduleJson) {
     loraSend(MSG_SCHEDULE, scheduleJson);
-    Serial.println("[LORA] Schedule sync broadcast");
+    Serial.println("[LORA] Schedule sync queued");
 }
 
 // -------------------------------------------------------
@@ -284,8 +321,6 @@ int lora_clientCount() {
     return active;
 }
 
-// Average one-way propagation delay across active clients with RTT data.
-// Returns 0 if no measurements available yet.
 uint32_t lora_getAvgOneWayMs() {
     unsigned long now = millis();
     uint32_t sum = 0;

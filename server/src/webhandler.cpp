@@ -300,7 +300,7 @@ static void handleWiFiSave() {
     f.close();
 
     sendOK();
-    delay(500);
+    { unsigned long t0 = millis(); while (millis() - t0 < 500) server.handleClient(); }
     ESP.restart();
 }
 
@@ -308,7 +308,7 @@ static void handleWiFiReset() {
     if (!checkAuth()) return;
     SPIFFS.remove(WIFI_CONFIG_FILE);
     sendOK();
-    delay(500);
+    { unsigned long t0 = millis(); while (millis() - t0 < 500) server.handleClient(); }
     ESP.restart();
 }
 
@@ -415,6 +415,10 @@ void web_setup() {
     server.on("/api/time",        HTTP_OPTIONS, handleOptions);
     server.on("/api/stop",        HTTP_OPTIONS, handleOptions);
     server.on("/api/sync",        HTTP_OPTIONS, handleOptions);
+    server.on("/api/wifi/save",   HTTP_OPTIONS, handleOptions);
+    server.on("/api/wifi/reset",  HTTP_OPTIONS, handleOptions);
+    server.on("/api/auth/save",   HTTP_OPTIONS, handleOptions);
+    server.on("/api/auth/disable",HTTP_OPTIONS, handleOptions);
 
     // Routes
     server.on("/",                HTTP_GET,    handleRoot);
