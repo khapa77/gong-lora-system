@@ -279,6 +279,36 @@ tr:hover td { background: rgba(79,158,248,.04); }
     </div>
   </div>
 
+  <!-- ── Day Templates ── -->
+  <div class="card" id="sectionDays">
+    <div class="card-title">
+      День
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="activeDayBadge" class="tag" style="font-size:.75rem"></span>
+        <button class="collapse-btn" onclick="toggleCard('sectionDays')">&#9662;</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div id="dayTabs" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px"></div>
+      <table>
+        <thead>
+          <tr>
+            <th>Время</th>
+            <th>Описание</th>
+            <th>Трек</th>
+            <th>Статус</th>
+          </tr>
+        </thead>
+        <tbody id="daySchedBody">
+          <tr><td colspan="4" class="empty-row">Загрузка&#8230;</td></tr>
+        </tbody>
+      </table>
+      <div class="btn-group">
+        <button class="btn btn-yellow" id="activateDayBtn" onclick="activateDay()">&#9654; Активировать</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ── LoRa Clients ── -->
   <div class="card" id="sectionClients">
     <div class="card-title">
@@ -409,8 +439,10 @@ tr:hover td { background: rgba(79,158,248,.04); }
 // ─────────────────────────────────────────────
 // State
 // ─────────────────────────────────────────────
-let schedules = [];
-let editId    = null;
+let schedules    = [];
+let editId       = null;
+let currentDay   = 0;
+let activeDayNum = -1;
 
 // ─────────────────────────────────────────────
 // Init
@@ -420,6 +452,8 @@ document.addEventListener('DOMContentLoaded', () => {
   refreshAll();
   setInterval(refreshAll, 5000);
   setInterval(updateClock, 1000);
+  renderDayTabs();
+  selectDay(0);
 });
 
 function updateClock() {
@@ -429,7 +463,7 @@ function updateClock() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadStatus(), loadSchedules(), loadClients(), loadAuthStatus()]);
+  await Promise.all([loadStatus(), loadSchedules(), loadClients(), loadAuthStatus(), loadDaysStatus()]);
 }
 
 // ─────────────────────────────────────────────
@@ -744,7 +778,7 @@ async function postJSON(url, body, method = 'POST') {
 // ─────────────────────────────────────────────
 // Collapsible cards
 // ─────────────────────────────────────────────
-const CARD_IDS = ['sectionControl','sectionClock','sectionSchedule','sectionClients','sectionSecurity','sectionWifi'];
+const CARD_IDS = ['sectionControl','sectionClock','sectionSchedule','sectionDays','sectionClients','sectionSecurity','sectionWifi'];
 
 function initCards() {
   CARD_IDS.forEach(id => {
@@ -785,6 +819,94 @@ function togglePass(id, btn) {
 
 function toggleWifiPass() {
   togglePass('wPass', event.currentTarget);
+}
+
+// ─────────────────────────────────────────────
+// Day Templates
+// ─────────────────────────────────────────────
+async function loadDaysStatus() {
+  try {
+    const r = await fetch('/api/days');
+    const d = await r.json();
+    activeDayNum = d.active;
+    updateActiveDayBadge();
+    renderDayTabs();
+  } catch { /* ignore */ }
+}
+
+function updateActiveDayBadge() {
+  const el = document.getElementById('activeDayBadge');
+  if (activeDayNum >= 0) {
+    el.textContent = 'Активен: День ' + pad(activeDayNum);
+    el.style.background = 'rgba(52,201,126,.15)';
+    el.style.color = 'var(--green)';
+  } else {
+    el.textContent = 'День не выбран';
+    el.style.background = 'rgba(248,195,79,.12)';
+    el.style.color = 'var(--yellow)';
+  }
+}
+
+function renderDayTabs() {
+  const container = document.getElementById('dayTabs');
+  if (!container) return;
+  container.innerHTML = '';
+  for (let i = 0; i <= 11; i++) {
+    const btn = document.createElement('button');
+    const isActive  = (i === activeDayNum);
+    const isCurrent = (i === currentDay);
+    btn.className = 'btn btn-sm ' + (isCurrent ? 'btn-primary' : 'btn-ghost');
+    if (isActive && !isCurrent) btn.style.borderColor = 'var(--green)';
+    btn.textContent = 'День ' + pad(i);
+    btn.onclick = () => selectDay(i);
+    container.appendChild(btn);
+  }
+}
+
+async function selectDay(n) {
+  currentDay = n;
+  renderDayTabs();
+  const activateBtn = document.getElementById('activateDayBtn');
+  if (activateBtn) activateBtn.textContent = '▶ Активировать День ' + pad(n);
+  try {
+    const r = await fetch('/api/day?n=' + n);
+    const data = await r.json();
+    renderDaySchedule(data);
+  } catch {
+    document.getElementById('daySchedBody').innerHTML =
+      '<tr><td colspan="4" class="empty-row">Ошибка загрузки</td></tr>';
+  }
+}
+
+function renderDaySchedule(sched) {
+  const tbody = document.getElementById('daySchedBody');
+  if (!sched || !sched.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-row">Расписание не задано</td></tr>';
+    return;
+  }
+  const sorted = [...sched].sort((a,b) => a.hour*60+a.min - (b.hour*60+b.min));
+  tbody.innerHTML = sorted.map(s => `
+    <tr>
+      <td><span class="time-badge">${pad(s.hour)}:${pad(s.min)}</span></td>
+      <td>${esc(s.desc)}</td>
+      <td style="color:var(--muted)">&#127925;&nbsp;${s.track}</td>
+      <td><span class="tag ${s.en ? 'tag-on' : 'tag-off'}">${s.en ? 'ON' : 'OFF'}</span></td>
+    </tr>`).join('');
+}
+
+async function activateDay() {
+  if (!confirm('Активировать День ' + pad(currentDay) + '?\nТекущее расписание будет заменено.')) return;
+  const r = await fetch('/api/day/activate?n=' + currentDay, { method: 'POST' });
+  const d = await r.json();
+  if (d && d.ok) {
+    activeDayNum = currentDay;
+    updateActiveDayBadge();
+    renderDayTabs();
+    toast('День ' + pad(currentDay) + ' активирован', 'ok');
+    await loadSchedules();
+  } else {
+    toast((d && d.err) || 'Ошибка', 'err');
+  }
 }
 </script>
 </body>

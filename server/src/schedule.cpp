@@ -149,25 +149,17 @@ void sched_save() {
     Serial.printf("[SCHED] Saved %d entries\n", count);
 }
 
-void sched_load() {
-    if (!SPIFFS.exists(SCHEDULE_FILE)) {
-        Serial.println("[SCHED] No file, starting empty");
-        return;
-    }
-    File f = SPIFFS.open(SCHEDULE_FILE, "r");
-    if (!f) return;
-
+static bool sched_parseFromPath(const char* path) {
+    File f = SPIFFS.open(path, "r");
+    if (!f) return false;
     DynamicJsonDocument *doc = new (std::nothrow) DynamicJsonDocument(4096);
-    if (!doc) { f.close(); return; }
+    if (!doc) { f.close(); return false; }
     if (deserializeJson(*doc, f)) {
-        Serial.println("[SCHED] Parse error");
-        f.close();
-        delete doc;
-        return;
+        f.close(); delete doc; return false;
     }
     f.close();
-
-    count = 0;
+    count  = 0;
+    nextId = 1;
     for (JsonObject o : doc->as<JsonArray>()) {
         if (count >= MAX_SCHEDULES) break;
         uint8_t track = o["track"] | 1;
@@ -175,19 +167,67 @@ void sched_load() {
         if (track > 99) track = 99;
         uint8_t loop = o["loop"] | 1;
         if (loop < 1) loop = 1;
-    if (loop > 7) loop = 7;
+        if (loop > 7) loop = 7;
         uint32_t id = o["id"] | nextId;
         entries[count++] = {
             id,
-            (uint8_t)(o["hour"]  | 0),
-            (uint8_t)(o["min"]   | 0),
-            track,
-            loop,
-            (bool)   (o["en"]    | true),
+            (uint8_t)(o["hour"] | 0),
+            (uint8_t)(o["min"]  | 0),
+            track, loop,
+            (bool)(o["en"] | true),
             String((const char*)(o["desc"] | ""))
         };
         if (id >= nextId) nextId = id + 1;
     }
     delete doc;
+    return true;
+}
+
+void sched_load() {
+    if (!SPIFFS.exists(SCHEDULE_FILE)) {
+        Serial.println("[SCHED] No file, starting empty");
+        return;
+    }
+    if (!sched_parseFromPath(SCHEDULE_FILE))
+        Serial.println("[SCHED] Parse error");
+}
+
+// -------------------------------------------------------
+// Multi-day helpers
+// -------------------------------------------------------
+String sched_dayJSON(uint8_t day) {
+    char path[16];
+    snprintf(path, sizeof(path), "/day%02d.conf", (int)day);
+    if (!SPIFFS.exists(path)) return "[]";
+    File f = SPIFFS.open(path, "r");
+    if (!f) return "[]";
+    String s = f.readString();
+    f.close();
+    return s;
+}
+
+bool sched_activateDay(uint8_t day) {
+    char path[16];
+    snprintf(path, sizeof(path), "/day%02d.conf", (int)day);
+    if (!SPIFFS.exists(path)) {
+        Serial.printf("[SCHED] Day %02d not found\n", (int)day);
+        return false;
+    }
+    if (!sched_parseFromPath(path)) return false;
+    sched_save();
+    File f = SPIFFS.open("/activeday.conf", "w");
+    if (f) { f.printf("{\"day\":%d}", (int)day); f.close(); }
+    Serial.printf("[SCHED] Activated day %02d (%d entries)\n", (int)day, count);
+    return true;
+}
+
+int sched_getActiveDay() {
+    if (!SPIFFS.exists("/activeday.conf")) return -1;
+    File f = SPIFFS.open("/activeday.conf", "r");
+    if (!f) return -1;
+    DynamicJsonDocument doc(64);
+    if (deserializeJson(doc, f)) { f.close(); return -1; }
+    f.close();
+    return doc["day"] | -1;
 }
 

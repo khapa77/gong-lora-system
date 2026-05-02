@@ -25,5 +25,10 @@ String sched_toJSON();
 void   sched_save();
 void   sched_load();
 
+// Multi-day support
+String sched_dayJSON(uint8_t day);      // read /dayNN.conf → JSON (no memory change)
+bool   sched_activateDay(uint8_t day);  // load /dayNN.conf as active schedule
+int    sched_getActiveDay();            // -1 if not set
+
 // Callback: fired when a scheduled gong triggers
 extern void (*onScheduleTrigger)(uint8_t track, uint8_t loop);
