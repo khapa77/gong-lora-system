@@ -231,21 +231,33 @@ tr:hover td { background: rgba(79,158,248,.04); }
       </div>
     </div>
     <div class="card-body">
-      <p style="color:var(--muted);font-size:.85rem;margin-bottom:14px">
-        Приоритет: <b>NTP</b> (WiFi) &rarr; <b>RTC</b> (DS3231, батарейка) &rarr; <b>Manual</b>.<br>
-        Без WiFi и RTC задайте время вручную. При наличии DS3231 время сохраняется между перезагрузками.
-      </p>
-      <div class="row">
-        <div class="col" style="max-width:120px">
-          <label>Hour (0–23)</label>
-          <input type="number" id="tHour" min="0" max="23" value="8">
-        </div>
-        <div class="col" style="max-width:120px">
-          <label>Minute (0–59)</label>
-          <input type="number" id="tMin" min="0" max="59" value="0">
-        </div>
-        <div class="col" style="display:flex;align-items:flex-end">
-          <button class="btn btn-primary" onclick="setTime()">&#128336; Set Time</button>
+      <div style="display:flex;gap:6px;margin-bottom:14px">
+        <button id="tabNtp"    class="btn btn-sm" onclick="switchClockTab('ntp')">&#127760; NTP</button>
+        <button id="tabRtc"    class="btn btn-sm" onclick="switchClockTab('rtc')">&#128267; RTC</button>
+        <button id="tabManual" class="btn btn-sm" onclick="switchClockTab('manual')">&#9998; Manual</button>
+      </div>
+      <div id="panelNtp" style="display:none">
+        <p style="color:#34c97e;font-size:.9rem;margin:0">&#10003; Время синхронизировано по NTP (UTC+3).</p>
+        <p style="color:#aaa;font-size:.82rem;margin:6px 0 0">Для переключения на другой режим отключите WiFi или нажмите Manual.</p>
+      </div>
+      <div id="panelRtc" style="display:none">
+        <p style="color:#f8c34f;font-size:.9rem;margin:0">&#128267; DS3231 RTC.</p>
+        <p style="color:#aaa;font-size:.82rem;margin:6px 0 0">Время берётся из RTC-модуля (батарейка CR2032). При наличии WiFi NTP имеет приоритет.</p>
+      </div>
+      <div id="panelManual" style="display:none">
+        <p style="color:#aaa;font-size:.82rem;margin-bottom:12px">Установите время вручную (UTC+3). Используйте для тестирования переключения дней.</p>
+        <div class="row">
+          <div class="col" style="max-width:120px">
+            <label>Hour (0–23)</label>
+            <input type="number" id="tHour" min="0" max="23" value="23">
+          </div>
+          <div class="col" style="max-width:120px">
+            <label>Minute (0–59)</label>
+            <input type="number" id="tMin" min="0" max="59" value="58">
+          </div>
+          <div class="col" style="display:flex;align-items:flex-end">
+            <button class="btn btn-primary" onclick="setTime()">&#128336; Set Time</button>
+          </div>
         </div>
       </div>
     </div>
@@ -427,6 +439,7 @@ let activeDayNum = -1;
 // ─────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   initCards();
+  switchClockTab('manual');
   refreshAll();
   setInterval(refreshAll, 5000);
   setInterval(updateClock, 1000);
@@ -474,6 +487,15 @@ async function refreshAll() {
 // ─────────────────────────────────────────────
 // Status
 // ─────────────────────────────────────────────
+function switchClockTab(tab) {
+  ['ntp','rtc','manual'].forEach(t => {
+    document.getElementById('panel' + t.charAt(0).toUpperCase() + t.slice(1)).style.display = (t === tab) ? '' : 'none';
+    const btn = document.getElementById('tab' + t.charAt(0).toUpperCase() + t.slice(1));
+    btn.classList.toggle('btn-primary', t === tab);
+    btn.classList.toggle('btn-ghost',   t !== tab);
+  });
+}
+
 async function loadStatus() {
   try {
     const r = await fetch('/api/status');
@@ -494,18 +516,22 @@ async function loadStatus() {
       badge.textContent = '🌐 NTP';
       badge.style.background = 'rgba(52,201,126,.15)';
       badge.style.color = 'var(--green)';
+      switchClockTab('ntp');
     } else if (d.time_source === 'rtc') {
       badge.textContent = '🔋 RTC';
       badge.style.background = 'rgba(52,201,126,.15)';
       badge.style.color = 'var(--green)';
+      switchClockTab('rtc');
     } else if (d.time_source === 'manual') {
       badge.textContent = '✏️ Manual';
       badge.style.background = 'rgba(248,195,79,.12)';
       badge.style.color = 'var(--yellow)';
+      switchClockTab('manual');
     } else {
       badge.textContent = '⚠️ Not set';
       badge.style.background = 'rgba(248,95,95,.12)';
       badge.style.color = 'var(--red)';
+      switchClockTab('manual');
     }
   } catch(e) {
     document.getElementById('wifiStat').innerHTML = '<span class="dot dot-red"></span>Offline';
