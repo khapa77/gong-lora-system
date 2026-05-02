@@ -191,6 +191,42 @@ tr:hover td { background: rgba(79,158,248,.04); }
 
 <div class="main">
 
+  <!-- ── Schedule ── -->
+  <div class="card" id="sectionSchedule">
+    <div class="card-title">
+      <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0">
+        <span style="color:#4f9ef8">Schedule</span>
+        <span id="gongCountdown" style="font-size:1rem;font-weight:600;color:#34c97e;font-variant-numeric:tabular-nums"></span>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:2px">
+          <button class="btn btn-ghost btn-sm" onclick="schedNavDay(-1)" style="padding:4px 10px;font-size:1rem">&laquo;</button>
+          <span id="schedDayLabel" style="min-width:72px;text-align:center;font-size:.85rem;font-weight:600">День 00</span>
+          <button class="btn btn-ghost btn-sm" onclick="schedNavDay(1)"  style="padding:4px 10px;font-size:1rem">&raquo;</button>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="openAddModal()">+ Add</button>
+        <button class="collapse-btn" onclick="toggleCard('sectionSchedule')">&#9662;</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Description</th>
+            <th>Track</th>
+            <th>Loop</th>
+            <th>Status</th>
+            <th style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="schedBody">
+          <tr><td colspan="6" class="empty-row">Loading&#8230;</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- ── Manual Control ── -->
   <div class="card" id="sectionControl">
     <div class="card-title">
@@ -259,42 +295,6 @@ tr:hover td { background: rgba(79,158,248,.04); }
           </div>
         </div>
       </div>
-    </div>
-  </div>
-
-  <!-- ── Schedule ── -->
-  <div class="card" id="sectionSchedule">
-    <div class="card-title">
-      <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0">
-        <span style="color:#4f9ef8">Schedule</span>
-        <span id="gongCountdown" style="font-size:1rem;font-weight:600;color:#34c97e;font-variant-numeric:tabular-nums"></span>
-      </div>
-      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        <div style="display:flex;align-items:center;gap:2px">
-          <button class="btn btn-ghost btn-sm" onclick="schedNavDay(-1)" style="padding:4px 10px;font-size:1rem">&laquo;</button>
-          <span id="schedDayLabel" style="min-width:72px;text-align:center;font-size:.85rem;font-weight:600">День 00</span>
-          <button class="btn btn-ghost btn-sm" onclick="schedNavDay(1)"  style="padding:4px 10px;font-size:1rem">&raquo;</button>
-        </div>
-        <button class="btn btn-primary btn-sm" onclick="openAddModal()">+ Add</button>
-        <button class="collapse-btn" onclick="toggleCard('sectionSchedule')">&#9662;</button>
-      </div>
-    </div>
-    <div class="card-body">
-      <table>
-        <thead>
-          <tr>
-            <th>Time</th>
-            <th>Description</th>
-            <th>Track</th>
-            <th>Loop</th>
-            <th>Status</th>
-            <th style="text-align:right">Actions</th>
-          </tr>
-        </thead>
-        <tbody id="schedBody">
-          <tr><td colspan="6" class="empty-row">Loading&#8230;</td></tr>
-        </tbody>
-      </table>
     </div>
   </div>
 
@@ -840,7 +840,7 @@ async function postJSON(url, body, method = 'POST') {
 // ─────────────────────────────────────────────
 // Collapsible cards
 // ─────────────────────────────────────────────
-const CARD_IDS = ['sectionControl','sectionClock','sectionSchedule','sectionClients','sectionSecurity','sectionWifi'];
+const CARD_IDS = ['sectionSchedule','sectionControl','sectionClock','sectionClients','sectionSecurity','sectionWifi'];
 
 function initCards() {
   CARD_IDS.forEach(id => {
