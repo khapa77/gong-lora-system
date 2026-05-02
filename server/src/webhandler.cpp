@@ -9,7 +9,7 @@
 #include <WiFiUdp.h>
 #include <NTPClient.h>
 #include <ArduinoJson.h>
-#include <lwip/apps/sntp.h>
+#include <esp_sntp.h>
 
 bool       apMode = false;
 static WebServer server(80);
@@ -216,7 +216,7 @@ static void handleTimeSource() {
     String src = server.arg("s");
     if (src == "manual") {
         ntpDisabled = true;
-        sntp_stop();
+        esp_sntp_stop();
         Serial.println("[TIME] NTP disabled, manual mode active");
     } else {
         ntpDisabled = false;

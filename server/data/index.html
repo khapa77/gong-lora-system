@@ -449,10 +449,24 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(updateClock, 1000);
 });
 
+let espTime = '';      // HH:MM:SS from last /api/status
+let espTimestamp = 0;  // millis() when we received it
+
 function updateClock() {
-  const now = new Date();
-  document.getElementById('clock').textContent =
-    now.toLocaleTimeString('ru-RU', { hour12: false });
+  let display = '';
+  if (espTime && Date.now() - espTimestamp < 10000) {
+    // advance ESP32 time locally each second
+    const [hh, mm, ss] = espTime.split(':').map(Number);
+    const elapsed = Math.round((Date.now() - espTimestamp) / 1000);
+    const total = hh * 3600 + mm * 60 + ss + elapsed;
+    const h = Math.floor(total / 3600) % 24;
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    display = pad(h) + ':' + pad(m) + ':' + pad(s);
+  } else {
+    display = new Date().toLocaleTimeString('ru-RU', { hour12: false });
+  }
+  document.getElementById('clock').textContent = display;
   updateCountdown();
 }
 
@@ -520,6 +534,7 @@ async function loadStatus() {
     document.getElementById('clientStat').textContent = 'Clients: ' + (d.clients ?? '—');
     const kb = Math.round((d.heap || 0) / 1024);
     document.getElementById('heapStat').textContent = kb ? 'Heap: ' + kb + 'KB' : '';
+    if (d.ntp_time) { espTime = d.ntp_time; espTimestamp = Date.now(); }
     const badge = document.getElementById('clockSourceBadge');
     if (!badge) return;
     if (d.time_source === 'ntp') {
