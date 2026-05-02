@@ -6,6 +6,7 @@
 #include "rtchandler.h"
 #include <SPIFFS.h>
 #include <WiFi.h>
+#include <ESPmDNS.h>
 #include <WiFiUdp.h>
 #include <NTPClient.h>
 #include <ArduinoJson.h>
@@ -426,6 +427,8 @@ bool wifi_connect() {
 
     if (WiFi.status() == WL_CONNECTED) {
         Serial.printf("\n[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+        MDNS.begin(MDNS_NAME);
+        Serial.printf("[MDNS] http://%s.local\n", MDNS_NAME);
         ntp.begin();
         ntp.update();
         configTime(NTP_UTC_OFFSET, 0, NTP_SERVER);
@@ -443,6 +446,8 @@ void wifi_startAP() {
     apMode = true;
     Serial.printf("[WIFI] AP '%s' started — IP: %s\n",
                   AP_SSID, WiFi.softAPIP().toString().c_str());
+    MDNS.begin(MDNS_NAME);
+    Serial.printf("[MDNS] http://%s.local\n", MDNS_NAME);
 }
 
 // -------------------------------------------------------

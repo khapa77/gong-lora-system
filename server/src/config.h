@@ -2,6 +2,7 @@
 
 // ── WiFi ──────────────────────────────────────────────────────────────────
 #define AP_SSID           "GongServer"
+#define MDNS_NAME         "gong"        // http://gong.local
 #define AP_PASSWORD       "vipassana"   // минимум 8 символов для WPA2
 #define WIFI_TIMEOUT_MS   10000
 #define WIFI_CONFIG_FILE  "/wifi.conf"
