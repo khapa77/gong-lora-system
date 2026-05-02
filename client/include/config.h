@@ -12,9 +12,9 @@
 
 // LoRa RF settings — must match server exactly
 #define LORA_FREQ      433E6
-#define LORA_SF        12
-#define LORA_BW        62.5E3
-#define LORA_CR        6
+#define LORA_SF        9
+#define LORA_BW        125E3
+#define LORA_CR        5
 #define LORA_SYNC_WORD 0xF3
 #define LORA_TX_POWER  20
 
@@ -36,4 +36,5 @@
 #define DEFAULT_VOLUME 25
 
 // LoRa HMAC-подпись — должен совпадать с сервером!
-#define LORA_HMAC_KEY  "change_me_before_deploy_32chars!"
+// #define LORA_HMAC_KEY  "change_me_before_deploy_32chars!"
+#define LORA_HMAC_KEY           "!vK7#2xM"
