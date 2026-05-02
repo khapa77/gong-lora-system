@@ -346,6 +346,33 @@ static void handleAuthDisable() {
     Serial.println("[AUTH] Auth disabled");
 }
 
+// -------------------------------------------------------
+// /api/days  /api/day  /api/day/activate
+// -------------------------------------------------------
+static void handleDaysStatus() {
+    if (!checkAuth()) return;
+    DynamicJsonDocument doc(64);
+    doc["active"] = sched_getActiveDay();
+    doc["count"]  = 12;
+    String s; serializeJson(doc, s);
+    sendJSON(200, s);
+}
+
+static void handleDayGet() {
+    if (!checkAuth()) return;
+    int n = server.arg("n").toInt();
+    if (n < 0 || n > 11) { sendErr("invalid day (0-11)"); return; }
+    sendJSON(200, sched_dayJSON((uint8_t)n));
+}
+
+static void handleDayActivate() {
+    if (!checkAuth()) return;
+    int n = server.arg("n").toInt();
+    if (n < 0 || n > 11) { sendErr("invalid day (0-11)"); return; }
+    if (sched_activateDay((uint8_t)n)) sendOK();
+    else sendErr("day file not found on SPIFFS");
+}
+
 static void handleNotFound() {
     server.send(404, "text/plain", "Not found");
 }
@@ -443,6 +470,13 @@ void web_setup() {
     server.on("/api/auth/status", HTTP_GET,    handleAuthStatus);
     server.on("/api/auth/save",   HTTP_POST,   handleAuthSave);
     server.on("/api/auth/disable",HTTP_POST,   handleAuthDisable);
+
+    server.on("/api/days",           HTTP_OPTIONS, handleOptions);
+    server.on("/api/day",            HTTP_OPTIONS, handleOptions);
+    server.on("/api/day/activate",   HTTP_OPTIONS, handleOptions);
+    server.on("/api/days",           HTTP_GET,  handleDaysStatus);
+    server.on("/api/day",            HTTP_GET,  handleDayGet);
+    server.on("/api/day/activate",   HTTP_POST, handleDayActivate);
 
     server.onNotFound(handleNotFound);
     server.begin();
