@@ -393,24 +393,6 @@ static void handleDayActivate() {
     else sendErr("day file not found on SPIFFS");
 }
 
-static void handleDayNext() {
-    if (!checkAuth()) return;
-    int cur = sched_getActiveDay();
-    if (cur < 0) { sendErr("no active day"); return; }
-    int next = cur + 1;
-    if (next > 11) { sendErr("already last day"); return; }
-    char path[16];
-    snprintf(path, sizeof(path), "/day%02d.conf", next);
-    if (!SPIFFS.exists(path)) { sendErr("next day file missing"); return; }
-    if (sched_activateDay((uint8_t)next)) {
-        DynamicJsonDocument doc(32);
-        doc["day"] = next;
-        String s; serializeJson(doc, s);
-        sendJSON(200, s);
-    } else {
-        sendErr("activate failed");
-    }
-}
 
 static void handleNotFound() {
     server.send(404, "text/plain", "Not found");
@@ -515,11 +497,9 @@ void web_setup() {
     server.on("/api/days",           HTTP_OPTIONS, handleOptions);
     server.on("/api/day",            HTTP_OPTIONS, handleOptions);
     server.on("/api/day/activate",   HTTP_OPTIONS, handleOptions);
-    server.on("/api/day/next",       HTTP_OPTIONS, handleOptions);
     server.on("/api/days",           HTTP_GET,  handleDaysStatus);
     server.on("/api/day",            HTTP_GET,  handleDayGet);
     server.on("/api/day/activate",   HTTP_POST, handleDayActivate);
-    server.on("/api/day/next",       HTTP_POST, handleDayNext);
 
     server.onNotFound(handleNotFound);
     server.begin();
