@@ -257,11 +257,11 @@ tr:hover td { background: rgba(79,158,248,.04); }
       Schedule
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
         <div style="display:flex;align-items:center;gap:2px">
-          <button class="btn btn-ghost btn-sm" onclick="schedNavDay(-1)" style="padding:4px 10px;font-size:1.1rem">&#8249;</button>
+          <button class="btn btn-ghost btn-sm" onclick="schedNavDay(-1)" style="padding:4px 10px;font-size:1rem">&laquo;</button>
           <span id="schedDayLabel" style="min-width:72px;text-align:center;font-size:.85rem;font-weight:600">День 00</span>
-          <button class="btn btn-ghost btn-sm" onclick="schedNavDay(1)"  style="padding:4px 10px;font-size:1.1rem">&#8250;</button>
+          <button class="btn btn-ghost btn-sm" onclick="schedNavDay(1)"  style="padding:4px 10px;font-size:1rem">&raquo;</button>
         </div>
-        <button class="btn btn-primary btn-sm" id="schedAddBtn" onclick="openAddModal()">+ Add</button>
+        <button class="btn btn-primary btn-sm" onclick="openAddModal()">+ Add</button>
         <button class="collapse-btn" onclick="toggleCard('sectionSchedule')">&#9662;</button>
       </div>
     </div>
@@ -281,10 +281,6 @@ tr:hover td { background: rgba(79,158,248,.04); }
           <tr><td colspan="6" class="empty-row">Loading&#8230;</td></tr>
         </tbody>
       </table>
-      <div id="schedActivateRow" class="btn-group" style="display:none;margin-top:4px">
-        <button class="btn btn-yellow btn-sm" onclick="schedActivate()">&#9654; Активировать День <span id="schedActivateLabel">00</span></button>
-        <span style="color:var(--muted);font-size:.78rem;align-self:center">только просмотр</span>
-      </div>
     </div>
   </div>
 
@@ -420,7 +416,7 @@ tr:hover td { background: rgba(79,158,248,.04); }
 // ─────────────────────────────────────────────
 let schedules    = [];
 let editId       = null;
-let schedDayView = 0;
+let schedDayView = -1;
 let activeDayNum = -1;
 
 // ─────────────────────────────────────────────
@@ -428,7 +424,6 @@ let activeDayNum = -1;
 // ─────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   initCards();
-  renderSchedDayHeader();
   refreshAll();
   setInterval(refreshAll, 5000);
   setInterval(updateClock, 1000);
@@ -807,8 +802,10 @@ async function loadDaysStatus() {
     const r = await fetch('/api/days');
     const d = await r.json();
     activeDayNum = d.active;
-    renderSchedDayHeader();
-    await renderSchedView();
+    if (schedDayView < 0) {
+      schedDayView = activeDayNum >= 0 ? activeDayNum : 0;
+      renderSchedDayHeader();
+    }
   } catch { /* ignore */ }
 }
 
@@ -818,67 +815,27 @@ async function loadDaysStatus() {
 function schedNavDay(delta) {
   schedDayView = Math.max(0, Math.min(11, schedDayView + delta));
   renderSchedDayHeader();
-  renderSchedView();
+  schedActivateSilent(schedDayView);
 }
 
 function renderSchedDayHeader() {
   const lbl = document.getElementById('schedDayLabel');
   if (lbl) lbl.textContent = 'День ' + pad(schedDayView);
-  const albl = document.getElementById('schedActivateLabel');
-  if (albl) albl.textContent = pad(schedDayView);
+}
+
+async function schedActivateSilent(day) {
+  try {
+    const r = await fetch('/api/day/activate?n=' + day, { method: 'POST' });
+    const d = await r.json();
+    if (d && d.ok) {
+      activeDayNum = day;
+      await loadSchedules();
+    }
+  } catch { /* ignore */ }
 }
 
 async function renderSchedView() {
-  const isActive = (schedDayView === activeDayNum);
-  const addBtn      = document.getElementById('schedAddBtn');
-  const activateRow = document.getElementById('schedActivateRow');
-  if (addBtn)      addBtn.style.display      = isActive ? '' : 'none';
-  if (activateRow) activateRow.style.display = isActive ? 'none' : '';
-
-  if (isActive) {
-    renderSchedule();
-  } else {
-    try {
-      const r = await fetch('/api/day?n=' + schedDayView);
-      const data = await r.json();
-      renderDayPreview(data);
-    } catch {
-      document.getElementById('schedBody').innerHTML =
-        '<tr><td colspan="6" class="empty-row">Ошибка загрузки</td></tr>';
-    }
-  }
-}
-
-function renderDayPreview(sched) {
-  const tbody = document.getElementById('schedBody');
-  if (!sched || !sched.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty-row">Расписание не задано</td></tr>';
-    return;
-  }
-  const sorted = [...sched].sort((a,b) => a.hour*60+a.min - (b.hour*60+b.min));
-  tbody.innerHTML = sorted.map(s => `
-    <tr>
-      <td><span class="time-badge">${pad(s.hour)}:${pad(s.min)}</span></td>
-      <td>${esc(s.desc)}</td>
-      <td style="color:var(--muted)">&#127925;&nbsp;${s.track}</td>
-      <td style="color:var(--muted)">${s.loop > 1 ? '&#x21BA;&nbsp;' + s.loop : '1'}</td>
-      <td><span class="tag ${s.en ? 'tag-on' : 'tag-off'}">${s.en ? 'ON' : 'OFF'}</span></td>
-      <td></td>
-    </tr>`).join('');
-}
-
-async function schedActivate() {
-  if (!confirm('Активировать День ' + pad(schedDayView) + '?\nТекущее расписание будет заменено.')) return;
-  const r = await fetch('/api/day/activate?n=' + schedDayView, { method: 'POST' });
-  const d = await r.json();
-  if (d && d.ok) {
-    activeDayNum = schedDayView;
-    renderSchedDayHeader();
-    toast('День ' + pad(schedDayView) + ' активирован', 'ok');
-    await loadSchedules();
-  } else {
-    toast((d && d.err) || 'Ошибка', 'err');
-  }
+  renderSchedule();
 }
 </script>
 </body>
