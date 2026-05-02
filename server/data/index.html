@@ -254,7 +254,10 @@ tr:hover td { background: rgba(79,158,248,.04); }
   <!-- ── Schedule ── -->
   <div class="card" id="sectionSchedule">
     <div class="card-title">
-      Schedule
+      <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0">
+        Schedule
+        <span id="gongCountdown" style="font-size:.78rem;font-weight:400;color:#7a7f9a;font-variant-numeric:tabular-nums"></span>
+      </div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
         <div style="display:flex;align-items:center;gap:2px">
           <button class="btn btn-ghost btn-sm" onclick="schedNavDay(-1)" style="padding:4px 10px;font-size:1rem">&laquo;</button>
@@ -433,6 +436,35 @@ function updateClock() {
   const now = new Date();
   document.getElementById('clock').textContent =
     now.toLocaleTimeString('ru-RU', { hour12: false });
+  updateCountdown();
+}
+
+function computeNextGong() {
+  const active = schedules.filter(s => s.en);
+  if (!active.length) return null;
+  const now = new Date();
+  const nowSec = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+  let best = null, bestDiff = Infinity;
+  for (const s of active) {
+    let diff = s.hour * 3600 + s.min * 60 - nowSec;
+    if (diff <= 0) diff += 86400;
+    if (diff < bestDiff) { bestDiff = diff; best = s; }
+  }
+  return best ? { entry: best, sec: bestDiff } : null;
+}
+
+function updateCountdown() {
+  const el = document.getElementById('gongCountdown');
+  if (!el) return;
+  const next = computeNextGong();
+  if (!next) { el.textContent = ''; return; }
+  const { entry, sec } = next;
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  const countdown = h > 0 ? h + ':' + pad(m) + ':' + pad(s) : pad(m) + ':' + pad(s);
+  el.style.color = sec < 120 ? '#f8c34f' : '#7a7f9a';
+  el.textContent = '⏱ ' + pad(entry.hour) + ':' + pad(entry.min) + ' → ' + countdown;
 }
 
 async function refreshAll() {
@@ -445,19 +477,19 @@ async function refreshAll() {
 async function loadStatus() {
   try {
     const r = await fetch('/api/status');
+    if (!r.ok) { document.getElementById('wifiStat').innerHTML = '<span class="dot dot-red"></span>Server error ' + r.status; return; }
     const d = await r.json();
     const wEl = document.getElementById('wifiStat');
     if (d.mode === 'AP') {
-      wEl.innerHTML = '<span class="dot dot-yellow"></span>AP: ' + d.ssid + ' (' + d.ip + ')';
+      wEl.innerHTML = '<span class="dot dot-yellow"></span>AP: ' + (d.ssid||'?') + ' (' + (d.ip||'?') + ')';
     } else {
-      wEl.innerHTML = '<span class="dot dot-green"></span>' + d.ssid + ' ' + d.ip;
+      wEl.innerHTML = '<span class="dot dot-green"></span>' + (d.ssid||'—') + '&nbsp;' + (d.ip||'—');
     }
-    document.getElementById('clientStat').textContent = 'Clients: ' + d.clients;
-    const kb = Math.round(d.heap / 1024);
-    document.getElementById('heapStat').textContent = 'Heap: ' + kb + 'KB';
-
-    // Clock source badge
+    document.getElementById('clientStat').textContent = 'Clients: ' + (d.clients ?? '—');
+    const kb = Math.round((d.heap || 0) / 1024);
+    document.getElementById('heapStat').textContent = kb ? 'Heap: ' + kb + 'KB' : '';
     const badge = document.getElementById('clockSourceBadge');
+    if (!badge) return;
     if (d.time_source === 'ntp') {
       badge.textContent = '🌐 NTP';
       badge.style.background = 'rgba(52,201,126,.15)';
@@ -475,7 +507,9 @@ async function loadStatus() {
       badge.style.background = 'rgba(248,95,95,.12)';
       badge.style.color = 'var(--red)';
     }
-  } catch { /* ignore */ }
+  } catch(e) {
+    document.getElementById('wifiStat').innerHTML = '<span class="dot dot-red"></span>Offline';
+  }
 }
 
 // ─────────────────────────────────────────────

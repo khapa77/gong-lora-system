@@ -17,6 +17,9 @@ static int           lastFiredKey    = -1;
 static unsigned long lastFiredMillis = 0;
 static unsigned long lastTimeLog     = 0;
 
+// Midnight auto-advance guard
+static unsigned long lastAutoAdvanceMs = 0;
+
 // -------------------------------------------------------
 void sched_setup() {
     sched_load();
@@ -56,6 +59,21 @@ void sched_check() {
     if (millis() - lastTimeLog >= 60000UL) {
         Serial.printf("[SCHED] Time %02d:%02d (entries=%d)\n", h, m, count);
         lastTimeLog = millis();
+    }
+
+    // At midnight auto-advance to next day if its file exists
+    if (h == 0 && m == 0 && millis() - lastAutoAdvanceMs > 65000UL) {
+        int activeDay = sched_getActiveDay();
+        if (activeDay >= 0) {
+            uint8_t nextDay = (uint8_t)(activeDay + 1);
+            char path[16];
+            snprintf(path, sizeof(path), "/day%02d.conf", (int)nextDay);
+            if (SPIFFS.exists(path)) {
+                Serial.printf("[SCHED] Midnight: day %02d -> %02d\n", activeDay, nextDay);
+                sched_activateDay(nextDay);
+            }
+        }
+        lastAutoAdvanceMs = millis();
     }
 
     // Guard: prevent re-triggering within the same minute.
@@ -222,8 +240,15 @@ bool sched_activateDay(uint8_t day) {
     char path[16];
     snprintf(path, sizeof(path), "/day%02d.conf", (int)day);
     if (!SPIFFS.exists(path)) {
-        Serial.printf("[SCHED] Day %02d not found\n", (int)day);
-        return false;
+        File nf = SPIFFS.open(path, "w");
+        if (!nf) { Serial.printf("[SCHED] Day %02d: create failed\n", (int)day); return false; }
+        // First-ever activation (no activeday.conf): seed with current schedule so
+        // existing entries are not lost. Subsequent new days start empty.
+        bool firstActivation = (sched_getActiveDay() < 0);
+        nf.print(firstActivation ? sched_toJSON() : String("[]"));
+        nf.close();
+        Serial.printf("[SCHED] Day %02d created (%s)\n", (int)day,
+                      firstActivation ? "seeded from current" : "empty");
     }
 
     // Flush current schedule to its day file before switching
