@@ -255,8 +255,8 @@ tr:hover td { background: rgba(79,158,248,.04); }
   <div class="card" id="sectionSchedule">
     <div class="card-title">
       <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0">
-        Schedule
-        <span id="gongCountdown" style="font-size:.78rem;font-weight:400;color:#7a7f9a;font-variant-numeric:tabular-nums"></span>
+        <span style="color:#4f9ef8">Schedule</span>
+        <span id="gongCountdown" style="font-size:1rem;font-weight:600;color:#34c97e;font-variant-numeric:tabular-nums"></span>
       </div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
         <div style="display:flex;align-items:center;gap:2px">
@@ -463,7 +463,7 @@ function updateCountdown() {
   const m = Math.floor((sec % 3600) / 60);
   const s = sec % 60;
   const countdown = h > 0 ? h + ':' + pad(m) + ':' + pad(s) : pad(m) + ':' + pad(s);
-  el.style.color = sec < 120 ? '#f8c34f' : '#7a7f9a';
+  el.style.color = sec < 60 ? '#f85f5f' : sec < 120 ? '#f8c34f' : '#34c97e';
   el.textContent = '⏱ ' + pad(entry.hour) + ':' + pad(entry.min) + ' → ' + countdown;
 }
 
