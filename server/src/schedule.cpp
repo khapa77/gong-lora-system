@@ -142,10 +142,22 @@ String sched_toJSON() {
 }
 
 void sched_save() {
+    String json = sched_toJSON();
+
     File f = SPIFFS.open(SCHEDULE_FILE, "w");
     if (!f) { Serial.println("[SCHED] Save failed"); return; }
-    f.print(sched_toJSON());
+    f.print(json);
     f.close();
+
+    // Mirror every edit back into the active day file so changes survive day switches
+    int day = sched_getActiveDay();
+    if (day >= 0) {
+        char path[16];
+        snprintf(path, sizeof(path), "/day%02d.conf", day);
+        File df = SPIFFS.open(path, "w");
+        if (df) { df.print(json); df.close(); }
+    }
+
     Serial.printf("[SCHED] Saved %d entries\n", count);
 }
 
@@ -213,10 +225,27 @@ bool sched_activateDay(uint8_t day) {
         Serial.printf("[SCHED] Day %02d not found\n", (int)day);
         return false;
     }
-    if (!sched_parseFromPath(path)) return false;
+
+    // Flush current schedule to its day file before switching
+    // (activeday.conf still points to the old day here)
     sched_save();
-    File f = SPIFFS.open("/activeday.conf", "w");
-    if (f) { f.printf("{\"day\":%d}", (int)day); f.close(); }
+
+    // Load new day into memory
+    if (!sched_parseFromPath(path)) return false;
+
+    // Write new day to /gong.conf directly — do NOT call sched_save() here,
+    // because activeday.conf still holds the old day number and would
+    // overwrite the old day's file with the new day's content.
+    String json = sched_toJSON();
+    File gf = SPIFFS.open(SCHEDULE_FILE, "w");
+    if (!gf) return false;
+    gf.print(json);
+    gf.close();
+
+    // Now update active day tracker
+    File af = SPIFFS.open("/activeday.conf", "w");
+    if (af) { af.printf("{\"day\":%d}", (int)day); af.close(); }
+
     Serial.printf("[SCHED] Activated day %02d (%d entries)\n", (int)day, count);
     return true;
 }
