@@ -259,6 +259,11 @@ tr:hover td { background: rgba(79,158,248,.04); }
             <button class="btn btn-primary" onclick="setTime()">&#128336; Set Time</button>
           </div>
         </div>
+        <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+          <p style="color:#aaa;font-size:.82rem;margin-bottom:8px">&#x1F6E0; Отладка: принудительное переключение на следующий день (без ожидания полуночи).</p>
+          <button class="btn btn-ghost" onclick="debugNextDay()" style="color:#f8c34f;border-color:#f8c34f">&#9197; Перейти на следующий день</button>
+          <span id="debugDayResult" style="margin-left:12px;font-size:.85rem;color:#aaa"></span>
+        </div>
       </div>
     </div>
   </div>
@@ -634,6 +639,20 @@ async function setTime() {
   const r = await postJSON('/api/time', { hour: h, min: m });
   if (r && r.ok) { toast(`Time set to ${pad(h)}:${pad(m)}`, 'ok'); await loadStatus(); }
   else toast(r?.err || 'Error', 'err');
+}
+async function debugNextDay() {
+  const el = document.getElementById('debugDayResult');
+  el.textContent = '...';
+  const r = await fetch('/api/day/next', { method: 'POST' });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok && d.day !== undefined) {
+    el.style.color = '#34c97e';
+    el.textContent = 'Активирован день ' + String(d.day).padStart(2,'0');
+    await Promise.all([loadSchedules(), loadDaysStatus()]);
+  } else {
+    el.style.color = '#f85f5f';
+    el.textContent = d.err || 'Ошибка';
+  }
 }
 async function stopAll() {
   const r = await fetch('/api/stop', { method: 'POST' });
