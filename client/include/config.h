@@ -13,7 +13,7 @@
 // LoRa RF settings — must match server exactly
 #define LORA_FREQ      433E6
 #define LORA_SF        9
-#define LORA_BW        125E3
+#define LORA_BW        250E3
 #define LORA_CR        5
 #define LORA_SYNC_WORD 0xF3
 #define LORA_TX_POWER  20

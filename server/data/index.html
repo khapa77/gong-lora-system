@@ -641,9 +641,24 @@ async function saveWifi() {
   const pass = document.getElementById('wPass').value;
   if (!ssid) { toast('Enter SSID', 'err'); return; }
   if (!confirm('Save WiFi and restart ESP32?')) return;
-  const r = await postJSON('/api/wifi/save', { ssid, password: pass });
-  if (r && r.ok) toast('Saved — restarting…', 'ok');
-  else toast('Error saving', 'err');
+  try {
+    const resp = await fetch('/api/wifi/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ssid, password: pass })
+    });
+    if (resp.ok) {
+      toast('Saved — restarting. Reconnect to the network.', 'ok');
+    } else {
+      try {
+        const d = await resp.json();
+        toast(d.err || 'Save failed (' + resp.status + ')', 'err');
+      } catch { toast('Save failed (' + resp.status + ')', 'err'); }
+    }
+  } catch {
+    // Network dropped — ESP is restarting (expected)
+    toast('Restarting… reconnect to the WiFi network.', 'ok');
+  }
 }
 async function resetWifi() {
   if (!confirm('Reset WiFi config? Device will restart in AP mode.')) return;
