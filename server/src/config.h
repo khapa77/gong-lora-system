@@ -12,15 +12,17 @@
 #define NTP_UTC_OFFSET    10800      // секунды; UTC+3 (Москва)
 
 // ── LoRa (SX1276 / SX1278) ────────────────────────────────────────────────
+
+#define LORA_FREQ      433.0     // 433 MHz
+#define LORA_SF        7         // Spreading factor 7..12
+#define LORA_BW        125.0     // Bandwidth Hz
+#define LORA_CR        5         // Coding rate 5..8
+#define LORA_SYNC_WORD 0x12      // Private network word
+#define LORA_TX_POWER  20        // dBm (max 20)
+
 #define LORA_SS           5
 #define LORA_RST          14
 #define LORA_DIO0         2
-#define LORA_FREQ         433E6      // 433 МГц; меняй на 868E6 / 915E6
-#define LORA_SYNC_WORD    0xF3
-#define LORA_SF           9          // 8-12
-#define LORA_BW           250E3      // 125 62.5E3
-#define LORA_CR           5
-#define LORA_TX_POWER     20
 
 // ── LoRa типы сообщений ───────────────────────────────────────────────────
 #define MSG_GONG          0x01
