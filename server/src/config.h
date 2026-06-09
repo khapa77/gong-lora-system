@@ -22,7 +22,7 @@
 
 #define LORA_SS           5
 #define LORA_RST          14
-#define LORA_DIO0         2
+#define LORA_DIO0         4
 
 // ── LoRa типы сообщений ───────────────────────────────────────────────────
 #define MSG_GONG          0x01

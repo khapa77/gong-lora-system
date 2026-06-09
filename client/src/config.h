@@ -8,7 +8,7 @@
 // LoRa module pins — same wiring as server
 #define LORA_SS        5
 #define LORA_RST       14
-#define LORA_DIO0      2
+#define LORA_DIO0      4
 
 // LoRa RF settings — must match server exactly
 
