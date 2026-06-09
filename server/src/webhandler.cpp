@@ -395,6 +395,10 @@ static void handleDayActivate() {
 }
 
 
+static void handleFavicon() {
+    server.send(204);
+}
+
 static void handleNotFound() {
     server.send(404, "text/plain", "Not found");
 }
@@ -475,6 +479,7 @@ void web_setup() {
     server.on("/api/auth/disable",HTTP_OPTIONS, handleOptions);
 
     // Routes
+    server.on("/favicon.ico",     HTTP_GET,    handleFavicon);
     server.on("/",                HTTP_GET,    handleRoot);
     server.on("/api/schedule",    HTTP_GET,    handleScheduleGET);
     server.on("/api/schedule",    HTTP_POST,   handleSchedulePOST);
