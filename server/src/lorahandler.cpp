@@ -151,6 +151,7 @@ static void handleACK(const String& payload, int rssi) {
 }
 
 // -------------------------------------------------------
+
 void lora_setup() {
     SPI.begin(18, 19, 23, LORA_SS);
 
@@ -167,8 +168,12 @@ void lora_setup() {
     Serial.printf("[LORA] Server ready @ %.0f MHz  SF=%d BW=%.0fk\n",
                   freqMHz, LORA_SF, bwKHz);
 
-    radio.startReceive();
+    radio.startReceive();   
 }
+
+
+
+
 
 // -------------------------------------------------------
 // lora_loop — non-blocking TX state machine + RX
