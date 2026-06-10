@@ -3,7 +3,6 @@
 #include <Arduino.h>
 
 void   lora_setup();
-void   lora_loop();
 void   lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop = 1);
 void   lora_sendStop();
 void   lora_sendHeartbeat();

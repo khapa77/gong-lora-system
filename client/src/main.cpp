@@ -31,7 +31,7 @@ void setup() {
 }
 
 void loop() {
-    lora_loop();
+    lora_poll();   // drain Core 0 → Core 1 command queue
     // Audio needs frequent feeding — multiple calls per cycle, no delay
     for (int i = 0; i < 8; i++) mp3_loop();
 }
