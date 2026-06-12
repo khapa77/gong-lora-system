@@ -50,9 +50,22 @@ static void saveAuth() {
 static bool checkAuth() {
     if (!authEnabled || authPassword.length() == 0) return true;
     if (server.authenticate("admin", authPassword.c_str())) return true;
-    server.requestAuthentication(BASIC_AUTH, AUTH_REALM, "Login required");
+    
+    // Отправляем заголовок авторизации напрямую
+    server.sendHeader("WWW-Authenticate", String("Basic realm=\"") + AUTH_REALM + "\"");
+    // Отправляем непустой текст, чтобы убрать варнинг "content length is zero"
+    server.send(401, "text/plain", "Unauthorized");
+    
     return false;
 }
+
+
+// static bool checkAuth() {
+//    if (!authEnabled || authPassword.length() == 0) return true;
+//    if (server.authenticate("admin", authPassword.c_str())) return true;
+//    server.requestAuthentication(BASIC_AUTH, AUTH_REALM, "Login required");
+//    return false;
+// }
 
 // -------------------------------------------------------
 // Helpers

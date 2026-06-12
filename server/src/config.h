@@ -14,11 +14,11 @@
 // ── LoRa (SX1276 / SX1278) ────────────────────────────────────────────────
 
 #define LORA_FREQ      433.0     // 433 MHz
-#define LORA_SF        7        // Spreading factor 7..12
+#define LORA_SF        8        // Spreading factor 7..12
 #define LORA_BW        125.0     // Bandwidth kHz
-#define LORA_CR        8         // Coding rate 5..8
+#define LORA_CR        7         // Coding rate 5..8
 #define LORA_SYNC_WORD 0x12      // Private network word
-#define LORA_TX_POWER  6        // dBm (max 20)
+#define LORA_TX_POWER  17        // dBm (max 20)
 
 #define LORA_SS           5
 #define LORA_RST          14
