@@ -58,7 +58,7 @@
 ESP32          LoRa SX1278          (VSPI, RadioLib)
 GPIO5   ──── NSS / CS
 GPIO14  ──── RST
-GPIO2   ──── DIO0
+GPIO4   ──── DIO0
 GPIO18  ──── SCK
 GPIO19  ──── MISO
 GPIO23  ──── MOSI
@@ -87,7 +87,7 @@ GND     ──── GND
 ESP32          LoRa SX1278          (VSPI, RadioLib)
 GPIO5   ──── NSS / CS
 GPIO14  ──── RST
-GPIO2   ──── DIO0
+GPIO4   ──── DIO0
 GPIO18  ──── SCK
 GPIO19  ──── MISO
 GPIO23  ──── MOSI

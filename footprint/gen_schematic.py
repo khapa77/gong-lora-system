@@ -31,6 +31,46 @@ def nc_mark(x, y):
     wire(x-5, y-5, x+5, y+5)
     wire(x-5, y+5, x+5, y-5)
 
+def passive(x, y, ref, value, net_top, net_bot, fill='#fff8e8'):
+    rect(x, y, 30, 50, fill=fill)
+    text(x+15, y+25, ref, size='7pt', bold='bold')
+    text(x+35, y+20, value, anchor='left', size='7pt', color='#333333')
+    # top pin
+    wire(x+15, y-15, x+15, y)
+    netlabel(x+15, y-15, net_top, rot=270)  # вверх
+    # bottom pin
+    wire(x+15, y+50, x+15, y+65)
+    netlabel(x+15, y+65, net_bot, rot=90)   # вниз
+
+# ─────────────────────────────────────────
+# Компонент в корпусе SOT-223 (AMS1117, 3 пина)
+# ─────────────────────────────────────────
+def sot223(x, y, ref, name, pin1_name, pin1_net, pin2_name, pin2_net, pin3_name, pin3_net, w=100, h=130):
+    """
+    SOT-223 pinout (AMS1117-3.3):
+    Pin 1 (left)  = GND / ADJ  → для фиксированного 3.3V это GND
+    Pin 2 (tab)   = VOUT       — большая пластина, подключена к pin2
+    Pin 3 (right) = VIN
+    """
+    rect(x, y, w, h, fill='#eef0ff')
+    text(x+w//2, y+14, ref, bold='bold', size='11pt')
+    text(x+w//2, y+28, name, size='8pt')
+    # Pin 1 - left
+    py1 = y + 50
+    wire(x-30, py1, x, py1)
+    text(x+5, py1, pin1_name, anchor='left', size='7pt', color='#444444')
+    netlabel(x-30, py1, pin1_net, rot=180)
+    # Pin 2 - bottom (tab/VOUT) — выводим снизу
+    py2 = y + h
+    wire(x+w//2, y+h, x+w//2, py2)
+    text(x+w//2+5, y+h+10, pin2_name, anchor='left', size='7pt', color='#444444')
+    netlabel(x+w//2, py2, pin2_net, rot=90)
+    # Pin 3 - right
+    py3 = y + 80
+    wire(x+w, py3, x+w+30, py3)
+    text(x+w-5, py3, pin3_name, anchor='right', size='7pt', color='#444444')
+    netlabel(x+w+30, py3, pin3_net, rot=0)
+
 # ─────────────────────────────────────────
 # TITLE
 # ─────────────────────────────────────────
@@ -96,7 +136,7 @@ right_pins = [
     'GPIO18',   # LORA_SCK
     'GPIO5',    # LORA_NSS
     'GPIO17', 'GPIO16', 'GPIO4', 'GPIO0',
-    'GPIO2',    # LORA_DIO0
+    'GPIO4',    # LORA_DIO0 (interrupt on Core 0)
     'GPIO15', 'GPIO8', 'GPIO7',
 ]
 right_nets = {
@@ -108,7 +148,7 @@ right_nets = {
     'GPIO19': 'LORA_MISO',
     'GPIO18': 'LORA_SCK',
     'GPIO5':  'LORA_NSS',
-    'GPIO2':  'LORA_DIO0',
+    'GPIO4':  'LORA_DIO0',
 }
 for i, pname in enumerate(right_pins):
     py = PIN_START + i * PIN_PITCH
@@ -221,21 +261,29 @@ for i,(pn,net) in enumerate([('+Vo','+5V'), ('-Vo','GND')]):
     netlabel(ex, py, net, rot=0)
 
 # ─────────────────────────────────────────
-# Пассивные компоненты
+# U5 — AMS1117-3.3 (SOT-223)  5V → 3.3V для LoRa/RTC/I2C
 # ─────────────────────────────────────────
-def passive(x, y, ref, value, net_top, net_bot, fill='#fff8e8'):
-    rect(x, y, 30, 50, fill=fill)
-    text(x+15, y+25, ref, size='7pt', bold='bold')
-    text(x+35, y+20, value, anchor='left', size='7pt', color='#333333')
-    # top pin
-    wire(x+15, y-15, x+15, y)
-    netlabel(x+15, y-15, net_top, rot=270)  # вверх
-    # bottom pin
-    wire(x+15, y+50, x+15, y+65)
-    netlabel(x+15, y+65, net_bot, rot=90)   # вниз
+# Размещаем между HLK и ESP32, чуть ниже
+U5X, U5Y = 80, 260
+sot223(U5X, U5Y, 'U5', 'AMS1117-3.3',
+       'GND',   'GND',       # Pin 1 (left) — GND
+       'VOUT',  '+3V3',      # Pin 2 (tab)  — VOUT → +3V3 rail
+       'VIN',   '+5V')       # Pin 3 (right) — VIN from HLK +5V
 
+# Входные конденсаторы AMS1117 (близко к VIN)
+passive(U5X - 60, U5Y - 30, 'C4', '10uF/10V', '+5V',  'GND')
+passive(U5X - 10, U5Y - 30, 'C5', '100nF',     '+5V',  'GND')
+
+# Выходные конденсаторы AMS1117 (близко к VOUT)
+passive(U5X + 110, U5Y - 30, 'C6', '10uF/6.3V', '+3V3', 'GND')
+passive(U5X + 160, U5Y - 30, 'C7', '100nF',     '+3V3', 'GND')
+
+# ─────────────────────────────────────────
+# Пассивные компоненты (старая группа — оставляем для обратной совместимости, но C3 теперь дублирует C6/C7)
+# ─────────────────────────────────────────
 passive(70,  310, 'C1', '100uF/10V', '+5V',  'GND')
 passive(120, 310, 'C2', '100nF',     '+5V',  'GND')
+# C3 оставляем как bulk на 3V3 шине (дополнительно к C6/C7 у регулятора)
 passive(70,  420, 'C3', '100nF',     '+3V3', 'GND')
 passive(70,  530, 'R1', '4.7k',      '+3V3', 'I2C_SDA', fill='#fff0f0')
 passive(120, 530, 'R2', '4.7k',      '+3V3', 'I2C_SCL', fill='#fff0f0')
@@ -260,7 +308,7 @@ schematic = {
     "netFlag": ""
 }
 
-OUT = '/root/test1-gong/gong-lora-system/footprint/gong_server_schematic.json'
+OUT = 'gong_server_schematic.json'
 with open(OUT, 'w', encoding='utf-8') as f:
     json.dump(schematic, f, indent=2, ensure_ascii=False)
 
