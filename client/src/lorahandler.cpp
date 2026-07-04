@@ -98,7 +98,7 @@ static void sendAck(int rxRssi) {
 static void loraTask(void*) {
     for (;;) {
         if (!dioFlag) {
-            vTaskDelay(1);
+            vTaskDelay(pdMS_TO_TICKS(20));  // ← was 1ms; 20ms yields to IDLE0 for WDT reset
             continue;
         }
         dioFlag = false;
@@ -106,14 +106,17 @@ static void loraTask(void*) {
         size_t len = radio.getPacketLength();
         if (len == 0 || len > LORA_PAYLOAD_MAX) {
             radio.startReceive();
+            taskYIELD();                    // yield after RadioLib call
             continue;
         }
 
         uint8_t buf[LORA_PAYLOAD_MAX + 1];
         if (radio.readData(buf, len) != RADIOLIB_ERR_NONE) {
             radio.startReceive();
+            taskYIELD();
             continue;
         }
+        taskYIELD();  // yield after readData (can block at SF12)
 
         uint8_t type = buf[0];
         String  payload = "";
@@ -127,6 +130,7 @@ static void loraTask(void*) {
             DynamicJsonDocument doc(512);
             if (deserializeJson(doc, payload) || !verifyMsg(type, doc)) {
                 radio.startReceive();
+                taskYIELD();
                 continue;
             }
             serializeJson(doc, payload);
@@ -157,13 +161,16 @@ static void loraTask(void*) {
             xQueueSend(rxQueue, &cmd, 0);
         } else if (type == MSG_STOP) {
             radio.startReceive();
+            taskYIELD();
             xQueueSend(rxQueue, &cmd, 0);
         } else if (type == MSG_SCHEDULE) {
             Serial.printf("[LORA] Schedule received (%u bytes)\n", (unsigned)(len - 1));
             radio.startReceive();
+            taskYIELD();
         } else {
             Serial.printf("[LORA] Unknown type 0x%02X\n", type);
             radio.startReceive();
+            taskYIELD();
         }
     }
 }
@@ -186,6 +193,10 @@ void lora_setup() {
     rxQueue = xQueueCreate(4, sizeof(RxCmd));
     attachInterrupt(digitalPinToInterrupt(LORA_DIO0), onDio0, RISING);
     radio.startReceive();
+    // Debug: verify RX mode and DIO0 pin state
+    Serial.printf("[LORA] startReceive() done, getPacketLength()=%d, getRSSI()=%.1f\n",
+                  radio.getPacketLength(), radio.getRSSI());
+    Serial.printf("[LORA] DIO0 pin=%d, digitalRead=%d\n", LORA_DIO0, digitalRead(LORA_DIO0));
     xTaskCreatePinnedToCore(loraTask, "lora_rx", 5120, nullptr, 2, nullptr, 0);
 }
 
