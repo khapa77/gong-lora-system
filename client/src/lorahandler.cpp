@@ -85,11 +85,32 @@ static void sendAck(int rxRssi) {
     if (plen > LORA_PAYLOAD_MAX) plen = LORA_PAYLOAD_MAX;
     memcpy(buf + 1, payload.c_str(), plen);
 
-    int state = radio.transmit(buf, 1 + plen);
-    if (state != RADIOLIB_ERR_NONE)
-        Serial.printf("[LORA] ACK TX failed: %d\n", state);
-    else
-        Serial.printf("[LORA] ACK sent as '%s'\n", CLIENT_ID);
+    // Non-blocking TX: radio.transmit() busy-waits for TxDone with no
+    // vTaskDelay inside, which at SF12/CR8 (~10-20s airtime) starves
+    // IDLE0 on this core long enough to trip the task watchdog.
+    // startTransmit()/finishTransmit() let us yield every tick instead.
+    dioFlag = false;
+    int state = radio.startTransmit(buf, 1 + plen);
+    if (state == RADIOLIB_ERR_NONE) {
+        uint32_t waitStart = millis();
+        const uint32_t txTimeoutMs = 30000;  // generous cap for SF12/CR8
+        while (!dioFlag && millis() - waitStart < txTimeoutMs) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        if (dioFlag) {
+            dioFlag = false;
+            state = radio.finishTransmit();
+            if (state != RADIOLIB_ERR_NONE)
+                Serial.printf("[LORA] ACK TX failed: %d\n", state);
+            else
+                Serial.printf("[LORA] ACK sent as '%s'\n", CLIENT_ID);
+        } else {
+            Serial.println("[LORA] ACK TX timed out");
+            radio.finishTransmit();
+        }
+    } else {
+        Serial.printf("[LORA] ACK TX start failed: %d\n", state);
+    }
 
     radio.startReceive();
 }
