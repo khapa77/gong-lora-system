@@ -229,7 +229,7 @@ static void loraTask(void*) {
 // ────────────────────────────────────────────────────────────────
 void lora_setup() {
     // Create RTOS primitives FIRST — they must exist even if radio init fails
-    txQueue    = xQueueCreate(2, sizeof(TxReq));
+    txQueue    = xQueueCreate(8, sizeof(TxReq));
     txGongDone = xSemaphoreCreateBinary();
     clientsMtx = xSemaphoreCreateMutex();
 
