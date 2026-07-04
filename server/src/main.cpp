@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <SPIFFS.h>
+#include <esp_core_dump.h>
 #include "config.h"
 #include "mp3handler.h"
 #include "schedule.h"
@@ -26,6 +27,10 @@ static void onGongFire(uint8_t track, uint8_t loop) {
 void setup() {
     Serial.begin(115200);
     delay(500);
+
+    // Erase any stale core dump from previous crash
+    esp_core_dump_image_erase();
+
     Serial.println("\n==============================");
     Serial.println("  Gong LoRa SERVER v2.0");
     Serial.println("==============================");

@@ -228,6 +228,11 @@ static void loraTask(void*) {
 
 // ────────────────────────────────────────────────────────────────
 void lora_setup() {
+    // Create RTOS primitives FIRST — they must exist even if radio init fails
+    txQueue    = xQueueCreate(2, sizeof(TxReq));
+    txGongDone = xSemaphoreCreateBinary();
+    clientsMtx = xSemaphoreCreateMutex();
+
     SPI.begin(18, 19, 23, LORA_SS);
 
     float freqMHz = (float)LORA_FREQ;
@@ -235,15 +240,11 @@ void lora_setup() {
     int state = radio.begin(freqMHz, bwKHz, LORA_SF, LORA_CR,
                             LORA_SYNC_WORD, LORA_TX_POWER, 8, 0);
     if (state != RADIOLIB_ERR_NONE) {
-        Serial.printf("[LORA] Init FAILED: %d — check module wiring!\n", state);
-        return;
+        Serial.printf("[LORA] Init FAILED: %d — check module wiring! (queues created, LoRa disabled)\n", state);
+        return;  // queues exist, LoRa task will just spin on empty queue
     }
     Serial.printf("[LORA] Server ready @ %.0f MHz  SF=%d BW=%.0fk  (Core 0)\n",
                   freqMHz, LORA_SF, bwKHz);
-
-    txQueue    = xQueueCreate(2, sizeof(TxReq));
-    txGongDone = xSemaphoreCreateBinary();
-    clientsMtx = xSemaphoreCreateMutex();
 
     attachInterrupt(digitalPinToInterrupt(LORA_DIO0), onDio0, RISING);
     radio.startReceive();
