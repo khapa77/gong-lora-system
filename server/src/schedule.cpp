@@ -1,7 +1,6 @@
 #include "schedule.h"
 #include "config.h"
 #include <SPIFFS.h>
-#include <WiFi.h>
 #include <time.h>
 #include <new>
 #include <ArduinoJson.h>
@@ -41,8 +40,9 @@ void sched_check() {
         return;
     }
 
-    // Accept time from NTP (WiFi connected) or manually set by user (year >= 2024)
-    bool timeValid = (WiFi.status() == WL_CONNECTED) || (ti.tm_year >= 124);
+    // Accept time only once it's actually a real date (from NTP, DS3231, or
+    // manual set) — WiFi being connected does NOT mean NTP has synced yet.
+    bool timeValid = (ti.tm_year >= 124);
     if (!timeValid) {
         static unsigned long lastWarn = 0;
         if (millis() - lastWarn >= 60000UL) {

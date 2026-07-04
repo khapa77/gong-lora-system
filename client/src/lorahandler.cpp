@@ -39,6 +39,11 @@ static String computeHMAC(uint8_t msgType, const String& payload) {
 
 static uint32_t lastServerTs = 0;
 
+// A backward jump this large means the server rebooted without RTC/NTP
+// and restarted its clock near zero — treat it as a resync, not an
+// attack. Only a small backward/equal jump is flagged as a real replay.
+static const uint32_t REPLAY_RESYNC_GAP_S = 3600;
+
 static bool verifyMsg(uint8_t type, DynamicJsonDocument& doc) {
     String sig = doc["sig"] | "";
     if (sig.length() == 0) {
@@ -53,11 +58,17 @@ static bool verifyMsg(uint8_t type, DynamicJsonDocument& doc) {
         return false;
     }
     uint32_t ts = doc["ts"] | 0;
-    if (ts > 0 && ts <= lastServerTs) {
-        Serial.printf("[LORA] Replay ts=%u last=%u — rejected\n", ts, lastServerTs);
-        return false;
+    if (ts > 0) {
+        if (ts <= lastServerTs) {
+            uint32_t drop = lastServerTs - ts;
+            if (drop < REPLAY_RESYNC_GAP_S) {
+                Serial.printf("[LORA] Replay ts=%u last=%u — rejected\n", ts, lastServerTs);
+                return false;
+            }
+            Serial.printf("[LORA] Server clock reset (ts=%u < last=%u) — resyncing\n", ts, lastServerTs);
+        }
+        lastServerTs = ts;
     }
-    if (ts > 0) lastServerTs = ts;
     return true;
 }
 
