@@ -269,7 +269,7 @@ tr:hover td { background: rgba(79,158,248,.04); }
     <div class="card-body">
       <div style="display:flex;gap:6px;margin-bottom:14px">
         <button id="tabNtp"    class="btn btn-sm" onclick="setTimeSource('ntp')">&#127760; NTP</button>
-        <button id="tabRtc"    class="btn btn-sm" onclick="switchClockTab('rtc')">&#128267; RTC</button>
+        <button id="tabRtc"    class="btn btn-sm" onclick="setTimeSource('rtc')">&#128267; RTC</button>
         <button id="tabManual" class="btn btn-sm" onclick="setTimeSource('manual')">&#9998; Manual</button>
       </div>
       <div id="panelNtp" style="display:none">
@@ -277,7 +277,7 @@ tr:hover td { background: rgba(79,158,248,.04); }
       </div>
       <div id="panelRtc" style="display:none">
         <p style="color:#f8c34f;font-size:.9rem;margin:0">&#128267; DS3231 RTC.</p>
-        <p style="color:#aaa;font-size:.82rem;margin:6px 0 0">Время берётся из RTC-модуля (батарейка CR2032). При наличии WiFi NTP имеет приоритет.</p>
+        <p style="color:#aaa;font-size:.82rem;margin:6px 0 0">Время берётся из RTC-модуля (батарейка CR2032) и остаётся источником, пока вы явно не переключитесь на NTP или Manual.</p>
       </div>
       <div id="panelManual" style="display:none">
         <p style="color:#aaa;font-size:.82rem;margin-bottom:12px">Установите время вручную (UTC+3).</p>
@@ -511,7 +511,7 @@ async function refreshAll() {
 // ─────────────────────────────────────────────
 async function setTimeSource(src) {
   await fetch('/api/time/source?s=' + src, { method: 'POST' });
-  switchClockTab(src === 'ntp' ? 'ntp' : 'manual');
+  switchClockTab(src);
   await loadStatus();
 }
 

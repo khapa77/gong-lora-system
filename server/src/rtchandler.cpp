@@ -8,6 +8,31 @@ static bool rtcPresent   = false;
 static bool rtcValidTime = false;
 
 // -------------------------------------------------------
+// Reads DS3231 and, if the battery has held, pushes its time into the
+// ESP32 system clock. Shared by rtc_setup() (boot) and rtc_loadToSystem()
+// (user explicitly selects RTC as the time source at runtime).
+// -------------------------------------------------------
+static bool loadFromRTC() {
+    if (!rtcPresent) return false;
+
+    if (rtc.lostPower()) {
+        // Battery ran out or first boot — time is garbage, don't use it
+        rtcValidTime = false;
+        return false;
+    }
+
+    DateTime now = rtc.now();
+    struct timeval tv = { .tv_sec = (time_t)now.unixtime(), .tv_usec = 0 };
+    settimeofday(&tv, nullptr);
+    rtcValidTime = true;
+
+    Serial.printf("[RTC] Time loaded from DS3231: %04d-%02d-%02d %02d:%02d:%02d\n",
+                  now.year(), now.month(), now.day(),
+                  now.hour(), now.minute(), now.second());
+    return true;
+}
+
+// -------------------------------------------------------
 // Called once in setup().
 // Probes DS3231 on I2C (SDA=21, SCL=22).
 // If found and battery has not died, loads time into ESP32 system clock.
@@ -21,22 +46,12 @@ void rtc_setup() {
     }
     rtcPresent = true;
 
-    if (rtc.lostPower()) {
-        // Battery ran out or first boot — time is garbage, don't use it
+    if (!loadFromRTC()) {
         Serial.println("[RTC] DS3231 found but lost power — time not valid, set via NTP or manually");
-        return;
     }
-
-    // DS3231 has a valid timestamp — push it into the ESP32 system clock
-    DateTime now = rtc.now();
-    struct timeval tv = { .tv_sec = (time_t)now.unixtime(), .tv_usec = 0 };
-    settimeofday(&tv, nullptr);
-    rtcValidTime = true;
-
-    Serial.printf("[RTC] Time loaded from DS3231: %04d-%02d-%02d %02d:%02d:%02d\n",
-                  now.year(), now.month(), now.day(),
-                  now.hour(), now.minute(), now.second());
 }
+
+bool rtc_loadToSystem() { return loadFromRTC(); }
 
 // -------------------------------------------------------
 bool rtc_isPresent()   { return rtcPresent; }

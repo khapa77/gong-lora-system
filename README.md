@@ -58,7 +58,7 @@
 ESP32          LoRa SX1278          (VSPI, RadioLib)
 GPIO5   ──── NSS / CS
 GPIO14  ──── RST
-GPIO2   ──── DIO0
+GPIO4   ──── DIO0
 GPIO18  ──── SCK
 GPIO19  ──── MISO
 GPIO23  ──── MOSI
@@ -87,7 +87,7 @@ GND     ──── GND
 ESP32          LoRa SX1278          (VSPI, RadioLib)
 GPIO5   ──── NSS / CS
 GPIO14  ──── RST
-GPIO2   ──── DIO0
+GPIO4   ──── DIO0
 GPIO18  ──── SCK
 GPIO19  ──── MISO
 GPIO23  ──── MOSI
@@ -108,11 +108,13 @@ GND     ──── GND
 | Параметр | Значение |
 |----------|----------|
 | Частота | 433 МГц |
-| Spreading Factor | SF7 |
-| Bandwidth | 125 кГц |
-| Coding Rate | 4/5 |
+| Spreading Factor | **SF12** |
+| Bandwidth | **31.25 кГц** |
+| Coding Rate | **4/8** |
 | Sync Word | `0xF3` |
 | TX Power | 20 дБм |
+
+> Настройка **максимальной чувствительности** (SF12, узкий BW, сильный FEC) — для работы на плохих антеннах / больших дистанциях. Airtime пакета ~1.2 сек. Task WDT увеличен до 15с.
 
 ---
 
@@ -134,7 +136,7 @@ pio run -t uploadfs
 ### Clients
 
 Для каждого клиента:
-1. Открой `client/include/config.h`
+1. Открой `client/src/config.h`
 2. Измени `CLIENT_ID` на уникальное имя (например `"room_A"`, `"room_B"`)
 3. Положи MP3-файлы в `client/data/` (`0001.mp3`, `0002.mp3` …)
 4. Залей прошивку и SPIFFS:
@@ -320,13 +322,12 @@ gong-lora-system/
 │       └── gong.conf
 └── client/                  # Client ESP32 (N штук)
     ├── platformio.ini
-    ├── include/
-    │   ├── config.h         ← CLIENT_ID здесь!
-    │   ├── mp3handler.h
-    │   └── lorahandler.h
     └── src/
+        ├── config.h         ← CLIENT_ID здесь!
         ├── main.cpp
+        ├── mp3handler.h
         ├── mp3handler.cpp
+        ├── lorahandler.h
         └── lorahandler.cpp
 ```
 
@@ -393,7 +394,7 @@ gong-lora-system/
 #define LORA_HMAC_KEY  "your_secret_key_here_min16chars!"
 ```
 
-`client/include/config.h`:
+`client/src/config.h`:
 ```cpp
 #define LORA_HMAC_KEY  "your_secret_key_here_min16chars!"
 ```
@@ -410,3 +411,11 @@ gong-lora-system/
 - [khapa77/Gong_new](https://github.com/khapa77/Gong_new)
 - [khapa77/ring](https://github.com/khapa77/ring)
 - [khapa77/gong_dullabha](https://github.com/khapa77/gong_dullabha)
+
+---
+
+## Скриншоты
+
+![Web UI 1](./images/web1.png)
+![Web UI 2](./images/web2.png)
+![Web UI 3](./images/web3.png)
