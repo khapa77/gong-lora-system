@@ -48,7 +48,8 @@ void setup() {
 
 void loop() {
     web_loop();
-    lora_loop();
+    // LoRa runs on Core 0 (FreeRTOS task)
+
     // Аудио нужно часто подпитывать — несколько вызовов за цикл
     for (int i = 0; i < 8; i++) mp3_loop();
 

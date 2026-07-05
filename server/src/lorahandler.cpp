@@ -5,32 +5,30 @@
 #include <ArduinoJson.h>
 #include <time.h>
 #include "mbedtls/md.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
+#include <freertos/semphr.h>
 
 #define LORA_PAYLOAD_MAX 256
 
 static Module mod(LORA_SS, LORA_DIO0, LORA_RST, RADIOLIB_NC);
 static SX1278 radio(&mod);
 
-// -------------------------------------------------------
-// Non-blocking TX queue (single slot)
-// -------------------------------------------------------
-static uint8_t  txBuf[LORA_PAYLOAD_MAX + 1];
-static size_t   txLen     = 0;
-static bool     txPending = false;
-static bool     txBusy    = false;
-static uint8_t  txType    = 0;
+// ── DIO0 interrupt — fires on both TX-done and RX-done ──────────
+static volatile bool dioFlag = false;
+static void IRAM_ATTR onDio0() { dioFlag = true; }
 
-static void txEnqueue(uint8_t type, const uint8_t* buf, size_t len) {
-    if (len > LORA_PAYLOAD_MAX + 1) len = LORA_PAYLOAD_MAX + 1;
-    memcpy(txBuf, buf, len);
-    txLen     = len;
-    txType    = type;
-    txPending = true;
-}
+// ── TX queue (Core 1 → Core 0) ──────────────────────────────────
+struct TxReq {
+    uint8_t type;
+    uint8_t buf[LORA_PAYLOAD_MAX + 1];
+    size_t  len;
+};
+static QueueHandle_t     txQueue    = nullptr;
+static SemaphoreHandle_t txGongDone = nullptr;  // signaled by Core 0 when GONG TX done
 
-// -------------------------------------------------------
-// Track known clients
-// -------------------------------------------------------
+// ── Client list + mutex ──────────────────────────────────────────
 #define MAX_CLIENTS 16
 
 struct ClientInfo {
@@ -41,11 +39,12 @@ struct ClientInfo {
     uint32_t oneWayMs;
 };
 
-static ClientInfo clients[MAX_CLIENTS];
-static uint8_t    cliCount = 0;
+static ClientInfo        clients[MAX_CLIENTS];
+static uint8_t           cliCount    = 0;
+static SemaphoreHandle_t clientsMtx  = nullptr;
 
-static uint32_t lastHeartbeatSentMs = 0;
-static const uint32_t ACK_RANDOM_DELAY_AVG_MS = 45;
+static volatile uint32_t lastHeartbeatSentMs = 0;
+static const uint32_t    ACK_RANDOM_DELAY_AVG_MS = 45;
 
 static void upsertClient(const String& id, int rssi, uint32_t rtt) {
     unsigned long now = millis();
@@ -88,9 +87,7 @@ static void upsertClient(const String& id, int rssi, uint32_t rtt) {
     Serial.printf("[LORA] New client registered: %s\n", id.c_str());
 }
 
-// -------------------------------------------------------
-// HMAC-SHA256: sign [type_byte | payload], return 8-byte hex (16 chars)
-// -------------------------------------------------------
+// ── HMAC-SHA256 ──────────────────────────────────────────────────
 static String computeHMAC(uint8_t msgType, const String& payload) {
     uint8_t hmac[32];
     mbedtls_md_context_t ctx;
@@ -114,9 +111,7 @@ static uint32_t nowTs() {
     return (t > 100000UL) ? (uint32_t)t : (uint32_t)(millis() / 1000);
 }
 
-// -------------------------------------------------------
-// Prepare packet and enqueue (non-blocking)
-// -------------------------------------------------------
+// ── loraSend — enqueue TX request from Core 1 ───────────────────
 static void loraSend(uint8_t type, const String& payload) {
     String finalPayload = payload;
 
@@ -129,117 +124,135 @@ static void loraSend(uint8_t type, const String& payload) {
     size_t plen = finalPayload.length();
     if (plen > LORA_PAYLOAD_MAX) plen = LORA_PAYLOAD_MAX;
 
-    uint8_t buf[LORA_PAYLOAD_MAX + 1];
-    buf[0] = type;
-    memcpy(buf + 1, finalPayload.c_str(), plen);
+    TxReq req;
+    req.type   = type;
+    req.buf[0] = type;
+    memcpy(req.buf + 1, finalPayload.c_str(), plen);
+    req.len = 1 + plen;
 
-    txEnqueue(type, buf, 1 + plen);
-
-    Serial.printf("[LORA] TX queued type=0x%02X payload_len=%u\n",
-                  type, (unsigned)plen);
+    if (xQueueSend(txQueue, &req, pdMS_TO_TICKS(200)) != pdTRUE)
+        Serial.printf("[LORA] TX queue full, dropping type=0x%02X\n", type);
+    else
+        Serial.printf("[LORA] TX queued type=0x%02X payload_len=%u\n",
+                      type, (unsigned)plen);
 }
 
-// -------------------------------------------------------
-static void handleACK(const String& payload, int rssi) {
-    DynamicJsonDocument doc(256);
-    if (deserializeJson(doc, payload)) return;
-    String id = doc["id"] | "unknown";
-    uint32_t rtt = (lastHeartbeatSentMs > 0)
-                   ? (uint32_t)(millis() - lastHeartbeatSentMs) : 0;
-    upsertClient(id, rssi, rtt);
-    Serial.printf("[LORA] ACK from '%s' RSSI=%d dBm\n", id.c_str(), rssi);
+// ── Core 0: LoRa task — non-blocking TX state machine + RX ──────
+static void loraTask(void*) {
+    bool    txBusy = false;
+    uint8_t txType = 0;
+
+    for (;;) {
+        // ── TX busy: wait for DIO0 rising edge (TX done) ─────────
+        if (txBusy) {
+            if (dioFlag) {
+                dioFlag = false;
+                int st = radio.finishTransmit();
+                txBusy = false;
+                if (st != RADIOLIB_ERR_NONE)
+                    Serial.printf("[LORA] TX finish error: %d\n", st);
+                else
+                    Serial.printf("[LORA] TX done type=0x%02X\n", txType);
+                if (txType == MSG_GONG)
+                    xSemaphoreGive(txGongDone);
+                radio.startReceive();
+            }
+            vTaskDelay(1);
+            continue;
+        }
+
+        // ── Start pending TX ──────────────────────────────────────
+        TxReq req;
+        if (xQueueReceive(txQueue, &req, 0) == pdTRUE) {
+            dioFlag = false;  // clear stale RX flag before TX
+            txType  = req.type;
+            int st  = radio.startTransmit(req.buf, req.len);
+            if (st != RADIOLIB_ERR_NONE) {
+                Serial.printf("[LORA] TX start error: %d\n", st);
+                if (req.type == MSG_GONG) xSemaphoreGive(txGongDone);
+                radio.startReceive();
+            } else {
+                txBusy = true;
+                Serial.printf("[LORA] TX started type=0x%02X len=%u\n",
+                              req.type, (unsigned)req.len);
+            }
+            vTaskDelay(1);
+            continue;
+        }
+
+        // ── RX: check for received packet ─────────────────────────
+        if (!dioFlag) {
+            vTaskDelay(1);
+            continue;
+        }
+        dioFlag = false;
+
+        size_t len = radio.getPacketLength();
+        if (len == 0 || len > LORA_PAYLOAD_MAX) {
+            radio.startReceive();
+            continue;
+        }
+
+        uint8_t buf[LORA_PAYLOAD_MAX + 1];
+        if (radio.readData(buf, len) != RADIOLIB_ERR_NONE) {
+            radio.startReceive();
+            continue;
+        }
+
+        uint8_t msgType = buf[0];
+        String  payload = "";
+        for (size_t i = 1; i < len; i++) payload += (char)buf[i];
+        int rssi = (int)radio.getRSSI();
+
+        Serial.printf("[LORA] RX type=0x%02X len=%u RSSI=%d\n",
+                      msgType, (unsigned)(len - 1), rssi);
+
+        if (msgType == MSG_ACK) {
+            DynamicJsonDocument doc(256);
+            if (!deserializeJson(doc, payload)) {
+                String id   = doc["id"] | "unknown";
+                uint32_t rtt = (lastHeartbeatSentMs > 0)
+                               ? (uint32_t)(millis() - lastHeartbeatSentMs) : 0;
+                xSemaphoreTake(clientsMtx, portMAX_DELAY);
+                upsertClient(id, rssi, rtt);
+                xSemaphoreGive(clientsMtx);
+                Serial.printf("[LORA] ACK from '%s' RSSI=%d dBm\n", id.c_str(), rssi);
+            }
+        } else {
+            Serial.printf("[LORA] Unhandled type 0x%02X\n", msgType);
+        }
+
+        radio.startReceive();
+    }
 }
 
-// -------------------------------------------------------
+// ────────────────────────────────────────────────────────────────
 void lora_setup() {
+    // Create RTOS primitives FIRST — they must exist even if radio init fails
+    txQueue    = xQueueCreate(8, sizeof(TxReq));
+    txGongDone = xSemaphoreCreateBinary();
+    clientsMtx = xSemaphoreCreateMutex();
+
     SPI.begin(18, 19, 23, LORA_SS);
 
-    float freqMHz = (float)(LORA_FREQ / 1e6);
-    float bwKHz   = (float)(LORA_BW / 1e3);
+    float freqMHz = (float)LORA_FREQ;
+    float bwKHz   = (float)LORA_BW;
     int state = radio.begin(freqMHz, bwKHz, LORA_SF, LORA_CR,
                             LORA_SYNC_WORD, LORA_TX_POWER);
-
     if (state != RADIOLIB_ERR_NONE) {
-        Serial.printf("[LORA] Init FAILED: %d — check module wiring!\n", state);
-        return;
+        Serial.printf("[LORA] Init FAILED: %d — check module wiring! (queues created, LoRa disabled)\n", state);
+        return;  // queues exist, LoRa task will just spin on empty queue
     }
-
-    Serial.printf("[LORA] Server ready @ %.0f MHz  SF=%d BW=%.0fk\n",
+    Serial.printf("[LORA] Server ready @ %.0f MHz  SF=%d BW=%.0fk  (Core 0)\n",
                   freqMHz, LORA_SF, bwKHz);
 
     pinMode(LORA_DIO0, INPUT);
+    attachInterrupt(digitalPinToInterrupt(LORA_DIO0), onDio0, RISING);
     radio.startReceive();
+    xTaskCreatePinnedToCore(loraTask, "lora", 6144, nullptr, 2, nullptr, 0);
 }
 
-// -------------------------------------------------------
-// lora_loop — non-blocking TX state machine + RX
-// -------------------------------------------------------
-void lora_loop() {
-
-    // ── TX ──────────────────────────────────────────────
-    if (txBusy) {
-        // DIO0 HIGH = TX done
-        if (digitalRead(LORA_DIO0)) {
-            int state = radio.finishTransmit();
-            txBusy = false;
-            if (state != RADIOLIB_ERR_NONE) {
-                Serial.printf("[LORA] TX finish error: %d\n", state);
-            } else {
-                Serial.printf("[LORA] TX done type=0x%02X\n", txType);
-            }
-            radio.startReceive();
-        }
-        return;
-    }
-
-    if (txPending) {
-        txPending = false;
-        txBusy    = true;
-        int state = radio.startTransmit(txBuf, txLen);
-        if (state != RADIOLIB_ERR_NONE) {
-            Serial.printf("[LORA] TX start error: %d\n", state);
-            txBusy = false;
-            radio.startReceive();
-        }
-        return;
-    }
-
-    // ── RX ──────────────────────────────────────────────
-    // DIO0 HIGH = packet received (startReceive mode)
-    if (!digitalRead(LORA_DIO0)) return;
-
-    size_t len = radio.getPacketLength();
-    if (len == 0 || len > LORA_PAYLOAD_MAX) {
-        radio.startReceive();
-        return;
-    }
-
-    uint8_t buf[LORA_PAYLOAD_MAX + 1];
-    int state = radio.readData(buf, len);
-    if (state != RADIOLIB_ERR_NONE) {
-        radio.startReceive();
-        return;
-    }
-
-    uint8_t type    = buf[0];
-    String  payload = "";
-    for (size_t i = 1; i < len; i++) payload += (char)buf[i];
-
-    int rssi = (int)radio.getRSSI();
-
-    Serial.printf("[LORA] RX type=0x%02X len=%u RSSI=%d\n",
-                  type, (unsigned)(len - 1), rssi);
-
-    switch (type) {
-        case MSG_ACK: handleACK(payload, rssi); break;
-        default:
-            Serial.printf("[LORA] Unhandled type 0x%02X\n", type);
-    }
-
-    radio.startReceive();
-}
-
-// -------------------------------------------------------
+// ────────────────────────────────────────────────────────────────
 void lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop) {
     DynamicJsonDocument doc(128);
     doc["track"] = track;
@@ -249,12 +262,12 @@ void lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop) {
     String s;
     serializeJson(doc, s);
     loraSend(MSG_GONG, s);
-    Serial.printf("[LORA] GONG TX — track=%d vol=%d loop=%d clients=%d\n",
-                  track, vol, loop, cliCount);
 
-    // Block until TX completes so mp3_play() starts after client receives the packet.
-    // This preserves audio sync: client begins playback at TX-end, same as server.
-    while (txPending || txBusy) lora_loop();
+    // Block Core 1 until TX completes — both sides start audio after TX
+    xSemaphoreTake(txGongDone, pdMS_TO_TICKS(30000));
+
+    Serial.printf("[LORA] GONG TX done — track=%d vol=%d loop=%d clients=%d\n",
+                  track, vol, loop, lora_clientCount());
 }
 
 void lora_sendStop() {
@@ -263,12 +276,11 @@ void lora_sendStop() {
     String s;
     serializeJson(doc, s);
     loraSend(MSG_STOP, s);
-    Serial.println("[LORA] STOP queued");
+    Serial.printf("[LORA] STOP queued\n");
 }
 
 void lora_sendHeartbeat() {
-    // Skip if TX busy — don't preempt a gong or stop command
-    if (txBusy || txPending) return;
+    if (uxQueueMessagesWaiting(txQueue) > 0) return;  // higher-priority TX pending
 
     DynamicJsonDocument doc(128);
     struct tm ti;
@@ -280,7 +292,7 @@ void lora_sendHeartbeat() {
     } else {
         doc["time"] = "--:--:--";
     }
-    doc["clients"] = cliCount;
+    doc["clients"] = lora_clientCount();
     doc["ts"]      = nowTs();
     String s;
     serializeJson(doc, s);
@@ -290,11 +302,12 @@ void lora_sendHeartbeat() {
 
 void lora_sendSchedule(const String& scheduleJson) {
     loraSend(MSG_SCHEDULE, scheduleJson);
-    Serial.println("[LORA] Schedule sync queued");
+    Serial.printf("[LORA] Schedule sync queued\n");
 }
 
-// -------------------------------------------------------
+// ────────────────────────────────────────────────────────────────
 String lora_clientsJSON() {
+    xSemaphoreTake(clientsMtx, portMAX_DELAY);
     DynamicJsonDocument doc(1024);
     JsonArray arr = doc.to<JsonArray>();
     unsigned long now = millis();
@@ -310,19 +323,23 @@ String lora_clientsJSON() {
     }
     String s;
     serializeJson(doc, s);
+    xSemaphoreGive(clientsMtx);
     return s;
 }
 
 int lora_clientCount() {
+    xSemaphoreTake(clientsMtx, portMAX_DELAY);
     unsigned long now = millis();
     int active = 0;
     for (uint8_t i = 0; i < cliCount; i++) {
         if (now - clients[i].lastSeenMs <= CLIENT_TIMEOUT_MS) active++;
     }
+    xSemaphoreGive(clientsMtx);
     return active;
 }
 
 uint32_t lora_getAvgOneWayMs() {
+    xSemaphoreTake(clientsMtx, portMAX_DELAY);
     unsigned long now = millis();
     uint32_t sum = 0;
     uint8_t  n   = 0;
@@ -333,5 +350,6 @@ uint32_t lora_getAvgOneWayMs() {
             n++;
         }
     }
+    xSemaphoreGive(clientsMtx);
     return n ? sum / n : 0;
 }
