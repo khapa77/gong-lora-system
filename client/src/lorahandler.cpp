@@ -112,7 +112,7 @@ void lora_setup() {
 
     float freqMHz = (float)(LORA_FREQ / 1e6);
     float bwKHz   = (float)(LORA_BW / 1e3);
-    int state = radio.begin(freqMHz, bwKHz, LORA_SF, LORA_CR, LORA_SYNC_WORD, LORA_TX_POWER, 8, 0);
+    int state = radio.begin(freqMHz, bwKHz, LORA_SF, LORA_CR, LORA_SYNC_WORD, LORA_TX_POWER);
 
     if (state != RADIOLIB_ERR_NONE) {
         Serial.printf("[LORA] Init FAILED: %d — check module wiring!\n", state);
@@ -122,6 +122,7 @@ void lora_setup() {
     Serial.printf("[LORA] Client '%s' listening @ %.0f MHz  SF=%d BW=%.0fk\n",
                   CLIENT_ID, freqMHz, LORA_SF, bwKHz);
 
+    pinMode(LORA_DIO0, INPUT);
     radio.startReceive();
 }
 
