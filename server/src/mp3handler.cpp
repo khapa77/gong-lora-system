@@ -24,7 +24,7 @@ static void _startPlay(uint8_t track) {
     snprintf(path, sizeof(path), "/%04d.mp3", track);
 
     if (!SPIFFS.exists(path)) {
-        Serial.printf("[MP3] File not found: %s\n", path);
+        logPrintf("[MP3] File not found: %s\n", path);
         loopRemain = 0;
         return;
     }
@@ -33,20 +33,20 @@ static void _startPlay(uint8_t track) {
     if (audio.connecttoFS(SPIFFS, path)) {
         ramping   = true;
         rampStart = millis();
-        Serial.printf("[MP3] Playing: %s\n", path);
+        logPrintf("[MP3] Playing: %s\n", path);
     } else {
-        Serial.printf("[MP3] Failed to start: %s\n", path);
+        logPrintf("[MP3] Failed to start: %s\n", path);
         loopRemain = 0;
     }
 }
 
 void mp3_setup() {
-    Serial.println("[MP3] Initializing I2S (ESP32-audioI2S, MAX98357A)...");
+    logPrintf("[MP3] Initializing I2S (ESP32-audioI2S, MAX98357A)...\n");
 
     audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
     applyVolume();
 
-    Serial.printf("[MP3] Ready — BCLK=%d LRC=%d DOUT=%d volume=%d/30\n",
+    logPrintf("[MP3] Ready — BCLK=%d LRC=%d DOUT=%d volume=%d/30\n",
                   I2S_BCLK, I2S_LRC, I2S_DOUT, curVol);
 }
 
@@ -54,7 +54,7 @@ void mp3_setVolume(uint8_t vol) {
     if (vol > 30) vol = 30;
     curVol = vol;
     if (!ramping) applyVolume();
-    Serial.printf("[MP3] Volume = %d/30\n", curVol);
+    logPrintf("[MP3] Volume = %d/30\n", curVol);
 }
 
 uint8_t mp3_getVolume() {
@@ -65,7 +65,7 @@ void mp3_play(uint8_t track, uint8_t loops) {
     if (loops < 1) loops = 1;
     loopTrack  = track;
     loopRemain = loops - 1;  // first play counts as one
-    Serial.printf("[MP3] mp3_play track=%d loops=%d\n", track, loops);
+    logPrintf("[MP3] mp3_play track=%d loops=%d\n", track, loops);
     _startPlay(track);
 }
 
@@ -99,7 +99,7 @@ void mp3_loop() {
         if (loopRemain > 0) {
             loopRemain--;
             idleCount = 0;
-            Serial.printf("[MP3] Loop repeat — remaining=%d\n", loopRemain);
+            logPrintf("[MP3] Loop repeat — remaining=%d\n", loopRemain);
             _startPlay(loopTrack);
         } else {
             audio.setVolume(0);

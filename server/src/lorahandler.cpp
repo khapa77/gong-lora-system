@@ -60,7 +60,7 @@ static void upsertClient(const String& id, int rssi, uint32_t rtt) {
                                       ? trueRtt
                                       : (clients[i].rttMs * 7 + trueRtt * 3) / 10;
                 clients[i].oneWayMs = clients[i].rttMs / 2;
-                Serial.printf("[LORA] RTT '%s': raw=%ums true=%ums one-way=%ums\n",
+                logPrintf("[LORA] RTT '%s': raw=%ums true=%ums one-way=%ums\n",
                               id.c_str(), rtt, trueRtt, clients[i].oneWayMs);
             }
             return;
@@ -74,17 +74,17 @@ static void upsertClient(const String& id, int rssi, uint32_t rtt) {
                 oldest = i;
         }
         if (now - clients[oldest].lastSeenMs > CLIENT_TIMEOUT_MS) {
-            Serial.printf("[LORA] Evicting stale client: %s\n",
+            logPrintf("[LORA] Evicting stale client: %s\n",
                           clients[oldest].id.c_str());
             clients[oldest] = { id, rssi, now, 0, 0 };
             return;
         }
-        Serial.println("[LORA] MAX_CLIENTS reached, new client ignored");
+        logPrintf("[LORA] MAX_CLIENTS reached, new client ignored\n");
         return;
     }
 
     clients[cliCount++] = { id, rssi, now, 0, 0 };
-    Serial.printf("[LORA] New client registered: %s\n", id.c_str());
+    logPrintf("[LORA] New client registered: %s\n", id.c_str());
 }
 
 // ── HMAC-SHA256 ──────────────────────────────────────────────────
@@ -131,9 +131,9 @@ static void loraSend(uint8_t type, const String& payload) {
     req.len = 1 + plen;
 
     if (xQueueSend(txQueue, &req, pdMS_TO_TICKS(200)) != pdTRUE)
-        Serial.printf("[LORA] TX queue full, dropping type=0x%02X\n", type);
+        logPrintf("[LORA] TX queue full, dropping type=0x%02X\n", type);
     else
-        Serial.printf("[LORA] TX queued type=0x%02X payload_len=%u\n",
+        logPrintf("[LORA] TX queued type=0x%02X payload_len=%u\n",
                       type, (unsigned)plen);
 }
 
@@ -150,9 +150,9 @@ static void loraTask(void*) {
                 int st = radio.finishTransmit();
                 txBusy = false;
                 if (st != RADIOLIB_ERR_NONE)
-                    Serial.printf("[LORA] TX finish error: %d\n", st);
+                    logPrintf("[LORA] TX finish error: %d\n", st);
                 else
-                    Serial.printf("[LORA] TX done type=0x%02X\n", txType);
+                    logPrintf("[LORA] TX done type=0x%02X\n", txType);
                 if (txType == MSG_GONG)
                     xSemaphoreGive(txGongDone);
                 radio.startReceive();
@@ -168,12 +168,12 @@ static void loraTask(void*) {
             txType  = req.type;
             int st  = radio.startTransmit(req.buf, req.len);
             if (st != RADIOLIB_ERR_NONE) {
-                Serial.printf("[LORA] TX start error: %d\n", st);
+                logPrintf("[LORA] TX start error: %d\n", st);
                 if (req.type == MSG_GONG) xSemaphoreGive(txGongDone);
                 radio.startReceive();
             } else {
                 txBusy = true;
-                Serial.printf("[LORA] TX started type=0x%02X len=%u\n",
+                logPrintf("[LORA] TX started type=0x%02X len=%u\n",
                               req.type, (unsigned)req.len);
             }
             vTaskDelay(1);
@@ -204,7 +204,7 @@ static void loraTask(void*) {
         for (size_t i = 1; i < len; i++) payload += (char)buf[i];
         int rssi = (int)radio.getRSSI();
 
-        Serial.printf("[LORA] RX type=0x%02X len=%u RSSI=%d\n",
+        logPrintf("[LORA] RX type=0x%02X len=%u RSSI=%d\n",
                       msgType, (unsigned)(len - 1), rssi);
 
         if (msgType == MSG_ACK) {
@@ -216,10 +216,10 @@ static void loraTask(void*) {
                 xSemaphoreTake(clientsMtx, portMAX_DELAY);
                 upsertClient(id, rssi, rtt);
                 xSemaphoreGive(clientsMtx);
-                Serial.printf("[LORA] ACK from '%s' RSSI=%d dBm\n", id.c_str(), rssi);
+                logPrintf("[LORA] ACK from '%s' RSSI=%d dBm\n", id.c_str(), rssi);
             }
         } else {
-            Serial.printf("[LORA] Unhandled type 0x%02X\n", msgType);
+            logPrintf("[LORA] Unhandled type 0x%02X\n", msgType);
         }
 
         radio.startReceive();
@@ -240,10 +240,10 @@ void lora_setup() {
     int state = radio.begin(freqMHz, bwKHz, LORA_SF, LORA_CR,
                             LORA_SYNC_WORD, LORA_TX_POWER, 8, 0);
     if (state != RADIOLIB_ERR_NONE) {
-        Serial.printf("[LORA] Init FAILED: %d — check module wiring! (queues created, LoRa disabled)\n", state);
+        logPrintf("[LORA] Init FAILED: %d — check module wiring! (queues created, LoRa disabled)\n", state);
         return;  // queues exist, LoRa task will just spin on empty queue
     }
-    Serial.printf("[LORA] Server ready @ %.0f MHz  SF=%d BW=%.0fk  (Core 0)\n",
+    logPrintf("[LORA] Server ready @ %.0f MHz  SF=%d BW=%.0fk  (Core 0)\n",
                   freqMHz, LORA_SF, bwKHz);
 
     attachInterrupt(digitalPinToInterrupt(LORA_DIO0), onDio0, RISING);
@@ -265,7 +265,7 @@ void lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop) {
     // Block Core 1 until TX completes — both sides start audio after TX
     xSemaphoreTake(txGongDone, pdMS_TO_TICKS(30000));
 
-    Serial.printf("[LORA] GONG TX done — track=%d vol=%d loop=%d clients=%d\n",
+    logPrintf("[LORA] GONG TX done — track=%d vol=%d loop=%d clients=%d\n",
                   track, vol, loop, lora_clientCount());
 }
 
@@ -275,7 +275,7 @@ void lora_sendStop() {
     String s;
     serializeJson(doc, s);
     loraSend(MSG_STOP, s);
-    Serial.println("[LORA] STOP queued");
+    logPrintf("[LORA] STOP queued\n");
 }
 
 void lora_sendHeartbeat() {
@@ -301,7 +301,7 @@ void lora_sendHeartbeat() {
 
 void lora_sendSchedule(const String& scheduleJson) {
     loraSend(MSG_SCHEDULE, scheduleJson);
-    Serial.println("[LORA] Schedule sync queued");
+    logPrintf("[LORA] Schedule sync queued\n");
 }
 
 // ────────────────────────────────────────────────────────────────
