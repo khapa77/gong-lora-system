@@ -3,7 +3,7 @@
 // =============================================================
 //  CLIENT CONFIG — change CLIENT_ID for every device!
 // =============================================================
-#define CLIENT_ID  "client_001"   // unique name, e.g. "room_A"
+#define CLIENT_ID  "client_00new"   // unique name, e.g. "room_A"
 
 // LoRa module pins — same wiring as server
 #define LORA_SS        5
