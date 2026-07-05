@@ -235,8 +235,8 @@ void lora_setup() {
 
     SPI.begin(18, 19, 23, LORA_SS);
 
-    float freqMHz = (float)LORA_FREQ;
-    float bwKHz   = (float)LORA_BW;
+    float freqMHz = (float)LORA_FREQ / 1e6;
+    float bwKHz   = (float)LORA_BW / 1e3;
     int state = radio.begin(freqMHz, bwKHz, LORA_SF, LORA_CR,
                             LORA_SYNC_WORD, LORA_TX_POWER);
     if (state != RADIOLIB_ERR_NONE) {
