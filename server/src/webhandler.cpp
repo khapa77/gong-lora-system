@@ -16,7 +16,9 @@ bool       apMode = false;
 static WebServer server(80);
 static WiFiUDP ntpUDP;
 static NTPClient ntp(ntpUDP, NTP_SERVER, NTP_UTC_OFFSET);
-static bool ntpDisabled = false;  // when true: SNTP stopped, manual time active
+// Time source is chosen explicitly by the user (NTP / RTC / Manual tab) — no automatic priority.
+enum class TimeSrc { NTP, RTC, MANUAL };
+static TimeSrc timeSrc = TimeSrc::NTP;
 
 // -------------------------------------------------------
 // Auth
@@ -218,22 +220,32 @@ static void handleTimeSet() {
     time_t t = mktime(&ti);
     struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
     settimeofday(&tv, nullptr);
+    timeSrc = TimeSrc::MANUAL;
+    esp_sntp_stop();
     rtc_syncFromSystem();   // persist to DS3231 so it survives next reboot
 
     sendOK();
     Serial.printf("[TIME] Manual time set: %02d:%02d\n", h, m);
 }
 
-// POST /api/time/source?s=ntp|manual
+// POST /api/time/source?s=ntp|rtc|manual
 static void handleTimeSource() {
     if (!checkAuth()) return;
     String src = server.arg("s");
-    if (src == "manual") {
-        ntpDisabled = true;
+    if (src == "rtc") {
+        timeSrc = TimeSrc::RTC;
+        esp_sntp_stop();
+        if (!rtc_loadToSystem()) {
+            Serial.println("[TIME] RTC selected but no valid time on module");
+        } else {
+            Serial.println("[TIME] Switched to RTC time source");
+        }
+    } else if (src == "manual") {
+        timeSrc = TimeSrc::MANUAL;
         esp_sntp_stop();
         Serial.println("[TIME] NTP disabled, manual mode active");
     } else {
-        ntpDisabled = false;
+        timeSrc = TimeSrc::NTP;
         configTime(NTP_UTC_OFFSET, 0, NTP_SERVER);
         ntp.begin();
         ntp.forceUpdate();
@@ -279,7 +291,7 @@ static void handleStatus() {
     doc["clients"] = lora_clientCount();
     doc["heap"]    = (int)ESP.getFreeHeap();
     doc["uptime"]  = (uint32_t)(millis() / 1000);
-    if (WiFi.status() == WL_CONNECTED && !ntpDisabled) {
+    if (timeSrc == TimeSrc::NTP && WiFi.status() == WL_CONNECTED) {
         ntp.update();
         doc["ntp_time"]    = ntp.getFormattedTime();
         doc["time_source"] = "ntp";
@@ -289,12 +301,11 @@ static void handleStatus() {
             char tbuf[9];
             snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d",
                      ti.tm_hour, ti.tm_min, ti.tm_sec);
-            doc["ntp_time"]    = tbuf;
-            // RTC takes priority over manual if module is present and has valid time
-            doc["time_source"] = rtc_hasValidTime() ? "rtc" : "manual";
-        } else {
-            doc["time_source"] = "none";
+            doc["ntp_time"] = tbuf;
         }
+        doc["time_source"] = (timeSrc == TimeSrc::RTC) ? "rtc"
+                            : (timeSrc == TimeSrc::MANUAL) ? "manual"
+                            : "ntp";  // NTP selected but WiFi currently unavailable
     }
     String s;
     serializeJson(doc, s);
