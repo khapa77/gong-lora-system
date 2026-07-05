@@ -381,9 +381,35 @@ tr:hover td { background: rgba(79,158,248,.04); }
     </div>
   </div>
 
-</div>
+  <!-- ── Debug Log ── -->
+  <div class="card" id="sectionDebug">
+    <div class="card-title">
+      <span style="display:flex;align-items:center;gap:8px">
+        <span style="color:#7a7f9a">&#128270;</span> Debug Log
+        <span id="logCount" style="color:var(--muted);font-size:.75rem"></span>
+      </span>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('logOutput').textContent=''">&#128465; Clear</button>
+        <button class="collapse-btn" onclick="toggleCard('sectionDebug')">&#9662;</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center">
+        <button class="btn btn-primary btn-sm" onclick="loadLogs()">&#8635; Refresh</button>
+        <label style="display:flex;align-items:center;gap:4px;color:var(--muted);font-size:.82rem;cursor:pointer">
+          <input type="checkbox" id="logAutoRefresh" checked> Auto
+        </label>
+      </div>
+      <pre id="logOutput" style="
+        background:#0a0b10; border:1px solid var(--border); border-radius:6px;
+        padding:12px; font-size:.78rem; line-height:1.5; overflow:auto;
+        max-height:480px; white-space:pre-wrap; word-break:break-all;
+        color:#c8ccd8; font-family:'SF Mono','Menlo','Consolas',monospace;
+      "></pre>
+    </div>
+  </div>
 
-<!-- ── Add/Edit Modal ── -->
+</div>
 <div class="overlay" id="overlay" onclick="if(event.target===this)closeModal()">
   <div class="modal">
     <div class="modal-title" id="modalTitle">Add Schedule</div>
@@ -503,7 +529,7 @@ function updateCountdown() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadStatus(), loadSchedules(), loadClients(), loadAuthStatus(), loadDaysStatus()]);
+  await Promise.all([loadStatus(), loadSchedules(), loadClients(), loadAuthStatus(), loadDaysStatus(), loadLogs()]);
 }
 
 // ─────────────────────────────────────────────
@@ -840,7 +866,24 @@ async function postJSON(url, body, method = 'POST') {
 // ─────────────────────────────────────────────
 // Collapsible cards
 // ─────────────────────────────────────────────
-const CARD_IDS = ['sectionSchedule','sectionControl','sectionClock','sectionClients','sectionSecurity','sectionWifi'];
+// Debug Log
+// ─────────────────────────────────────────────
+async function loadLogs() {
+  try {
+    const r = await fetch('/api/logs?n=40');
+    const lines = await r.json();
+    const pre = document.getElementById('logOutput');
+    if (pre) {
+      pre.textContent = lines.join('\n');
+      pre.scrollTop = pre.scrollHeight;
+    }
+    const cnt = document.getElementById('logCount');
+    if (cnt) cnt.textContent = '(' + lines.length + ')';
+  } catch { /* ignore */ }
+}
+
+// ─────────────────────────────────────────────
+const CARD_IDS = ['sectionSchedule','sectionControl','sectionClock','sectionClients','sectionSecurity','sectionWifi','sectionDebug'];
 
 function initCards() {
   CARD_IDS.forEach(id => {

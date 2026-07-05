@@ -1,4 +1,5 @@
 #include "rtchandler.h"
+#include "config.h"
 #include <Wire.h>
 #include <RTClib.h>
 #include <sys/time.h>
@@ -26,7 +27,7 @@ static bool loadFromRTC() {
     settimeofday(&tv, nullptr);
     rtcValidTime = true;
 
-    Serial.printf("[RTC] Time loaded from DS3231: %04d-%02d-%02d %02d:%02d:%02d\n",
+    logPrintf("[RTC] Time loaded from DS3231: %04d-%02d-%02d %02d:%02d:%02d\n",
                   now.year(), now.month(), now.day(),
                   now.hour(), now.minute(), now.second());
     return true;
@@ -41,13 +42,13 @@ void rtc_setup() {
     Wire.begin();   // SDA=GPIO21, SCL=GPIO22 (ESP32 hardware defaults)
 
     if (!rtc.begin()) {
-        Serial.println("[RTC] DS3231 not found — running without hardware RTC");
+        logPrintf("[RTC] DS3231 not found — running without hardware RTC\n");
         return;
     }
     rtcPresent = true;
 
     if (!loadFromRTC()) {
-        Serial.println("[RTC] DS3231 found but lost power — time not valid, set via NTP or manually");
+        logPrintf("[RTC] DS3231 found but lost power — time not valid, set via NTP or manually\n");
     }
 }
 
@@ -67,11 +68,11 @@ void rtc_syncFromSystem() {
 
     time_t t = time(nullptr);
     if (t < 1000000UL) {
-        Serial.println("[RTC] Sync skipped — system time not valid yet");
+        logPrintf("[RTC] Sync skipped — system time not valid yet\n");
         return;
     }
 
     rtc.adjust(DateTime((uint32_t)t));
     rtcValidTime = true;
-    Serial.println("[RTC] DS3231 updated from system time");
+    logPrintf("[RTC] DS3231 updated from system time\n");
 }

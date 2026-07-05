@@ -1,4 +1,5 @@
 #pragma once
+#include "logbuffer.h"
 
 // ── WiFi ──────────────────────────────────────────────────────────────────
 #define AP_SSID           "GongServer"

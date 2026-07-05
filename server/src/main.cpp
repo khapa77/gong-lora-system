@@ -16,7 +16,7 @@ static unsigned long lastSchedCheck   = 0;
 // Plays locally AND broadcasts to all LoRa clients
 // -------------------------------------------------------
 static void onGongFire(uint8_t track, uint8_t loop) {
-    Serial.printf("[MAIN] Schedule fired: track=%d loop=%d\n", track, loop);
+    logPrintf("[MAIN] Schedule fired: track=%d loop=%d\n", track, loop);
     // Send LoRa FIRST (blocking TX ~170ms), then start local playback.
     // Both server and client will begin audio after TX completes → in sync.
     lora_sendGong(track, DEFAULT_VOLUME, loop);
@@ -31,12 +31,19 @@ void setup() {
     // Erase any stale core dump from previous crash
     esp_core_dump_image_erase();
 
-    Serial.println("\n==============================");
-    Serial.println("  Gong LoRa SERVER v2.0");
-    Serial.println("==============================");
+    logbuffer_init();  // capture logs for web debug
+
+    logPrintf("\n==============================\n");
+    logPrintf("  Gong LoRa SERVER v2.0\n");
+    logPrintf("==============================\n");
+
+    // Seed the ring buffer with the banner
+    logPrintf("\n==============================\n");
+    logPrintf("  Gong LoRa SERVER v2.0\n");
+    logPrintf("==============================\n");
 
     if (!SPIFFS.begin(true)) {
-        Serial.println("[MAIN] SPIFFS init failed — halting");
+        logPrintf("[MAIN] SPIFFS init failed — halting\n");
         while (true) delay(1000);
     }
 
@@ -48,7 +55,7 @@ void setup() {
     sched_setup();
     web_setup();     // connects WiFi, starts HTTP server; NTP will overwrite RTC time if available
 
-    Serial.println("[MAIN] All modules ready. Entering main loop.");
+    logPrintf("[MAIN] All modules ready. Entering main loop.\n");
 }
 
 void loop() {

@@ -36,7 +36,7 @@ static void loadAuth() {
         authPassword = doc["password"] | String("");
     }
     f.close();
-    Serial.printf("[AUTH] %s\n", authEnabled ? "enabled" : "disabled");
+    logPrintf("[AUTH] %s\n", authEnabled ? "enabled" : "disabled");
 }
 
 static void saveAuth() {
@@ -225,7 +225,7 @@ static void handleTimeSet() {
     rtc_syncFromSystem();   // persist to DS3231 so it survives next reboot
 
     sendOK();
-    Serial.printf("[TIME] Manual time set: %02d:%02d\n", h, m);
+    logPrintf("[TIME] Manual time set: %02d:%02d\n", h, m);
 }
 
 // POST /api/time/source?s=ntp|rtc|manual
@@ -236,20 +236,20 @@ static void handleTimeSource() {
         timeSrc = TimeSrc::RTC;
         esp_sntp_stop();
         if (!rtc_loadToSystem()) {
-            Serial.println("[TIME] RTC selected but no valid time on module");
+            logPrintf("[TIME] RTC selected but no valid time on module\n");
         } else {
-            Serial.println("[TIME] Switched to RTC time source");
+            logPrintf("[TIME] Switched to RTC time source\n");
         }
     } else if (src == "manual") {
         timeSrc = TimeSrc::MANUAL;
         esp_sntp_stop();
-        Serial.println("[TIME] NTP disabled, manual mode active");
+        logPrintf("[TIME] NTP disabled, manual mode active\n");
     } else {
         timeSrc = TimeSrc::NTP;
         configTime(NTP_UTC_OFFSET, 0, NTP_SERVER);
         ntp.begin();
         ntp.forceUpdate();
-        Serial.println("[TIME] NTP re-enabled");
+        logPrintf("[TIME] NTP re-enabled\n");
     }
     sendOK();
 }
@@ -379,7 +379,7 @@ static void handleAuthSave() {
     authEnabled  = true;
     saveAuth();
     sendOK();
-    Serial.println("[AUTH] Password updated, auth enabled");
+    logPrintf("[AUTH] Password updated, auth enabled\n");
 }
 
 static void handleAuthDisable() {
@@ -388,7 +388,7 @@ static void handleAuthDisable() {
     authPassword = "";
     saveAuth();
     sendOK();
-    Serial.println("[AUTH] Auth disabled");
+    logPrintf("[AUTH] Auth disabled\n");
 }
 
 // -------------------------------------------------------
@@ -423,6 +423,16 @@ static void handleFavicon() {
     server.send(204);
 }
 
+// -------------------------------------------------------
+// /api/logs — live debug log from ring buffer
+// -------------------------------------------------------
+static void handleLogs() {
+    if (!checkAuth()) return;
+    int n = server.arg("n").toInt();
+    if (n < 1 || n > 64) n = 40;
+    sendJSON(200, logbuffer_toJSON(n));
+}
+
 static void handleNotFound() {
     server.send(404, "text/plain", "Not found");
 }
@@ -445,7 +455,7 @@ bool wifi_connect() {
 
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid.c_str(), pass.c_str());
-    Serial.printf("[WIFI] Connecting to '%s'", ssid.c_str());
+    logPrintf("[WIFI] Connecting to '%s'", ssid.c_str());
 
     unsigned long t = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - t < WIFI_TIMEOUT_MS) {
@@ -454,9 +464,9 @@ bool wifi_connect() {
     }
 
     if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("\n[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+        logPrintf("\n[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
         MDNS.begin(MDNS_NAME);
-        Serial.printf("[MDNS] http://%s.local\n", MDNS_NAME);
+        logPrintf("[MDNS] http://%s.local\n", MDNS_NAME);
         ntp.begin();
         ntp.update();
         configTime(NTP_UTC_OFFSET, 0, NTP_SERVER);
@@ -464,7 +474,7 @@ bool wifi_connect() {
         rtc_syncFromSystem(); // persist NTP time to DS3231 for next power cycle
         return true;
     }
-    Serial.println("\n[WIFI] Connection failed");
+    logPrintf("\n[WIFI] Connection failed\n");
     return false;
 }
 
@@ -472,10 +482,10 @@ void wifi_startAP() {
     WiFi.mode(WIFI_AP);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
     apMode = true;
-    Serial.printf("[WIFI] AP '%s' started — IP: %s\n",
+    logPrintf("[WIFI] AP '%s' started — IP: %s\n",
                   AP_SSID, WiFi.softAPIP().toString().c_str());
     MDNS.begin(MDNS_NAME);
-    Serial.printf("[MDNS] http://%s.local\n", MDNS_NAME);
+    logPrintf("[MDNS] http://%s.local\n", MDNS_NAME);
 }
 
 // -------------------------------------------------------
@@ -518,6 +528,8 @@ void web_setup() {
     server.on("/api/time/source", HTTP_POST,   handleTimeSource);
     server.on("/api/stop",        HTTP_POST,   handleStop);
     server.on("/api/sync",        HTTP_POST,   handleSync);
+    server.on("/api/logs",        HTTP_GET,    handleLogs);
+    server.on("/api/logs",        HTTP_OPTIONS, handleOptions);
     server.on("/api/clients",     HTTP_GET,    handleClients);
     server.on("/api/status",      HTTP_GET,    handleStatus);
     server.on("/api/wifi/status", HTTP_GET,    handleWiFiStatus);
@@ -537,7 +549,7 @@ void web_setup() {
 
     server.onNotFound(handleNotFound);
     server.begin();
-    Serial.println("[WEB] HTTP server listening on port 80");
+    logPrintf("[WEB] HTTP server listening on port 80\n");
 }
 
 void web_loop() {

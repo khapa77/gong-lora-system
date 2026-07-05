@@ -22,7 +22,7 @@ static unsigned long lastAutoAdvanceMs = 0;
 // -------------------------------------------------------
 void sched_setup() {
     sched_load();
-    Serial.printf("[SCHED] Loaded %d entries.\n", count);
+    logPrintf("[SCHED] Loaded %d entries.\n", count);
 }
 
 // -------------------------------------------------------
@@ -34,7 +34,7 @@ void sched_check() {
     if (!getLocalTime(&ti)) {
         static unsigned long lastWarn = 0;
         if (millis() - lastWarn >= 60000UL) {
-            Serial.println("[SCHED] Skip: time not available.");
+            logPrintf("[SCHED] Skip: time not available.\n");
             lastWarn = millis();
         }
         return;
@@ -46,7 +46,7 @@ void sched_check() {
     if (!timeValid) {
         static unsigned long lastWarn = 0;
         if (millis() - lastWarn >= 60000UL) {
-            Serial.println("[SCHED] Skip: no NTP and no manual time set.");
+            logPrintf("[SCHED] Skip: no NTP and no manual time set.\n");
             lastWarn = millis();
         }
         return;
@@ -57,7 +57,7 @@ void sched_check() {
     int key = h * 60 + m;
 
     if (millis() - lastTimeLog >= 60000UL) {
-        Serial.printf("[SCHED] Time %02d:%02d (entries=%d)\n", h, m, count);
+        logPrintf("[SCHED] Time %02d:%02d (entries=%d)\n", h, m, count);
         lastTimeLog = millis();
     }
 
@@ -69,7 +69,7 @@ void sched_check() {
             char path[16];
             snprintf(path, sizeof(path), "/day%02d.conf", (int)nextDay);
             if (SPIFFS.exists(path)) {
-                Serial.printf("[SCHED] Midnight: day %02d -> %02d\n", activeDay, nextDay);
+                logPrintf("[SCHED] Midnight: day %02d -> %02d\n", activeDay, nextDay);
                 sched_activateDay(nextDay);
             }
         }
@@ -85,7 +85,7 @@ void sched_check() {
             entries[i].hour   == (uint8_t)h &&
             entries[i].minute == (uint8_t)m) {
 
-            Serial.printf("[SCHED] Trigger %02d:%02d '%s' track=%d loop=%d\n",
+            logPrintf("[SCHED] Trigger %02d:%02d '%s' track=%d loop=%d\n",
                           h, m, entries[i].description.c_str(), entries[i].track, entries[i].loop);
 
             if (onScheduleTrigger) onScheduleTrigger(entries[i].track, entries[i].loop);
@@ -163,7 +163,7 @@ void sched_save() {
     String json = sched_toJSON();
 
     File f = SPIFFS.open(SCHEDULE_FILE, "w");
-    if (!f) { Serial.println("[SCHED] Save failed"); return; }
+    if (!f) { logPrintf("[SCHED] Save failed\n"); return; }
     f.print(json);
     f.close();
 
@@ -176,7 +176,7 @@ void sched_save() {
         if (df) { df.print(json); df.close(); }
     }
 
-    Serial.printf("[SCHED] Saved %d entries\n", count);
+    logPrintf("[SCHED] Saved %d entries\n", count);
 }
 
 static bool sched_parseFromPath(const char* path) {
@@ -215,11 +215,11 @@ static bool sched_parseFromPath(const char* path) {
 
 void sched_load() {
     if (!SPIFFS.exists(SCHEDULE_FILE)) {
-        Serial.println("[SCHED] No file, starting empty");
+        logPrintf("[SCHED] No file, starting empty\n");
         return;
     }
     if (!sched_parseFromPath(SCHEDULE_FILE))
-        Serial.println("[SCHED] Parse error");
+        logPrintf("[SCHED] Parse error\n");
 }
 
 // -------------------------------------------------------
@@ -241,13 +241,13 @@ bool sched_activateDay(uint8_t day) {
     snprintf(path, sizeof(path), "/day%02d.conf", (int)day);
     if (!SPIFFS.exists(path)) {
         File nf = SPIFFS.open(path, "w");
-        if (!nf) { Serial.printf("[SCHED] Day %02d: create failed\n", (int)day); return false; }
+        if (!nf) { logPrintf("[SCHED] Day %02d: create failed\n", (int)day); return false; }
         // First-ever activation (no activeday.conf): seed with current schedule so
         // existing entries are not lost. Subsequent new days start empty.
         bool firstActivation = (sched_getActiveDay() < 0);
         nf.print(firstActivation ? sched_toJSON() : String("[]"));
         nf.close();
-        Serial.printf("[SCHED] Day %02d created (%s)\n", (int)day,
+        logPrintf("[SCHED] Day %02d created (%s)\n", (int)day,
                       firstActivation ? "seeded from current" : "empty");
     }
 
@@ -271,7 +271,7 @@ bool sched_activateDay(uint8_t day) {
     File af = SPIFFS.open("/activeday.conf", "w");
     if (af) { af.printf("{\"day\":%d}", (int)day); af.close(); }
 
-    Serial.printf("[SCHED] Activated day %02d (%d entries)\n", (int)day, count);
+    logPrintf("[SCHED] Activated day %02d (%d entries)\n", (int)day, count);
     return true;
 }
 
