@@ -110,3 +110,22 @@ void mp3_loop() {
 bool mp3_isPlaying() {
     return audio.isRunning();
 }
+
+// ────────────────────────────────────────────────────────────────
+// Dedicated audio feeder task (Core 1, high priority)
+// ────────────────────────────────────────────────────────────────
+static TaskHandle_t audioTaskHandle = nullptr;
+
+static void audioFeederTask(void*) {
+    for (;;) {
+        mp3_loop();
+        vTaskDelay(pdMS_TO_TICKS(1));  // ~1 kHz feed rate
+    }
+}
+
+void mp3_startAudioTask() {
+    if (audioTaskHandle) return;
+    xTaskCreatePinnedToCore(audioFeederTask, "audio_feed", 4096, nullptr,
+                            configMAX_PRIORITIES - 1, &audioTaskHandle, 1);
+    Serial.println("[MP3] Audio feeder task started on Core 1 (priority 24)");
+}

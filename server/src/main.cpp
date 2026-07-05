@@ -51,6 +51,7 @@ void setup() {
 
     rtc_setup();     // probe DS3231; if found, load time into system clock
     mp3_setup();
+    mp3_startAudioTask();
     lora_setup();
     sched_setup();
     web_setup();     // connects WiFi, starts HTTP server; NTP will overwrite RTC time if available
@@ -60,8 +61,7 @@ void setup() {
 
 void loop() {
     web_loop();
-    // Аудио нужно часто подпитывать — несколько вызовов за цикл
-    for (int i = 0; i < 8; i++) mp3_loop();
+    // Аудио теперь в отдельном таске (Core 1, приоритет 1)
 
     unsigned long now = millis();
 

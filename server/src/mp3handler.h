@@ -7,6 +7,7 @@
 
 void    mp3_setup();
 void    mp3_loop();
+void    mp3_startAudioTask();
 
 // track=1 → /0001.mp3, track=2 → /0002.mp3
 void    mp3_play(uint8_t track, uint8_t loops = 1);  // loops=1 → play once
