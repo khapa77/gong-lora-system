@@ -32,6 +32,6 @@ void setup() {
 
 void loop() {
     lora_poll();   // drain Core 0 → Core 1 command queue
-    // Audio fed by dedicated FreeRTOS task (mp3_startAudioTask)
-    // mp3_loop() is no longer needed in main loop
+    // Audio needs frequent feeding — multiple calls per cycle
+    for (int i = 0; i < 4; i++) mp3_loop();
 }
