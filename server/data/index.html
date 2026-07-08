@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Gong LoRa Server</title>
+<title>Gong Server</title>
 <style>
 :root {
   --bg:     #0f1117;
@@ -128,17 +128,6 @@ tr:hover td { background: rgba(79,158,248,.04); }
 .tag-on  { background: rgba(52,201,126,.15); color: var(--green); }
 .tag-off { background: rgba(248,95,95,.12);  color: var(--red); }
 .empty-row { color: var(--muted); text-align: center; padding: 24px; font-size: .88rem; }
-/* Clients */
-.client-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(200px,1fr)); }
-.client-card {
-  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-  padding: 14px; font-size: .85rem;
-}
-.client-name { font-weight: 600; color: var(--text); margin-bottom: 4px; }
-.client-meta { color: var(--muted); font-size: .78rem; }
-.rssi-good   { color: var(--green); }
-.rssi-ok     { color: var(--yellow); }
-.rssi-bad    { color: var(--red); }
 /* Modal */
 .overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,.6);
@@ -180,10 +169,9 @@ tr:hover td { background: rgba(79,158,248,.04); }
 <body>
 
 <header>
-  <h1>&#128276; Gong <span>LoRa</span> Server</h1>
+  <h1>&#128276; Gong <span>Server</span></h1>
   <div id="statusBar">
     <span id="wifiStat">&#8212; loading &#8212;</span>
-    <span id="clientStat">Clients: &#8212;</span>
     <span id="heapStat"></span>
     <span id="clock" style="font-variant-numeric:tabular-nums"></span>
   </div>
@@ -227,36 +215,6 @@ tr:hover td { background: rgba(79,158,248,.04); }
     </div>
   </div>
 
-  <!-- ── Manual Control ── -->
-  <div class="card" id="sectionControl">
-    <div class="card-title">
-      Manual Control
-      <button class="collapse-btn" onclick="toggleCard('sectionControl')">&#9662;</button>
-    </div>
-    <div class="card-body">
-      <div class="row">
-        <div class="col">
-          <label>Track</label>
-          <input type="number" id="ctrlTrack" value="1" min="1" max="99">
-        </div>
-        <div class="col">
-          <label>Volume <span id="ctrlVolVal">30</span> / 30</label>
-          <div class="range-row">
-            <input type="range" id="ctrlVol" min="0" max="30" value="30"
-                   oninput="document.getElementById('ctrlVolVal').textContent=this.value">
-          </div>
-        </div>
-      </div>
-      <div class="btn-group">
-        <button class="btn btn-primary" onclick="playLocal()">&#9654; Local</button>
-        <button class="btn btn-yellow"  onclick="playLoRa()">&#128246; LoRa broadcast</button>
-        <button class="btn btn-green"   onclick="playAll()">&#127925; All (Local + LoRa)</button>
-        <button class="btn btn-red"     onclick="stopAll()">&#9646;&#9646; Stop</button>
-        <button class="btn btn-ghost"   onclick="syncSchedule()" title="Push schedule to all clients">&#8635; Sync Schedule</button>
-      </div>
-    </div>
-  </div>
-
   <!-- ── Clock ── -->
   <div class="card" id="sectionClock">
     <div class="card-title">
@@ -268,16 +226,12 @@ tr:hover td { background: rgba(79,158,248,.04); }
     </div>
     <div class="card-body">
       <div style="display:flex;gap:6px;margin-bottom:14px">
-        <button id="tabNtp"    class="btn btn-sm" onclick="setTimeSource('ntp')">&#127760; NTP</button>
         <button id="tabRtc"    class="btn btn-sm" onclick="setTimeSource('rtc')">&#128267; RTC</button>
         <button id="tabManual" class="btn btn-sm" onclick="setTimeSource('manual')">&#9998; Manual</button>
       </div>
-      <div id="panelNtp" style="display:none">
-        <p style="color:#34c97e;font-size:.9rem;margin:0">&#10003; NTP включён. Время синхронизировано по сети (UTC+3).</p>
-      </div>
       <div id="panelRtc" style="display:none">
         <p style="color:#f8c34f;font-size:.9rem;margin:0">&#128267; DS3231 RTC.</p>
-        <p style="color:#aaa;font-size:.82rem;margin:6px 0 0">Время берётся из RTC-модуля (батарейка CR2032) и остаётся источником, пока вы явно не переключитесь на NTP или Manual.</p>
+        <p style="color:#aaa;font-size:.82rem;margin:6px 0 0">Время берётся из RTC-модуля (батарейка CR2032) и остаётся источником, пока вы явно не переключитесь на Manual.</p>
       </div>
       <div id="panelManual" style="display:none">
         <p style="color:#aaa;font-size:.82rem;margin-bottom:12px">Установите время вручную (UTC+3).</p>
@@ -294,19 +248,6 @@ tr:hover td { background: rgba(79,158,248,.04); }
             <button class="btn btn-primary" onclick="setTime()">&#128336; Set Time</button>
           </div>
         </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ── LoRa Clients ── -->
-  <div class="card" id="sectionClients">
-    <div class="card-title">
-      LoRa Clients <span id="cliCount" style="color:var(--muted);font-size:.8rem"></span>
-      <button class="collapse-btn" onclick="toggleCard('sectionClients')">&#9662;</button>
-    </div>
-    <div class="card-body">
-      <div id="clientGrid" class="client-grid">
-        <p style="color:var(--muted);font-size:.85rem">No clients seen yet. Clients appear after first ACK.</p>
       </div>
     </div>
   </div>
@@ -347,37 +288,6 @@ tr:hover td { background: rgba(79,158,248,.04); }
       <p style="color:var(--muted);font-size:.78rem;margin-top:10px">
         Login: <b>admin</b> / your password. Stored on device, cleared only with "Disable Auth".
       </p>
-    </div>
-  </div>
-
-  <!-- ── WiFi Settings ── -->
-  <div class="card" id="sectionWifi">
-    <div class="card-title">
-      WiFi Settings
-      <button class="collapse-btn" onclick="toggleCard('sectionWifi')">&#9662;</button>
-    </div>
-    <div class="card-body">
-      <div class="row">
-        <div class="col">
-          <div class="form-group">
-            <label>SSID</label>
-            <input type="text" id="wSSID" placeholder="Network name">
-          </div>
-        </div>
-        <div class="col">
-          <div class="form-group">
-            <label>Password</label>
-            <div class="pwd-wrap">
-              <input type="password" id="wPass" placeholder="Password">
-              <button type="button" class="pwd-btn" onclick="toggleWifiPass()">👁</button>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="btn-group">
-        <button class="btn btn-primary" onclick="saveWifi()">Save & Restart</button>
-        <button class="btn btn-red"     onclick="resetWifi()">Reset WiFi</button>
-      </div>
     </div>
   </div>
 
@@ -529,7 +439,7 @@ function updateCountdown() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadStatus(), loadSchedules(), loadClients(), loadAuthStatus(), loadDaysStatus(), loadLogs()]);
+  await Promise.all([loadStatus(), loadSchedules(), loadAuthStatus(), loadDaysStatus(), loadLogs()]);
 }
 
 // ─────────────────────────────────────────────
@@ -542,7 +452,7 @@ async function setTimeSource(src) {
 }
 
 function switchClockTab(tab) {
-  ['ntp','rtc','manual'].forEach(t => {
+  ['rtc','manual'].forEach(t => {
     document.getElementById('panel' + t.charAt(0).toUpperCase() + t.slice(1)).style.display = (t === tab) ? '' : 'none';
     const btn = document.getElementById('tab' + t.charAt(0).toUpperCase() + t.slice(1));
     btn.classList.toggle('btn-primary', t === tab);
@@ -556,23 +466,13 @@ async function loadStatus() {
     if (!r.ok) { document.getElementById('wifiStat').innerHTML = '<span class="dot dot-red"></span>Server error ' + r.status; return; }
     const d = await r.json();
     const wEl = document.getElementById('wifiStat');
-    if (d.mode === 'AP') {
-      wEl.innerHTML = '<span class="dot dot-yellow"></span>AP: ' + (d.ssid||'?') + ' (' + (d.ip||'?') + ')';
-    } else {
-      wEl.innerHTML = '<span class="dot dot-green"></span>' + (d.ssid||'—') + '&nbsp;' + (d.ip||'—');
-    }
-    document.getElementById('clientStat').textContent = 'Clients: ' + (d.clients ?? '—');
+    wEl.innerHTML = '<span class="dot dot-yellow"></span>AP: ' + (d.ssid||'?') + ' (' + (d.ip||'?') + ')';
     const kb = Math.round((d.heap || 0) / 1024);
     document.getElementById('heapStat').textContent = kb ? 'Heap: ' + kb + 'KB' : '';
-    if (d.ntp_time) { espTime = d.ntp_time; espTimestamp = Date.now(); }
+    if (d.time) { espTime = d.time; espTimestamp = Date.now(); }
     const badge = document.getElementById('clockSourceBadge');
     if (!badge) return;
-    if (d.time_source === 'ntp') {
-      badge.textContent = '🌐 NTP';
-      badge.style.background = 'rgba(52,201,126,.15)';
-      badge.style.color = 'var(--green)';
-      switchClockTab('ntp');
-    } else if (d.time_source === 'rtc') {
+    if (d.time_source === 'rtc') {
       badge.textContent = '🔋 RTC';
       badge.style.background = 'rgba(52,201,126,.15)';
       badge.style.color = 'var(--green)';
@@ -634,54 +534,8 @@ async function deleteSched(id) {
 }
 
 // ─────────────────────────────────────────────
-// Clients
+// Clock
 // ─────────────────────────────────────────────
-async function loadClients() {
-  try {
-    const r = await fetch('/api/clients');
-    const clients = await r.json();
-    document.getElementById('cliCount').textContent =
-      clients.length ? '(' + clients.length + ')' : '';
-    const grid = document.getElementById('clientGrid');
-    if (!clients.length) {
-      grid.innerHTML = '<p style="color:var(--muted);font-size:.85rem">No clients seen yet. Clients appear after first ACK.</p>';
-      return;
-    }
-    grid.innerHTML = clients.map(c => {
-      const sec  = Math.round(c.seen_ms / 1000);
-      const seen = sec < 60 ? sec + 's ago' : Math.round(sec / 60) + 'm ago';
-      const cls  = c.rssi > -60 ? 'rssi-good' : c.rssi > -80 ? 'rssi-ok' : 'rssi-bad';
-      const rttStr = c.rtt_ms > 0
-        ? `RTT: ${c.rtt_ms}ms &nbsp;|&nbsp; &#8594; ${c.one_way_ms}ms`
-        : 'RTT: measuring&hellip;';
-      return `<div class="client-card">
-        <div class="client-name">&#128246; ${esc(c.id)}</div>
-        <div class="client-meta ${cls}">RSSI: ${c.rssi} dBm</div>
-        <div class="client-meta">${rttStr}</div>
-        <div class="client-meta">Last seen: ${seen}</div>
-      </div>`;
-    }).join('');
-  } catch { /* ignore */ }
-}
-
-// ─────────────────────────────────────────────
-// Manual controls
-// ─────────────────────────────────────────────
-function ctrlParams() {
-  return {
-    track: parseInt(document.getElementById('ctrlTrack').value) || 1,
-    vol:   parseInt(document.getElementById('ctrlVol').value)
-  };
-}
-async function playLocal() {
-  await postJSON('/api/play',      ctrlParams()); toast('Playing locally', 'ok');
-}
-async function playLoRa() {
-  await postJSON('/api/play/lora', ctrlParams()); toast('LoRa broadcast sent', 'ok');
-}
-async function playAll() {
-  await postJSON('/api/play/all',  ctrlParams()); toast('Playing everywhere', 'ok');
-}
 async function setTime() {
   const h = parseInt(document.getElementById('tHour').value);
   const m = parseInt(document.getElementById('tMin').value);
@@ -690,17 +544,6 @@ async function setTime() {
   if (r && r.ok) { toast(`Time set to ${pad(h)}:${pad(m)}`, 'ok'); await loadStatus(); }
   else toast(r?.err || 'Error', 'err');
 }
-async function stopAll() {
-  const r = await fetch('/api/stop', { method: 'POST' });
-  if (r.ok) toast('Stopped', 'ok');
-  else      toast('Stop failed', 'err');
-}
-async function syncSchedule() {
-  const r = await fetch('/api/sync', { method: 'POST' });
-  if (r.ok) toast('Schedule sent to all clients', 'ok');
-  else      toast('Sync failed', 'err');
-}
-
 // ─────────────────────────────────────────────
 // Security / Auth
 // ─────────────────────────────────────────────
@@ -753,39 +596,6 @@ async function disableAuth() {
   } else {
     toast('Error', 'err');
   }
-}
-
-// ─────────────────────────────────────────────
-// WiFi
-// ─────────────────────────────────────────────
-async function saveWifi() {
-  const ssid = document.getElementById('wSSID').value.trim();
-  const pass = document.getElementById('wPass').value;
-  if (!ssid) { toast('Enter SSID', 'err'); return; }
-  if (!confirm('Save WiFi and restart ESP32?')) return;
-  try {
-    const resp = await fetch('/api/wifi/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ssid, password: pass })
-    });
-    if (resp.ok) {
-      toast('Saved — restarting. Reconnect to the network.', 'ok');
-    } else {
-      try {
-        const d = await resp.json();
-        toast(d.err || 'Save failed (' + resp.status + ')', 'err');
-      } catch { toast('Save failed (' + resp.status + ')', 'err'); }
-    }
-  } catch {
-    // Network dropped — ESP is restarting (expected)
-    toast('Restarting… reconnect to the WiFi network.', 'ok');
-  }
-}
-async function resetWifi() {
-  if (!confirm('Reset WiFi config? Device will restart in AP mode.')) return;
-  await fetch('/api/wifi/reset', { method: 'POST' });
-  toast('Reset — restarting in AP mode…', 'ok');
 }
 
 // ─────────────────────────────────────────────
@@ -883,7 +693,7 @@ async function loadLogs() {
 }
 
 // ─────────────────────────────────────────────
-const CARD_IDS = ['sectionSchedule','sectionControl','sectionClock','sectionClients','sectionSecurity','sectionWifi','sectionDebug'];
+const CARD_IDS = ['sectionSchedule','sectionClock','sectionSecurity','sectionDebug'];
 
 function initCards() {
   CARD_IDS.forEach(id => {
@@ -920,10 +730,6 @@ function togglePass(id, btn) {
     input.type = 'password';
     btn.textContent = '👁';
   }
-}
-
-function toggleWifiPass() {
-  togglePass('wPass', event.currentTarget);
 }
 
 // ─────────────────────────────────────────────

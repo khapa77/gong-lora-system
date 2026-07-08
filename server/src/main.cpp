@@ -4,22 +4,16 @@
 #include "config.h"
 #include "mp3handler.h"
 #include "schedule.h"
-#include "lorahandler.h"
 #include "webhandler.h"
 #include "rtchandler.h"
 
-static unsigned long lastHeartbeat    = 0;
-static unsigned long lastSchedCheck   = 0;
+static unsigned long lastSchedCheck = 0;
 
 // -------------------------------------------------------
-// Called when a schedule entry fires
-// Plays locally AND broadcasts to all LoRa clients
+// Called when a schedule entry fires — plays locally.
 // -------------------------------------------------------
 static void onGongFire(uint8_t track, uint8_t loop) {
     logPrintf("[MAIN] Schedule fired: track=%d loop=%d\n", track, loop);
-    // Send LoRa FIRST (blocking TX ~170ms), then start local playback.
-    // Both server and client will begin audio after TX completes → in sync.
-    lora_sendGong(track, DEFAULT_VOLUME, loop);
     mp3_setVolume(DEFAULT_VOLUME);
     mp3_play(track, loop);
 }
@@ -34,12 +28,7 @@ void setup() {
     logbuffer_init();  // capture logs for web debug
 
     logPrintf("\n==============================\n");
-    logPrintf("  Gong LoRa SERVER v2.0\n");
-    logPrintf("==============================\n");
-
-    // Seed the ring buffer with the banner
-    logPrintf("\n==============================\n");
-    logPrintf("  Gong LoRa SERVER v2.0\n");
+    logPrintf("  Gong Server v3.0 (WiFi-only)\n");
     logPrintf("==============================\n");
 
     if (!SPIFFS.begin(true)) {
@@ -52,27 +41,19 @@ void setup() {
     rtc_setup();     // probe DS3231; if found, load time into system clock
     mp3_setup();
     mp3_startAudioTask();
-    lora_setup();
     sched_setup();
-    web_setup();     // connects WiFi, starts HTTP server; NTP will overwrite RTC time if available
+    web_setup();     // starts local AP + HTTP server
 
     logPrintf("[MAIN] All modules ready. Entering main loop.\n");
 }
 
 void loop() {
     web_loop();
-    // Аудио теперь в отдельном таске (Core 1, приоритет 1)
+    // Аудио — в отдельном таске (Core 1, приоритет 24)
 
     unsigned long now = millis();
-
     if (now - lastSchedCheck >= 1000) {
         sched_check();
         lastSchedCheck = now;
     }
-
-    if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
-        lora_sendHeartbeat();
-        lastHeartbeat = now;
-    }
 }
-

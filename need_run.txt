@@ -1,2 +1,0 @@
-git remote set-url origin git@github.com:khapa77/gong-lora-system.git
-git push

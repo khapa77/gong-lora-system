@@ -1,36 +1,10 @@
 #pragma once
 #include "logbuffer.h"
 
-// ── WiFi ──────────────────────────────────────────────────────────────────
+// ── WiFi (standalone AP only — never joins another network) ───────────────
 #define AP_SSID           "GongServer"
 #define MDNS_NAME         "gong"        // http://gong.local
 #define AP_PASSWORD       "vipassana"   // минимум 8 символов для WPA2
-#define WIFI_TIMEOUT_MS   10000
-#define WIFI_CONFIG_FILE  "/wifi.conf"
-
-// ── NTP ───────────────────────────────────────────────────────────────────
-#define NTP_SERVER        "pool.ntp.org"
-#define NTP_UTC_OFFSET    10800      // секунды; UTC+3 (Москва)
-
-// ── LoRa (SX1276 / SX1278) ────────────────────────────────────────────────
-
-#define LORA_FREQ      433.0     // 433 MHz
-#define LORA_SF        9         // Spreading factor 7..12
-#define LORA_BW        125.0     // Bandwidth kHz
-#define LORA_CR        5         // Coding rate 5..8
-#define LORA_SYNC_WORD 0xF3      // Private network word
-#define LORA_TX_POWER  20        // dBm (max 20)
-
-#define LORA_SS           5
-#define LORA_RST          14
-#define LORA_DIO0         4
-
-// ── LoRa типы сообщений ───────────────────────────────────────────────────
-#define MSG_GONG          0x01
-#define MSG_HEARTBEAT     0x02
-#define MSG_SCHEDULE      0x03
-#define MSG_ACK           0x04
-#define MSG_STOP          0x05
 
 // ── I2S пины для MAX98357A ────────────────────────────────────────────────
 #define I2S_BCLK          26   // Bit Clock
@@ -48,13 +22,3 @@
 // ── Аутентификация веб-админки ────────────────────────────────────────────
 #define AUTH_CONFIG_FILE  "/auth.conf"
 #define AUTH_REALM        "Gong Server"
-
-// ── LoRa HMAC-подпись ─────────────────────────────────────────────────────
-// Секретный ключ — одинаковый на сервере и на ВСЕХ клиентах.
-// Смените перед развёртыванием (минимум 16 символов)!
-// #define LORA_HMAC_KEY           "change_me_before_deploy_32chars!"
-#define LORA_HMAC_KEY           "REDACTED_HMAC_KEY"
-
-// ── Тайминги ──────────────────────────────────────────────────────────────
-#define HEARTBEAT_INTERVAL_MS   30000UL
-#define CLIENT_TIMEOUT_MS       90000UL
