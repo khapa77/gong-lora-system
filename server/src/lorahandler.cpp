@@ -27,6 +27,7 @@ struct TxReq {
 };
 static QueueHandle_t     txQueue    = nullptr;
 static SemaphoreHandle_t txGongDone = nullptr;  // signaled by Core 0 when GONG TX done
+static volatile bool     loraReady  = false;    // true once radio.begin() succeeded and loraTask is running
 
 // ── Client list + mutex ──────────────────────────────────────────
 #define MAX_CLIENTS 16
@@ -112,7 +113,10 @@ static uint32_t nowTs() {
 }
 
 // ── loraSend — enqueue TX request from Core 1 ───────────────────
-static void loraSend(uint8_t type, const String& payload) {
+// Returns true iff the request was actually placed on txQueue (i.e. loraTask
+// will process it and eventually give txGongDone for a GONG). Callers that
+// block on txGongDone must check this — otherwise they can wait forever.
+static bool loraSend(uint8_t type, const String& payload) {
     String finalPayload = payload;
 
     if (type == MSG_GONG || type == MSG_HEARTBEAT || type == MSG_STOP) {
@@ -130,11 +134,13 @@ static void loraSend(uint8_t type, const String& payload) {
     memcpy(req.buf + 1, finalPayload.c_str(), plen);
     req.len = 1 + plen;
 
-    if (xQueueSend(txQueue, &req, pdMS_TO_TICKS(200)) != pdTRUE)
+    if (xQueueSend(txQueue, &req, pdMS_TO_TICKS(200)) != pdTRUE) {
         logPrintf("[LORA] TX queue full, dropping type=0x%02X\n", type);
-    else
-        logPrintf("[LORA] TX queued type=0x%02X payload_len=%u\n",
-                      type, (unsigned)plen);
+        return false;
+    }
+    logPrintf("[LORA] TX queued type=0x%02X payload_len=%u\n",
+                  type, (unsigned)plen);
+    return true;
 }
 
 // ── Core 0: LoRa task — non-blocking TX state machine + RX ──────
@@ -249,6 +255,7 @@ void lora_setup() {
     attachInterrupt(digitalPinToInterrupt(LORA_DIO0), onDio0, RISING);
     radio.startReceive();
     xTaskCreatePinnedToCore(loraTask, "lora", 6144, nullptr, 2, nullptr, 0);
+    loraReady = true;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -260,10 +267,18 @@ void lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop) {
     doc["ts"]    = nowTs();
     String s;
     serializeJson(doc, s);
-    loraSend(MSG_GONG, s);
 
-    // Block Core 1 until TX completes — both sides start audio after TX
-    xSemaphoreTake(txGongDone, pdMS_TO_TICKS(30000));
+    if (!loraReady) {
+        logPrintf("[LORA] GONG not sent — LoRa not initialized, playing locally only\n");
+    } else if (!loraSend(MSG_GONG, s)) {
+        logPrintf("[LORA] GONG not sent — TX queue full, playing locally only\n");
+    } else {
+        // Block Core 1 until TX completes — both sides start audio after TX.
+        // The 30s cap is only a defensive backstop; loraTask always gives
+        // this semaphore (success or failure) once it dequeues the request.
+        if (xSemaphoreTake(txGongDone, pdMS_TO_TICKS(30000)) != pdTRUE)
+            logPrintf("[LORA] WARNING: txGongDone timed out — playing locally anyway\n");
+    }
 
     logPrintf("[LORA] GONG TX done — track=%d vol=%d loop=%d clients=%d\n",
                   track, vol, loop, lora_clientCount());

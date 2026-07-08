@@ -37,7 +37,8 @@ static String computeHMAC(uint8_t msgType, const String& payload) {
     return String(hex);
 }
 
-static uint32_t lastServerTs = 0;
+static uint32_t lastServerTs  = 0;
+static String   lastServerSig = "";
 
 // A backward jump this large means the server rebooted without RTC/NTP
 // and restarted its clock near zero — treat it as a resync, not an
@@ -59,15 +60,22 @@ static bool verifyMsg(uint8_t type, DynamicJsonDocument& doc) {
     }
     uint32_t ts = doc["ts"] | 0;
     if (ts > 0) {
-        if (ts <= lastServerTs) {
+        if (ts < lastServerTs) {
             uint32_t drop = lastServerTs - ts;
             if (drop < REPLAY_RESYNC_GAP_S) {
                 Serial.printf("[LORA] Replay ts=%u last=%u — rejected\n", ts, lastServerTs);
                 return false;
             }
             Serial.printf("[LORA] Server clock reset (ts=%u < last=%u) — resyncing\n", ts, lastServerTs);
+        } else if (ts == lastServerTs && sig == lastServerSig) {
+            // Same second AND identical signature = exact same packet seen
+            // before → real replay. A different sig with the same ts is a
+            // distinct legitimate message (ts has only 1s granularity).
+            Serial.printf("[LORA] Duplicate packet ts=%u — rejected\n", ts);
+            return false;
         }
-        lastServerTs = ts;
+        lastServerTs  = ts;
+        lastServerSig = sig;
     }
     return true;
 }
