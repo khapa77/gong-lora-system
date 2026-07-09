@@ -16,3 +16,7 @@ void    mp3_stop();
 void    mp3_setVolume(uint8_t vol);   // 0–30 (внутри маппится на 0–21)
 uint8_t mp3_getVolume();
 bool    mp3_isPlaying();
+
+// JSON array of track numbers that actually exist on SPIFFS (e.g. [1,2]),
+// scanned from /NNNN.mp3 filenames.
+String  mp3_listTracksJSON();

@@ -115,7 +115,7 @@ static void handleSchedulePOST() {
     uint8_t loop  = doc["loop"]  | 1;
     String  desc  = doc["desc"]  | "";
     if (sched_add(h, m, desc, track, loop)) sendOK();
-    else sendErr("failed (full or bad time)");
+    else sendErr("failed (schedule full, bad time/track, or that time slot is already used)");
 }
 
 static void handleSchedulePUT() {
@@ -131,7 +131,7 @@ static void handleSchedulePUT() {
     bool    en    = doc["en"]    | true;
     String  desc  = doc["desc"]  | "";
     if (sched_edit(id, h, m, desc, track, loop, en)) sendOK();
-    else sendErr("not found");
+    else sendErr("not found, bad time/track, or that time slot is already used");
 }
 
 static void handleScheduleDELETE() {
@@ -145,6 +145,14 @@ static void handleScheduleDELETE() {
 // -------------------------------------------------------
 // /api/time  — set system time manually
 // -------------------------------------------------------
+// The calendar day of the schedule (see sched_check()'s date-based auto
+// advance) depends on the ESP32's system DATE, not just its clock. Previous
+// versions of this handler always pinned the date to a fixed 2024-01-01
+// stub, on the assumption that "only HH:MM matters for schedule" — that
+// stopped being true once day-switching started comparing calendar dates.
+// So: keep whatever valid date the system already has (RTC or an earlier
+// manual set) unless the caller explicitly supplies year/month/day.
+// -------------------------------------------------------
 static void handleTimeSet() {
     if (!checkAuth()) return;
     DynamicJsonDocument doc(128);
@@ -153,11 +161,17 @@ static void handleTimeSet() {
     int m = doc["min"]  | -1;
     if (h < 0 || h > 23 || m < 0 || m > 59) { sendErr("invalid time"); return; }
 
-    // Set ESP32 system clock; use 2024-01-01 as date (only HH:MM matters for schedule)
+    struct tm cur;
+    bool haveCur = getLocalTime(&cur) && cur.tm_year >= 124;
+    int y  = doc["year"]  | (haveCur ? cur.tm_year + 1900 : 2024);
+    int mo = doc["month"] | (haveCur ? cur.tm_mon + 1     : 1);
+    int d  = doc["day"]   | (haveCur ? cur.tm_mday        : 1);
+    if (y < 2024 || y > 2099 || mo < 1 || mo > 12 || d < 1 || d > 31) { sendErr("invalid date"); return; }
+
     struct tm ti = {};
-    ti.tm_year = 124;   // 2024
-    ti.tm_mon  = 0;
-    ti.tm_mday = 1;
+    ti.tm_year = y - 1900;
+    ti.tm_mon  = mo - 1;
+    ti.tm_mday = d;
     ti.tm_hour = h;
     ti.tm_min  = m;
     ti.tm_sec  = 0;
@@ -168,7 +182,7 @@ static void handleTimeSet() {
     rtc_syncFromSystem();   // persist to DS3231 so it survives next reboot
 
     sendOK();
-    logPrintf("[TIME] Manual time set: %02d:%02d\n", h, m);
+    logPrintf("[TIME] Manual time set: %04d-%02d-%02d %02d:%02d\n", y, mo, d, h, m);
 }
 
 // POST /api/time/source?s=rtc|manual
@@ -194,7 +208,7 @@ static void handleTimeSource() {
 // -------------------------------------------------------
 static void handleStatus() {
     if (!checkAuth()) return;
-    DynamicJsonDocument doc(256);
+    DynamicJsonDocument doc(384);
     doc["mode"]   = "AP";
     doc["ip"]     = WiFi.softAPIP().toString();
     doc["ssid"]   = AP_SSID;
@@ -207,8 +221,14 @@ static void handleStatus() {
         snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d",
                  ti.tm_hour, ti.tm_min, ti.tm_sec);
         doc["time"] = tbuf;
+        char dbuf[11];
+        snprintf(dbuf, sizeof(dbuf), "%04d-%02d-%02d",
+                 ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday);
+        doc["date"] = dbuf;
     }
     doc["time_source"] = (timeSrc == TimeSrc::MANUAL) ? "manual" : "rtc";
+    doc["active_day"]  = sched_getActiveDay();
+    doc["day_count"]   = DAY_COUNT;
 
     String s;
     serializeJson(doc, s);
@@ -256,7 +276,8 @@ static void handleDaysStatus() {
     if (!checkAuth()) return;
     DynamicJsonDocument doc(64);
     doc["active"] = sched_getActiveDay();
-    doc["count"]  = 12;
+    doc["count"]  = DAY_COUNT;
+    doc["ended"]  = sched_courseEnded();
     String s; serializeJson(doc, s);
     sendJSON(200, s);
 }
@@ -264,16 +285,69 @@ static void handleDaysStatus() {
 static void handleDayGet() {
     if (!checkAuth()) return;
     int n = server.arg("n").toInt();
-    if (n < 0 || n > 11) { sendErr("invalid day (0-11)"); return; }
+    if (n < 0 || n >= DAY_COUNT) { sendErr("invalid day"); return; }
     sendJSON(200, sched_dayJSON((uint8_t)n));
 }
 
 static void handleDayActivate() {
     if (!checkAuth()) return;
     int n = server.arg("n").toInt();
-    if (n < 0 || n > 11) { sendErr("invalid day (0-11)"); return; }
+    if (n < 0 || n >= DAY_COUNT) { sendErr("invalid day"); return; }
     if (sched_activateDay((uint8_t)n)) sendOK();
     else sendErr("day file not found on SPIFFS");
+}
+
+static void handleTracksGet() {
+    if (!checkAuth()) return;
+    sendJSON(200, mp3_listTracksJSON());
+}
+
+// -------------------------------------------------------
+// /api/day/entry — add/edit/delete a single entry in a specific day's
+// template (?day=N), without activating it. If N is the active day, these
+// transparently behave like /api/schedule (see sched_addToDay & co).
+// -------------------------------------------------------
+static void handleDayEntryPOST() {
+    if (!checkAuth()) return;
+    int day = server.arg("day").toInt();
+    if (day < 0 || day >= DAY_COUNT) { sendErr("invalid day"); return; }
+    DynamicJsonDocument doc(512);
+    if (deserializeJson(doc, server.arg("plain"))) { sendErr("bad json"); return; }
+    uint8_t h     = doc["hour"]  | 0;
+    uint8_t m     = doc["min"]   | 0;
+    uint8_t track = doc["track"] | 1;
+    uint8_t loop  = doc["loop"]  | 1;
+    String  desc  = doc["desc"]  | "";
+    if (sched_addToDay((uint8_t)day, h, m, desc, track, loop)) sendOK();
+    else sendErr("failed (full, bad time/track, or that time slot is already used)");
+}
+
+static void handleDayEntryPUT() {
+    if (!checkAuth()) return;
+    int      day = server.arg("day").toInt();
+    uint32_t id  = server.arg("id").toInt();
+    if (day < 0 || day >= DAY_COUNT) { sendErr("invalid day"); return; }
+    if (!id) { sendErr("missing id"); return; }
+    DynamicJsonDocument doc(512);
+    if (deserializeJson(doc, server.arg("plain"))) { sendErr("bad json"); return; }
+    uint8_t h     = doc["hour"]  | 0;
+    uint8_t m     = doc["min"]   | 0;
+    uint8_t track = doc["track"] | 1;
+    uint8_t loop  = doc["loop"]  | 1;
+    bool    en    = doc["en"]    | true;
+    String  desc  = doc["desc"]  | "";
+    if (sched_editInDay((uint8_t)day, id, h, m, desc, track, loop, en)) sendOK();
+    else sendErr("not found, bad time/track, or that time slot is already used");
+}
+
+static void handleDayEntryDELETE() {
+    if (!checkAuth()) return;
+    int      day = server.arg("day").toInt();
+    uint32_t id  = server.arg("id").toInt();
+    if (day < 0 || day >= DAY_COUNT) { sendErr("invalid day"); return; }
+    if (!id) { sendErr("missing id"); return; }
+    if (sched_delFromDay((uint8_t)day, id)) sendOK();
+    else sendErr("not found");
 }
 
 static void handleFavicon() {
@@ -323,7 +397,9 @@ void web_setup() {
     server.on("/api/days",        HTTP_OPTIONS, handleOptions);
     server.on("/api/day",         HTTP_OPTIONS, handleOptions);
     server.on("/api/day/activate",HTTP_OPTIONS, handleOptions);
+    server.on("/api/day/entry",   HTTP_OPTIONS, handleOptions);
     server.on("/api/logs",        HTTP_OPTIONS, handleOptions);
+    server.on("/api/tracks",      HTTP_OPTIONS, handleOptions);
 
     // Routes
     server.on("/favicon.ico",     HTTP_GET,    handleFavicon);
@@ -345,6 +421,10 @@ void web_setup() {
     server.on("/api/days",           HTTP_GET,  handleDaysStatus);
     server.on("/api/day",            HTTP_GET,  handleDayGet);
     server.on("/api/day/activate",   HTTP_POST, handleDayActivate);
+    server.on("/api/day/entry",      HTTP_POST,   handleDayEntryPOST);
+    server.on("/api/day/entry",      HTTP_PUT,    handleDayEntryPUT);
+    server.on("/api/day/entry",      HTTP_DELETE, handleDayEntryDELETE);
+    server.on("/api/tracks",         HTTP_GET,  handleTracksGet);
 
     server.onNotFound(handleNotFound);
     server.begin();

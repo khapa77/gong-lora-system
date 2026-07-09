@@ -29,6 +29,17 @@ void   sched_load();
 String sched_dayJSON(uint8_t day);      // read /dayNN.conf → JSON (no memory change)
 bool   sched_activateDay(uint8_t day);  // load /dayNN.conf as active schedule
 int    sched_getActiveDay();            // -1 if not set
+bool   sched_courseEnded();             // true if active day is the last day (DAY_COUNT-1)
+
+// Template editing — modifies /dayNN.conf directly on disk WITHOUT activating
+// it or touching the live in-memory schedule. If `day` happens to already be
+// the active day, these transparently delegate to sched_add/edit/del so there
+// is a single source of truth for the live schedule.
+bool   sched_addToDay(uint8_t day, uint8_t h, uint8_t m,
+                      const String& desc, uint8_t track, uint8_t loop);
+bool   sched_editInDay(uint8_t day, uint32_t id, uint8_t h, uint8_t m,
+                       const String& desc, uint8_t track, uint8_t loop, bool enabled);
+bool   sched_delFromDay(uint8_t day, uint32_t id);
 
 // Callback: fired when a scheduled gong triggers
 extern void (*onScheduleTrigger)(uint8_t track, uint8_t loop);

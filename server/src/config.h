@@ -19,6 +19,9 @@
 #define MAX_SCHEDULES     32
 #define SCHEDULE_FILE     "/gong.conf"
 
+// ── Многодневный курс ──────────────────────────────────────────────────────
+#define DAY_COUNT         12   // day00.conf .. day11.conf
+
 // ── Аутентификация веб-админки ────────────────────────────────────────────
 #define AUTH_CONFIG_FILE  "/auth.conf"
 #define AUTH_REALM        "Gong Server"
