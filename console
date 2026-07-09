@@ -1,0 +1,1005 @@
+contentscript.js:14083 MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 close listeners added. Use emitter.setMaxListeners() to increase limit
+n @ contentscript.js:14083
+u @ contentscript.js:14083
+a.addListener @ contentscript.js:14083
+Z.on @ contentscript.js:14082
+a.once @ contentscript.js:14083
+j.pipe @ contentscript.js:14063
+q @ contentscript.js:14063
+D @ contentscript.js:14063
+P @ contentscript.js:14063
+M @ contentscript.js:14063
+I @ contentscript.js:14063
+(anonymous) @ contentscript.js:14083
+call.__webpack_require__._LM_.__webpack_require__.__webpack_require__ @ contentscript.js:14083
+(anonymous) @ contentscript.js:14083
+(anonymous) @ contentscript.js:14083
+contentscript.js:14083 MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 end listeners added. Use emitter.setMaxListeners() to increase limit
+n @ contentscript.js:14083
+u @ contentscript.js:14083
+a.addListener @ contentscript.js:14083
+Z.on @ contentscript.js:14082
+O @ contentscript.js:14083
+q @ contentscript.js:14063
+D @ contentscript.js:14063
+P @ contentscript.js:14063
+M @ contentscript.js:14063
+I @ contentscript.js:14063
+(anonymous) @ contentscript.js:14083
+call.__webpack_require__._LM_.__webpack_require__.__webpack_require__ @ contentscript.js:14083
+(anonymous) @ contentscript.js:14083
+(anonymous) @ contentscript.js:14083
+contentscript.js:14083 ObjectMultiplex - orphaned data for stream "app-init-liveness"
+warn @ contentscript.js:14083
+_write @ contentscript.js:14082
+M @ contentscript.js:14063
+x @ contentscript.js:14063
+E.write @ contentscript.js:14063
+d @ contentscript.js:14082
+a.emit @ contentscript.js:14083
+J @ contentscript.js:14082
+K @ contentscript.js:14082
+Z.push @ contentscript.js:14082
+(anonymous) @ contentscript.js:14063
+contentscript.js:14083 ObjectMultiplex - orphaned data for stream "app-init-liveness"
+warn @ contentscript.js:14083
+_write @ contentscript.js:14082
+M @ contentscript.js:14063
+x @ contentscript.js:14063
+E.write @ contentscript.js:14063
+d @ contentscript.js:14082
+a.emit @ contentscript.js:14083
+J @ contentscript.js:14082
+K @ contentscript.js:14082
+Z.push @ contentscript.js:14082
+(anonymous) @ contentscript.js:14082
+transform @ contentscript.js:14063
+s._write @ contentscript.js:14082
+I @ contentscript.js:14083
+L @ contentscript.js:14083
+O.write @ contentscript.js:14083
+d @ contentscript.js:14082
+a.emit @ contentscript.js:14083
+J @ contentscript.js:14082
+K @ contentscript.js:14082
+Z.push @ contentscript.js:14082
+(anonymous) @ contentscript.js:14063
+contentscript.js:14083 ObjectMultiplex - orphaned data for stream "background-liveness"
+warn @ contentscript.js:14083
+_write @ contentscript.js:14082
+M @ contentscript.js:14063
+x @ contentscript.js:14063
+E.write @ contentscript.js:14063
+d @ contentscript.js:14082
+a.emit @ contentscript.js:14083
+J @ contentscript.js:14082
+K @ contentscript.js:14082
+Z.push @ contentscript.js:14082
+(anonymous) @ contentscript.js:14063
+contentscript.js:14083 ObjectMultiplex - orphaned data for stream "background-liveness"
+warn @ contentscript.js:14083
+_write @ contentscript.js:14082
+M @ contentscript.js:14063
+x @ contentscript.js:14063
+E.write @ contentscript.js:14063
+d @ contentscript.js:14082
+a.emit @ contentscript.js:14083
+J @ contentscript.js:14082
+K @ contentscript.js:14082
+Z.push @ contentscript.js:14082
+(anonymous) @ contentscript.js:14082
+transform @ contentscript.js:14063
+s._write @ contentscript.js:14082
+I @ contentscript.js:14083
+L @ contentscript.js:14083
+O.write @ contentscript.js:14083
+d @ contentscript.js:14082
+a.emit @ contentscript.js:14083
+J @ contentscript.js:14082
+K @ contentscript.js:14082
+Z.push @ contentscript.js:14082
+(anonymous) @ contentscript.js:14063
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+(anonymous) @ (index):407
+/favicon.ico:1  GET http://gong.local/favicon.ico net::ERR_NETWORK_CHANGED
+(index):832  GET http://gong.local/api/days net::ERR_CONNECTION_TIMED_OUT
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_CONNECTION_TIMED_OUT
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_CONNECTION_TIMED_OUT
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_CONNECTION_TIMED_OUT
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):7P1+r4632=1B5B32347E\75  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):759  POST http://gong.local/api/time net::ERR_NETWORK_CHANGED
+postJSON @ (index):759
+setTime @ (index):606
+onclick @ (index):271
+(index):957  POST http://gong.local/api/day/activate?n=4 net::ERR_NETWORK_CHANGED
+activateViewedDay @ (index):957
+onclick @ (index):196
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anP0+r2531\P0+r2638\P1+r6B62=7F\P0+r6B49\P1+r6B44=1B5B337E\P1+r6B68=1B4F48\P1+r4037=1B4F46\P1+r6B50=1B5B357E\P1+r6B4E=1B5B367E\onymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+setTimeSource @ (index):484
+await in setTimeSource
+onclick @ (index):249
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+activateViewedDay @ (index):962
+await in activateViewedDay
+onclick @ (index):196
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):901  GET http://gong.local/api/day?n=3 net::ERR_NETWORK_CHANGED
+updateSchedView @ (index):901
+schedNavDay @ (index):892
+onclick @ (index):191
+(index):901  GET http://gong.local/api/day?n=2 net::ERR_NETWORK_CHANGED
+updateSchedView @ (index):901
+schedNavDay @ (index):892
+onclick @ (index):191
+  GET http://gong.local/api/day?n=1 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/day?n=0 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/day?n=4 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  POST http://gong.local/api/day/activate?n=6 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/day?n=5 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/day?n=6 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/day?n=0 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/day?n=1 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/day?n=2 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/day?n=3 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/day?n=3 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/day?n=2 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/day?n=1 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/day?n=1 net::ERR_NETWORK_CHANGED
+  POST http://gong.local/api/time net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/day?n=2 net::ERR_NETWORK_CHANGED
+  POST http://gong.local/api/time net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/day?n=3 net::ERR_NETWORK_CHANGED
+  POST http://gong.local/api/time net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/day?n=4 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/day?n=6 net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+activateViewedDay @ (index):962
+await in activateViewedDay
+onclick @ (index):196
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):901  GET http://gong.local/api/day?n=7 net::ERR_NETWORK_CHANGED
+updateSchedView @ (index):901
+schedNavDay @ (index):892
+onclick @ (index):193
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):901  GET http://gong.local/api/day?n=5 net::ERR_NETWORK_CHANGED
+updateSchedView @ (index):901
+schedNavDay @ (index):892
+onclick @ (index):191
+(index):901  GET http://gong.local/api/day?n=4 net::ERR_NETWORK_CHANGED
+updateSchedView @ (index):901
+schedNavDay @ (index):892
+onclick @ (index):191
+(index):901  GET http://gong.local/api/day?n=3 net::ERR_NETWORK_CHANGED
+updateSchedView @ (index):901
+schedNavDay @ (index):892
+onclick @ (index):191
+(index):901  GET http://gong.local/api/day?n=4 net::ERR_NETWORK_CHANGED
+updateSchedView @ (index):901
+schedNavDay @ (index):892
+onclick @ (index):193
+(index):901  GET http://gong.local/api/day?n=5 net::ERR_NETWORK_CHANGED
+updateSchedView @ (index):901
+schedNavDay @ (index):892
+onclick @ (index):193
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):901  GET http://gong.local/api/day?n=4 net::ERR_NETWORK_CHANGED
+updateSchedView @ (index):901
+schedNavDay @ (index):892
+onclick @ (index):191
+(index):901  GET http://gong.local/api/day?n=3 net::ERR_NETWORK_CHANGED
+updateSchedView @ (index):901
+schedNavDay @ (index):892
+onclick @ (index):191
+(index):901  GET http://gong.local/api/day?n=2 net::ERR_NETWORK_CHANGED
+updateSchedView @ (index):901
+schedNavDay @ (index):892
+onclick @ (index):191
+(index):901  GET http://gong.local/api/day?n=3 net::ERR_NETWORK_CHANGED
+updateSchedView @ (index):901
+schedNavDay @ (index):892
+onclick @ (index):193
+(index):901  GET http://gong.local/api/day?n=4 net::ERR_NETWORK_CHANGED
+updateSchedView @ (index):901
+schedNavDay @ (index):892
+onclick @ (index):193
+(index):901  GET http://gong.local/api/day?n=5 net::ERR_NETWORK_CHANGED
+updateSchedView @ (index):901
+schedNavDay @ (index):892
+onclick @ (index):193
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):901  GET http://gong.local/api/day?n=5 net::ERR_NETWORK_CHANGED
+updateSchedView @ (index):901
+schedNavDay @ (index):892
+onclick @ (index):191
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):901  GET http://gong.local/api/day?n=6 net::ERR_NETWORK_CHANGED
+updateSchedView @ (index):901
+loadDaysStatus @ (index):838
+await in loadDaysStatus
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NETWORK_CHANGED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NETWORK_CHANGED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NETWORK_CHANGED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NETWORK_CHANGED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NETWORK_CHANGED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NAME_NOT_RESOLVED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NAME_NOT_RESOLVED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NAME_NOT_RESOLVED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NAME_NOT_RESOLVED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NAME_NOT_RESOLVED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NAME_NOT_RESOLVED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NAME_NOT_RESOLVED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NAME_NOT_RESOLVED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NAME_NOT_RESOLVED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NAME_NOT_RESOLVED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NAME_NOT_RESOLVED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NAME_NOT_RESOLVED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NAME_NOT_RESOLVED
+loadStatus @ (index):498
+setTimeSource @ (index):484
+await in setTimeSource
+onclick @ (index):249
+(index):498  GET http://gong.local/api/status net::ERR_NAME_NOT_RESOLVED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NAME_NOT_RESOLVED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NAME_NOT_RESOLVED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NAME_NOT_RESOLVED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NAME_NOT_RESOLVED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NAME_NOT_RESOLVED
+loadDaysStatus @ (index):832
+activateViewedDay @ (index):963
+await in activateViewedDay
+onclick @ (index):196
+(index):832  GET http://gong.local/api/days net::ERR_NAME_NOT_RESOLVED
+loadDaysStatus @ (index):832
+activateViewedDay @ (index):963
+await in activateViewedDay
+onclick @ (index):196
+(index):832  GET http://gong.local/api/days net::ERR_NAME_NOT_RESOLVED
+loadDaysStatus @ (index):832
+activateViewedDay @ (index):963
+await in activateViewedDay
+onclick @ (index):196
+(index):619  GET http://gong.local/api/auth/status net::ERR_NAME_NOT_RESOLVED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NAME_NOT_RESOLVED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NAME_NOT_RESOLVED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):832  GET http://gong.local/api/days net::ERR_NAME_NOT_RESOLVED
+loadDaysStatus @ (index):832
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NAME_NOT_RESOLVED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NAME_NOT_RESOLVED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NAME_NOT_RESOLVED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):775  GET http://gong.local/api/logs?n=40 net::ERR_NAME_NOT_RESOLVED
+loadLogs @ (index):775
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):498  GET http://gong.local/api/status net::ERR_NAME_NOT_RESOLVED
+loadStatus @ (index):498
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):540  GET http://gong.local/api/schedule net::ERR_NAME_NOT_RESOLVED
+loadSchedules @ (index):540
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+(index):619  GET http://gong.local/api/auth/status net::ERR_NAME_NOT_RESOLVED
+loadAuthStatus @ (index):619
+refreshAll @ (index):474
+setInterval
+(anonymous) @ (index):408
+
