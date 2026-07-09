@@ -111,6 +111,30 @@ bool mp3_isPlaying() {
     return audio.isRunning();
 }
 
+String mp3_listTracksJSON() {
+    String s = "[";
+    bool first = true;
+    File root = SPIFFS.open("/");
+    File f = root.openNextFile();
+    while (f) {
+        String name = f.name();
+        int slash = name.lastIndexOf('/');
+        if (slash >= 0) name = name.substring(slash + 1);
+        if (name.length() == 8 && name.endsWith(".mp3")) {
+            bool numeric = true;
+            for (int i = 0; i < 4; i++) if (!isDigit(name[i])) { numeric = false; break; }
+            if (numeric) {
+                if (!first) s += ",";
+                s += String(name.substring(0, 4).toInt());
+                first = false;
+            }
+        }
+        f = root.openNextFile();
+    }
+    s += "]";
+    return s;
+}
+
 // ────────────────────────────────────────────────────────────────
 // Dedicated audio feeder task (Core 1, high priority)
 // ────────────────────────────────────────────────────────────────

@@ -192,11 +192,14 @@ tr:hover td { background: rgba(79,158,248,.04); }
           <span id="schedDayLabel" style="min-width:72px;text-align:center;font-size:.85rem;font-weight:600">День 00</span>
           <button class="btn btn-ghost btn-sm" onclick="schedNavDay(1)"  style="padding:4px 10px;font-size:1rem">&raquo;</button>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="openAddModal()">+ Add</button>
+        <span id="schedDayBadge" class="tag" style="font-size:.72rem"></span>
+        <button class="btn btn-yellow btn-sm" id="activateDayBtn" style="display:none" onclick="activateViewedDay()">Activate this day</button>
+        <button class="btn btn-primary btn-sm" id="addBtn" onclick="openAddModal()">+ Add</button>
         <button class="collapse-btn" onclick="toggleCard('sectionSchedule')">&#9662;</button>
       </div>
     </div>
     <div class="card-body">
+      <div id="schedBanner" style="display:none;margin-bottom:12px;padding:10px 14px;border-radius:6px;font-size:.85rem"></div>
       <table>
         <thead>
           <tr>
@@ -212,6 +215,22 @@ tr:hover td { background: rgba(79,158,248,.04); }
           <tr><td colspan="6" class="empty-row">Loading&#8230;</td></tr>
         </tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- ── Calendar ── -->
+  <div class="card" id="sectionCalendar">
+    <div class="card-title">
+      <span>Calendar &#8212; next 2 weeks</span>
+      <button class="collapse-btn" onclick="toggleCard('sectionCalendar')">&#9662;</button>
+    </div>
+    <div class="card-body">
+      <p style="color:var(--muted);font-size:.8rem;margin-bottom:12px">
+        Прогноз, каким днём курса будет каждая дата, <b>если ничего не менять</b> —
+        считается от сегодняшнего активного дня вперёд. Даты после конца курса
+        (день <span id="calLastDay">&#8212;</span>) не подсвечены.
+      </p>
+      <div id="calGrid" style="display:flex;flex-wrap:wrap;gap:8px"></div>
     </div>
   </div>
 
@@ -234,8 +253,12 @@ tr:hover td { background: rgba(79,158,248,.04); }
         <p style="color:#aaa;font-size:.82rem;margin:6px 0 0">Время берётся из RTC-модуля (батарейка CR2032) и остаётся источником, пока вы явно не переключитесь на Manual.</p>
       </div>
       <div id="panelManual" style="display:none">
-        <p style="color:#aaa;font-size:.82rem;margin-bottom:12px">Установите время вручную (UTC+3).</p>
+        <p style="color:#aaa;font-size:.82rem;margin-bottom:12px">Установите дату и время вручную (UTC+3). Дата важна не только для расписания дня, но и для перехода расписания на следующий день курса — проверьте её при первой настройке.</p>
         <div class="row">
+          <div class="col" style="max-width:160px">
+            <label>Date</label>
+            <input type="date" id="tDate">
+          </div>
           <div class="col" style="max-width:120px">
             <label>Hour (0–23)</label>
             <input type="number" id="tHour" min="0" max="23" value="23">
@@ -334,7 +357,7 @@ tr:hover td { background: rgba(79,158,248,.04); }
       </div>
       <div class="col form-group">
         <label>Track</label>
-        <input type="number" id="mTrack" min="1" max="99" value="1">
+        <select id="mTrack"></select>
       </div>
       <div class="col form-group">
         <label>Loop</label>
@@ -364,10 +387,15 @@ tr:hover td { background: rgba(79,158,248,.04); }
 // ─────────────────────────────────────────────
 // State
 // ─────────────────────────────────────────────
-let schedules    = [];
-let editId       = null;
-let schedDayView = -1;
-let activeDayNum = -1;
+let liveSchedules = [];   // entries of the ACTIVE day — what actually fires, and what CRUD edits
+let viewSchedules = [];   // entries currently shown in the table (== liveSchedules unless previewing another day)
+let editId        = null;
+let schedDayView  = -1;
+let activeDayNum  = -1;
+let dayCount      = 12;
+let courseEnded   = false;
+let isPreview     = false;   // true when schedDayView !== activeDayNum — editing still allowed, but writes go to that day's template file, not the live schedule
+let availableTracks = [];
 
 // ─────────────────────────────────────────────
 // Init
@@ -375,6 +403,7 @@ let activeDayNum = -1;
 document.addEventListener('DOMContentLoaded', () => {
   initCards();
   switchClockTab('manual');
+  loadTracks();
   refreshAll();
   setInterval(refreshAll, 5000);
   setInterval(updateClock, 1000);
@@ -382,6 +411,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 let espTime = '';      // HH:MM:SS from last /api/status
 let espTimestamp = 0;  // millis() when we received it
+let espDateStr = '';   // YYYY-MM-DD from last /api/status (server's system date)
 
 function updateClock() {
   let display = '';
@@ -412,7 +442,9 @@ function espNowSec() {
 }
 
 function computeNextGong() {
-  const active = schedules.filter(s => s.en);
+  // Always based on the LIVE (active) day's entries — regardless of what the
+  // operator happens to be previewing in the table.
+  const active = liveSchedules.filter(s => s.en);
   if (!active.length) return null;
   const nowSec = espNowSec();
   let best = null, bestDiff = Infinity;
@@ -440,6 +472,7 @@ function updateCountdown() {
 
 async function refreshAll() {
   await Promise.all([loadStatus(), loadSchedules(), loadAuthStatus(), loadDaysStatus(), loadLogs()]);
+  renderCalendar();
 }
 
 // ─────────────────────────────────────────────
@@ -470,6 +503,12 @@ async function loadStatus() {
     const kb = Math.round((d.heap || 0) / 1024);
     document.getElementById('heapStat').textContent = kb ? 'Heap: ' + kb + 'KB' : '';
     if (d.time) { espTime = d.time; espTimestamp = Date.now(); }
+    if (d.date) {
+      espDateStr = d.date;
+      const dateInput = document.getElementById('tDate');
+      // Don't clobber the field while the operator is actively editing it.
+      if (dateInput && document.activeElement !== dateInput) dateInput.value = d.date;
+    }
     const badge = document.getElementById('clockSourceBadge');
     if (!badge) return;
     if (d.time_source === 'rtc') {
@@ -499,19 +538,25 @@ async function loadStatus() {
 async function loadSchedules() {
   try {
     const r = await fetch('/api/schedule');
-    schedules = await r.json();
-    await renderSchedView();
+    liveSchedules = await r.json();
+    if (!isPreview) viewSchedules = liveSchedules;
+    renderSchedule();
   } catch { /* ignore */ }
 }
 
 function renderSchedule() {
   const tbody = document.getElementById('schedBody');
-  if (!schedules.length) {
+  // Add/Edit/Del always available — they act on whichever day is being
+  // viewed (schedDayView), live or not. See saveModal()/deleteSched().
+  if (!viewSchedules.length) {
     tbody.innerHTML = '<tr><td colspan="6" class="empty-row">No schedules yet. Click "+ Add".</td></tr>';
     return;
   }
   // Sort by time
-  const sorted = [...schedules].sort((a, b) => a.hour * 60 + a.min - (b.hour * 60 + b.min));
+  const sorted = [...viewSchedules].sort((a, b) => a.hour * 60 + a.min - (b.hour * 60 + b.min));
+  const actions = s => `
+        <button class="btn btn-ghost btn-sm" onclick="openEditModal(${s.id})">Edit</button>
+        <button class="btn btn-red btn-sm"   onclick="deleteSched(${s.id})" style="margin-left:6px">Del</button>`;
   tbody.innerHTML = sorted.map(s => `
     <tr>
       <td><span class="time-badge">${pad(s.hour)}:${pad(s.min)}</span></td>
@@ -519,18 +564,30 @@ function renderSchedule() {
       <td style="color:var(--muted)">&#127925;&nbsp;${s.track}</td>
       <td style="color:var(--muted)">${s.loop > 1 ? '&#x21BA;&nbsp;' + s.loop : '1'}</td>
       <td><span class="tag ${s.en ? 'tag-on' : 'tag-off'}">${s.en ? 'ON' : 'OFF'}</span></td>
-      <td style="text-align:right">
-        <button class="btn btn-ghost btn-sm" onclick="openEditModal(${s.id})">Edit</button>
-        <button class="btn btn-red btn-sm"   onclick="deleteSched(${s.id})" style="margin-left:6px">Del</button>
-      </td>
+      <td style="text-align:right">${actions(s)}</td>
     </tr>`).join('');
 }
 
 async function deleteSched(id) {
   if (!confirm('Delete this schedule?')) return;
-  const r = await fetch('/api/schedule?id=' + id, { method: 'DELETE' });
-  if (r.ok) { toast('Deleted', 'ok'); await loadSchedules(); }
+  const r = await fetch('/api/day/entry?day=' + schedDayView + '&id=' + id, { method: 'DELETE' });
+  if (r.ok) { toast('Deleted', 'ok'); await reloadDayView(); }
   else        toast('Error', 'err');
+}
+
+// Re-fetches whatever day is currently shown in the table. If it's the live
+// day this also refreshes the countdown; if it's a template preview, only
+// the table updates — nothing live changes.
+async function reloadDayView() {
+  if (isPreview) {
+    try {
+      const r = await fetch('/api/day?n=' + schedDayView);
+      viewSchedules = await r.json();
+      renderSchedule();
+    } catch { /* ignore */ }
+  } else {
+    await loadSchedules();   // refreshes liveSchedules + viewSchedules + countdown
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -540,9 +597,19 @@ async function setTime() {
   const h = parseInt(document.getElementById('tHour').value);
   const m = parseInt(document.getElementById('tMin').value);
   if (isNaN(h) || isNaN(m)) { toast('Enter valid time', 'err'); return; }
-  const r = await postJSON('/api/time', { hour: h, min: m });
-  if (r && r.ok) { toast(`Time set to ${pad(h)}:${pad(m)}`, 'ok'); await loadStatus(); }
-  else toast(r?.err || 'Error', 'err');
+  const payload = { hour: h, min: m };
+  const dateVal = document.getElementById('tDate').value;   // "YYYY-MM-DD" or ""
+  if (dateVal) {
+    const [y, mo, d] = dateVal.split('-').map(Number);
+    payload.year = y; payload.month = mo; payload.day = d;
+  }
+  const r = await postJSON('/api/time', payload);
+  if (r && r.ok) {
+    toast(`Time set to ${pad(h)}:${pad(m)}` + (dateVal ? ' (' + dateVal + ')' : ''), 'ok');
+    await loadStatus();
+    await loadDaysStatus();
+    renderCalendar();
+  } else toast(r?.err || 'Error', 'err');
 }
 // ─────────────────────────────────────────────
 // Security / Auth
@@ -601,12 +668,28 @@ async function disableAuth() {
 // ─────────────────────────────────────────────
 // Modal
 // ─────────────────────────────────────────────
+async function loadTracks() {
+  try {
+    const r = await fetch('/api/tracks');
+    availableTracks = await r.json();
+  } catch { availableTracks = []; }
+  if (!availableTracks.length) availableTracks = [1];   // fallback so the select isn't empty
+}
+
+function fillTrackSelect(selected) {
+  const sel = document.getElementById('mTrack');
+  sel.innerHTML = availableTracks.map(t =>
+    `<option value="${t}">${t} — /${String(t).padStart(4,'0')}.mp3</option>`).join('');
+  sel.value = selected;
+}
+
 function openAddModal() {
   editId = null;
-  document.getElementById('modalTitle').textContent = 'Add Schedule';
+  document.getElementById('modalTitle').textContent =
+    isPreview ? 'Add to Day ' + pad(schedDayView) + ' (template)' : 'Add Schedule';
   document.getElementById('mHour').value  = 8;
   document.getElementById('mMin').value   = 0;
-  document.getElementById('mTrack').value = 1;
+  fillTrackSelect(availableTracks[0]);
   document.getElementById('mLoop').value  = 1;
   document.getElementById('mDesc').value  = '';
   document.getElementById('mEnRow').style.display = 'none';
@@ -614,13 +697,14 @@ function openAddModal() {
 }
 
 function openEditModal(id) {
-  const s = schedules.find(x => x.id === id);
+  const s = viewSchedules.find(x => x.id === id);
   if (!s) return;
   editId = id;
-  document.getElementById('modalTitle').textContent = 'Edit Schedule';
+  document.getElementById('modalTitle').textContent =
+    isPreview ? 'Edit Day ' + pad(schedDayView) + ' (template)' : 'Edit Schedule';
   document.getElementById('mHour').value    = s.hour;
   document.getElementById('mMin').value     = s.min;
-  document.getElementById('mTrack').value   = s.track;
+  fillTrackSelect(s.track);
   document.getElementById('mLoop').value    = s.loop || 1;
   document.getElementById('mDesc').value    = s.desc;
   document.getElementById('mEnabled').checked = s.en;
@@ -644,18 +728,26 @@ async function saveModal() {
   if (isNaN(payload.hour) || isNaN(payload.min)) { toast('Enter valid time', 'err'); return; }
   if (!payload.desc) { toast('Enter description', 'err'); return; }
 
+  // Check against whichever day is being edited (viewSchedules == that day's entries).
+  const clash = viewSchedules.some(s => s.id !== editId && s.hour === payload.hour && s.min === payload.min);
+  if (clash) { toast('This time slot is already used on this day', 'err'); return; }
+
+  // Always goes through the day-scoped endpoint — backend routes it to the
+  // live schedule automatically when schedDayView is the active day, or
+  // writes straight into the template file otherwise (see sched_addToDay).
+  const base = '/api/day/entry?day=' + schedDayView;
   let r;
   if (editId) {
-    r = await postJSON('/api/schedule?id=' + editId, payload, 'PUT');
+    r = await postJSON(base + '&id=' + editId, payload, 'PUT');
   } else {
-    r = await postJSON('/api/schedule', payload, 'POST');
+    r = await postJSON(base, payload, 'POST');
   }
   if (r && r.ok) {
     toast(editId ? 'Updated' : 'Added', 'ok');
     closeModal();
-    await loadSchedules();
+    await reloadDayView();
   } else {
-    toast('Error saving schedule', 'err');
+    toast(r?.err || 'Error saving schedule', 'err');
   }
 }
 
@@ -693,7 +785,7 @@ async function loadLogs() {
 }
 
 // ─────────────────────────────────────────────
-const CARD_IDS = ['sectionSchedule','sectionClock','sectionSecurity','sectionDebug'];
+const CARD_IDS = ['sectionSchedule','sectionCalendar','sectionClock','sectionSecurity','sectionDebug'];
 
 function initCards() {
   CARD_IDS.forEach(id => {
@@ -740,40 +832,140 @@ async function loadDaysStatus() {
     const r = await fetch('/api/days');
     const d = await r.json();
     activeDayNum = d.active;
-    if (schedDayView < 0) {
-      schedDayView = activeDayNum >= 0 ? activeDayNum : 0;
-      renderSchedDayHeader();
-    }
+    dayCount     = d.count || 12;
+    courseEnded  = !!d.ended;
+    if (schedDayView < 0) schedDayView = activeDayNum >= 0 ? activeDayNum : 0;
+    await updateSchedView();
   } catch { /* ignore */ }
 }
 
 // ─────────────────────────────────────────────
-// Schedule day navigation
+// Calendar — projects the course day forward onto the next 14 calendar
+// dates, assuming nothing changes (no manual day activation in between).
+// ─────────────────────────────────────────────
+const RU_MONTHS   = ['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
+const RU_WEEKDAYS = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];   // Monday-first
+
+function renderCalendar() {
+  const grid = document.getElementById('calGrid');
+  const lastDayLbl = document.getElementById('calLastDay');
+  if (lastDayLbl) lastDayLbl.textContent = pad(dayCount - 1);
+  if (!grid) return;
+
+  if (!espDateStr || activeDayNum < 0) {
+    grid.innerHTML = '<div class="empty-row" style="padding:12px 0">' +
+      'Нет данных о текущей дате/дне — установите время во вкладке Clock.</div>';
+    return;
+  }
+
+  const [Y, M, D] = espDateStr.split('-').map(Number);
+  const today = new Date(Y, M - 1, D);   // local components — avoids UTC-parse day shift
+
+  let html = '';
+  for (let i = 0; i < 14; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() + i);
+    const projectedDay = activeDayNum + i;
+    const inCourse = projectedDay <= dayCount - 1;
+    const wd = RU_WEEKDAYS[(d.getDay() + 6) % 7];
+    const isToday = i === 0;
+    const bg   = inCourse ? 'rgba(52,201,126,.15)' : 'rgba(122,127,154,.08)';
+    const fg   = inCourse ? 'var(--green)' : 'var(--muted)';
+    const bd   = isToday ? '2px solid var(--accent)' : '1px solid var(--border)';
+    html += `
+      <div style="min-width:64px;flex:1;max-width:80px;text-align:center;padding:8px 4px;border-radius:8px;background:${bg};border:${bd}">
+        <div style="font-size:.7rem;color:var(--muted)">${wd}${isToday ? ' &middot; сегодня' : ''}</div>
+        <div style="font-size:1rem;font-weight:700;color:${fg}">${d.getDate()} ${RU_MONTHS[d.getMonth()]}</div>
+        <div style="font-size:.72rem;color:${fg};margin-top:2px">${inCourse ? 'День ' + pad(projectedDay) : '&#8212;'}</div>
+      </div>`;
+  }
+  grid.innerHTML = html;
+}
+
+// ─────────────────────────────────────────────
+// Schedule day navigation — browsing NEVER mutates the live schedule.
+// Only openAddModal/Edit/Del (live day) or the explicit "Activate this day"
+// button change what's actually running on the device.
 // ─────────────────────────────────────────────
 function schedNavDay(delta) {
-  schedDayView = Math.max(0, Math.min(11, schedDayView + delta));
+  schedDayView = Math.max(0, Math.min(dayCount - 1, schedDayView + delta));
+  updateSchedView();
+}
+
+async function updateSchedView() {
+  isPreview = (schedDayView !== activeDayNum);
   renderSchedDayHeader();
-  schedActivateSilent(schedDayView);
+
+  if (isPreview) {
+    try {
+      const r = await fetch('/api/day?n=' + schedDayView);
+      viewSchedules = await r.json();
+    } catch { viewSchedules = []; }
+  } else {
+    viewSchedules = liveSchedules;
+  }
+  renderSchedule();
+  renderSchedBanner();
 }
 
 function renderSchedDayHeader() {
   const lbl = document.getElementById('schedDayLabel');
   if (lbl) lbl.textContent = 'День ' + pad(schedDayView);
+  const badge = document.getElementById('schedDayBadge');
+  if (badge) {
+    if (isPreview) {
+      badge.textContent = '👁 Preview';
+      badge.style.background = 'rgba(122,127,154,.15)';
+      badge.style.color = 'var(--muted)';
+    } else {
+      badge.textContent = '● Active';
+      badge.style.background = 'rgba(52,201,126,.15)';
+      badge.style.color = 'var(--green)';
+    }
+  }
+  const btn = document.getElementById('activateDayBtn');
+  if (btn) btn.style.display = isPreview ? '' : 'none';
 }
 
-async function schedActivateSilent(day) {
+function renderSchedBanner() {
+  const el = document.getElementById('schedBanner');
+  if (!el) return;
+  if (isPreview) {
+    el.style.display = '';
+    el.style.background = 'rgba(122,127,154,.12)';
+    el.style.color = 'var(--muted)';
+    el.textContent = 'Редактирование шаблона Дня ' + pad(schedDayView) +
+      ' — этот день сейчас НЕ активен, изменения сохранятся в шаблоне и вступят в силу, ' +
+      'когда день будет активирован (автоматически в полночь или кнопкой "Activate this day").';
+  } else if (courseEnded) {
+    el.style.display = '';
+    el.style.background = 'rgba(248,195,79,.12)';
+    el.style.color = 'var(--yellow)';
+    el.textContent = 'Курс завершён (последний день, ' + pad(schedDayView) +
+      '). Автоматического перехода на новый заезд нет — активируйте День 00, когда начнётся новый курс.';
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+async function activateViewedDay() {
+  if (!isPreview) return;
+  const msg = 'Активировать День ' + pad(schedDayView) + ' как текущее расписание?\n' +
+    'Гонг сразу начнёт звонить по этому расписанию вместо Дня ' + pad(activeDayNum) + '.';
+  if (!confirm(msg)) return;
   try {
-    const r = await fetch('/api/day/activate?n=' + day, { method: 'POST' });
+    const r = await fetch('/api/day/activate?n=' + schedDayView, { method: 'POST' });
     const d = await r.json();
     if (d && d.ok) {
-      activeDayNum = day;
+      toast('День ' + pad(schedDayView) + ' активирован', 'ok');
+      activeDayNum = schedDayView;
       await loadSchedules();
+      await loadDaysStatus();
+      renderCalendar();
+    } else {
+      toast(d?.err || 'Error', 'err');
     }
-  } catch { /* ignore */ }
-}
-
-async function renderSchedView() {
-  renderSchedule();
+  } catch { toast('Error', 'err'); }
 }
 </script>
 </body>
