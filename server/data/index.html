@@ -218,22 +218,6 @@ tr:hover td { background: rgba(79,158,248,.04); }
     </div>
   </div>
 
-  <!-- ── Calendar ── -->
-  <div class="card" id="sectionCalendar">
-    <div class="card-title">
-      <span>Calendar &#8212; next 2 weeks</span>
-      <button class="collapse-btn" onclick="toggleCard('sectionCalendar')">&#9662;</button>
-    </div>
-    <div class="card-body">
-      <p style="color:var(--muted);font-size:.8rem;margin-bottom:12px">
-        Прогноз, каким днём курса будет каждая дата, <b>если ничего не менять</b> —
-        считается от сегодняшнего активного дня вперёд. Даты после конца курса
-        (день <span id="calLastDay">&#8212;</span>) не подсвечены.
-      </p>
-      <div id="calGrid" style="display:flex;flex-wrap:wrap;gap:8px"></div>
-    </div>
-  </div>
-
   <!-- ── Clock ── -->
   <div class="card" id="sectionClock">
     <div class="card-title">
@@ -314,34 +298,6 @@ tr:hover td { background: rgba(79,158,248,.04); }
     </div>
   </div>
 
-  <!-- ── Debug Log ── -->
-  <div class="card" id="sectionDebug">
-    <div class="card-title">
-      <span style="display:flex;align-items:center;gap:8px">
-        <span style="color:#7a7f9a">&#128270;</span> Debug Log
-        <span id="logCount" style="color:var(--muted);font-size:.75rem"></span>
-      </span>
-      <div style="display:flex;gap:6px;align-items:center">
-        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('logOutput').textContent=''">&#128465; Clear</button>
-        <button class="collapse-btn" onclick="toggleCard('sectionDebug')">&#9662;</button>
-      </div>
-    </div>
-    <div class="card-body">
-      <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center">
-        <button class="btn btn-primary btn-sm" onclick="loadLogs()">&#8635; Refresh</button>
-        <label style="display:flex;align-items:center;gap:4px;color:var(--muted);font-size:.82rem;cursor:pointer">
-          <input type="checkbox" id="logAutoRefresh" checked> Auto
-        </label>
-      </div>
-      <pre id="logOutput" style="
-        background:#0a0b10; border:1px solid var(--border); border-radius:6px;
-        padding:12px; font-size:.78rem; line-height:1.5; overflow:auto;
-        max-height:480px; white-space:pre-wrap; word-break:break-all;
-        color:#c8ccd8; font-family:'SF Mono','Menlo','Consolas',monospace;
-      "></pre>
-    </div>
-  </div>
-
 </div>
 <div class="overlay" id="overlay" onclick="if(event.target===this)closeModal()">
   <div class="modal">
@@ -411,7 +367,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
 let espTime = '';      // HH:MM:SS from last /api/status
 let espTimestamp = 0;  // millis() when we received it
-let espDateStr = '';   // YYYY-MM-DD from last /api/status (server's system date)
 
 function updateClock() {
   let display = '';
@@ -470,9 +425,22 @@ function updateCountdown() {
   el.textContent = '⏱ ' + pad(entry.hour) + ':' + pad(entry.min) + ' → ' + countdown;
 }
 
+// Guards against overlapping runs: if a previous refreshAll is still waiting
+// on the ESP32 (e.g. a flaky Wi-Fi link), a new setInterval tick used to fire
+// 5 more parallel fetches on top of the stuck ones. On the ESP32's WebServer
+// (synchronous, single connection at a time) that pileup starved real user
+// actions — like a schedule edit or "Activate this day" click — behind a
+// growing queue of stale polling requests, which is what caused clicks to
+// take minutes to take effect.
+let refreshInFlight = false;
 async function refreshAll() {
-  await Promise.all([loadStatus(), loadSchedules(), loadAuthStatus(), loadDaysStatus(), loadLogs()]);
-  renderCalendar();
+  if (refreshInFlight) return;
+  refreshInFlight = true;
+  try {
+    await Promise.all([loadStatus(), loadSchedules(), loadAuthStatus(), loadDaysStatus()]);
+  } finally {
+    refreshInFlight = false;
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -504,7 +472,6 @@ async function loadStatus() {
     document.getElementById('heapStat').textContent = kb ? 'Heap: ' + kb + 'KB' : '';
     if (d.time) { espTime = d.time; espTimestamp = Date.now(); }
     if (d.date) {
-      espDateStr = d.date;
       const dateInput = document.getElementById('tDate');
       // Don't clobber the field while the operator is actively editing it.
       if (dateInput && document.activeElement !== dateInput) dateInput.value = d.date;
@@ -608,7 +575,6 @@ async function setTime() {
     toast(`Time set to ${pad(h)}:${pad(m)}` + (dateVal ? ' (' + dateVal + ')' : ''), 'ok');
     await loadStatus();
     await loadDaysStatus();
-    renderCalendar();
   } else toast(r?.err || 'Error', 'err');
 }
 // ─────────────────────────────────────────────
@@ -768,24 +734,7 @@ async function postJSON(url, body, method = 'POST') {
 // ─────────────────────────────────────────────
 // Collapsible cards
 // ─────────────────────────────────────────────
-// Debug Log
-// ─────────────────────────────────────────────
-async function loadLogs() {
-  try {
-    const r = await fetch('/api/logs?n=40');
-    const lines = await r.json();
-    const pre = document.getElementById('logOutput');
-    if (pre) {
-      pre.textContent = lines.join('\n');
-      pre.scrollTop = pre.scrollHeight;
-    }
-    const cnt = document.getElementById('logCount');
-    if (cnt) cnt.textContent = '(' + lines.length + ')';
-  } catch { /* ignore */ }
-}
-
-// ─────────────────────────────────────────────
-const CARD_IDS = ['sectionSchedule','sectionCalendar','sectionClock','sectionSecurity','sectionDebug'];
+const CARD_IDS = ['sectionSchedule','sectionClock','sectionSecurity'];
 
 function initCards() {
   CARD_IDS.forEach(id => {
@@ -837,49 +786,6 @@ async function loadDaysStatus() {
     if (schedDayView < 0) schedDayView = activeDayNum >= 0 ? activeDayNum : 0;
     await updateSchedView();
   } catch { /* ignore */ }
-}
-
-// ─────────────────────────────────────────────
-// Calendar — projects the course day forward onto the next 14 calendar
-// dates, assuming nothing changes (no manual day activation in between).
-// ─────────────────────────────────────────────
-const RU_MONTHS   = ['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
-const RU_WEEKDAYS = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];   // Monday-first
-
-function renderCalendar() {
-  const grid = document.getElementById('calGrid');
-  const lastDayLbl = document.getElementById('calLastDay');
-  if (lastDayLbl) lastDayLbl.textContent = pad(dayCount - 1);
-  if (!grid) return;
-
-  if (!espDateStr || activeDayNum < 0) {
-    grid.innerHTML = '<div class="empty-row" style="padding:12px 0">' +
-      'Нет данных о текущей дате/дне — установите время во вкладке Clock.</div>';
-    return;
-  }
-
-  const [Y, M, D] = espDateStr.split('-').map(Number);
-  const today = new Date(Y, M - 1, D);   // local components — avoids UTC-parse day shift
-
-  let html = '';
-  for (let i = 0; i < 14; i++) {
-    const d = new Date(today);
-    d.setDate(d.getDate() + i);
-    const projectedDay = activeDayNum + i;
-    const inCourse = projectedDay <= dayCount - 1;
-    const wd = RU_WEEKDAYS[(d.getDay() + 6) % 7];
-    const isToday = i === 0;
-    const bg   = inCourse ? 'rgba(52,201,126,.15)' : 'rgba(122,127,154,.08)';
-    const fg   = inCourse ? 'var(--green)' : 'var(--muted)';
-    const bd   = isToday ? '2px solid var(--accent)' : '1px solid var(--border)';
-    html += `
-      <div style="min-width:64px;flex:1;max-width:80px;text-align:center;padding:8px 4px;border-radius:8px;background:${bg};border:${bd}">
-        <div style="font-size:.7rem;color:var(--muted)">${wd}${isToday ? ' &middot; сегодня' : ''}</div>
-        <div style="font-size:1rem;font-weight:700;color:${fg}">${d.getDate()} ${RU_MONTHS[d.getMonth()]}</div>
-        <div style="font-size:.72rem;color:${fg};margin-top:2px">${inCourse ? 'День ' + pad(projectedDay) : '&#8212;'}</div>
-      </div>`;
-  }
-  grid.innerHTML = html;
 }
 
 // ─────────────────────────────────────────────
@@ -961,7 +867,6 @@ async function activateViewedDay() {
       activeDayNum = schedDayView;
       await loadSchedules();
       await loadDaysStatus();
-      renderCalendar();
     } else {
       toast(d?.err || 'Error', 'err');
     }
