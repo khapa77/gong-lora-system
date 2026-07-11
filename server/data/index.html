@@ -164,6 +164,20 @@ tr:hover td { background: rgba(79,158,248,.04); }
   .row { flex-direction: column; }
   header h1 { font-size: 1.1rem; }
 }
+/* LoRa clients */
+.client-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+}
+.client-card {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px;
+}
+.client-name { font-weight: 600; font-size: .88rem; margin-bottom: 4px; }
+.client-meta { font-size: .76rem; color: var(--muted); line-height: 1.5; }
+.rssi-good { color: var(--green); }
+.rssi-ok   { color: var(--yellow); }
+.rssi-bad  { color: var(--red); }
 </style>
 </head>
 <body>
@@ -173,6 +187,7 @@ tr:hover td { background: rgba(79,158,248,.04); }
   <div id="statusBar">
     <span id="wifiStat">&#8212; loading &#8212;</span>
     <span id="heapStat"></span>
+    <span id="clientStat"></span>
     <span id="clock" style="font-variant-numeric:tabular-nums"></span>
   </div>
 </header>
@@ -295,6 +310,43 @@ tr:hover td { background: rgba(79,158,248,.04); }
       <p style="color:var(--muted);font-size:.78rem;margin-top:10px">
         Login: <b>admin</b> / your password. Stored on device, cleared only with "Disable Auth".
       </p>
+    </div>
+  </div>
+
+  <!-- ── LoRa Clients ── -->
+  <div class="card" id="sectionClients">
+    <div class="card-title">
+      <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0">
+        <span style="color:#4f9ef8">LoRa</span>
+        <span id="loraBadge" class="tag" style="font-size:.72rem"></span>
+      </div>
+      <button class="collapse-btn" onclick="toggleCard('sectionClients')">&#9662;</button>
+    </div>
+    <div class="card-body">
+      <div class="row" style="margin-bottom:16px;align-items:flex-end">
+        <div class="col" style="max-width:120px">
+          <label>Track</label>
+          <select id="cTrack"></select>
+        </div>
+        <div class="col" style="max-width:100px">
+          <label>Vol (0-30)</label>
+          <input type="number" id="cVol" min="0" max="30" value="30">
+        </div>
+        <div class="col" style="max-width:100px">
+          <label>Loop</label>
+          <input type="number" id="cLoop" min="1" max="7" value="1">
+        </div>
+      </div>
+      <div class="btn-group" style="margin-top:0;margin-bottom:18px">
+        <button class="btn btn-ghost"   onclick="playLocal()">&#9654; Local</button>
+        <button class="btn btn-primary" onclick="playLoRa()">&#128225; LoRa broadcast</button>
+        <button class="btn btn-green"   onclick="playAll()">&#127925; All (Local + LoRa)</button>
+        <button class="btn btn-red"     onclick="stopAll()">&#9632;&#9632; Stop</button>
+        <button class="btn btn-yellow"  onclick="syncSchedule()">&#8635; Sync Schedule</button>
+      </div>
+      <div id="clientGrid" class="client-grid">
+        <div class="empty-row" style="grid-column:1/-1">No clients seen yet.</div>
+      </div>
     </div>
   </div>
 
@@ -437,7 +489,7 @@ async function refreshAll() {
   if (refreshInFlight) return;
   refreshInFlight = true;
   try {
-    await Promise.all([loadStatus(), loadSchedules(), loadAuthStatus(), loadDaysStatus()]);
+    await Promise.all([loadStatus(), loadSchedules(), loadAuthStatus(), loadDaysStatus(), loadClients()]);
   } finally {
     refreshInFlight = false;
   }
@@ -470,6 +522,19 @@ async function loadStatus() {
     wEl.innerHTML = '<span class="dot dot-yellow"></span>AP: ' + (d.ssid||'?') + ' (' + (d.ip||'?') + ')';
     const kb = Math.round((d.heap || 0) / 1024);
     document.getElementById('heapStat').textContent = kb ? 'Heap: ' + kb + 'KB' : '';
+    document.getElementById('clientStat').textContent = 'Clients: ' + (d.clients ?? '—');
+    const loraBadge = document.getElementById('loraBadge');
+    if (loraBadge) {
+      if (d.lora_ready) {
+        loraBadge.textContent = '📡 Ready (' + (d.clients||0) + ')';
+        loraBadge.style.background = 'rgba(52,201,126,.15)';
+        loraBadge.style.color = 'var(--green)';
+      } else {
+        loraBadge.textContent = '⚠️ Radio not connected';
+        loraBadge.style.background = 'rgba(248,95,95,.12)';
+        loraBadge.style.color = 'var(--red)';
+      }
+    }
     if (d.time) { espTime = d.time; espTimestamp = Date.now(); }
     if (d.date) {
       const dateInput = document.getElementById('tDate');
@@ -640,6 +705,10 @@ async function loadTracks() {
     availableTracks = await r.json();
   } catch { availableTracks = []; }
   if (!availableTracks.length) availableTracks = [1];   // fallback so the select isn't empty
+  const cSel = document.getElementById('cTrack');
+  if (cSel) {
+    cSel.innerHTML = availableTracks.map(t => `<option value="${t}">${t}</option>`).join('');
+  }
 }
 
 function fillTrackSelect(selected) {
@@ -718,6 +787,70 @@ async function saveModal() {
 }
 
 // ─────────────────────────────────────────────
+// LoRa Clients / Manual Control
+// ─────────────────────────────────────────────
+function cPayload() {
+  return {
+    track: parseInt(document.getElementById('cTrack').value) || availableTracks[0] || 1,
+    vol:   parseInt(document.getElementById('cVol').value)   || 30,
+    loop:  parseInt(document.getElementById('cLoop').value)  || 1,
+  };
+}
+
+async function playLocal() {
+  const r = await postJSON('/api/play', cPayload());
+  toast(r && r.ok ? 'Playing locally' : (r?.err || 'Error'), r && r.ok ? 'ok' : 'err');
+}
+
+async function playLoRa() {
+  const r = await postJSON('/api/play/lora', cPayload());
+  toast(r && r.ok ? 'Broadcast sent' : (r?.err || 'Error'), r && r.ok ? 'ok' : 'err');
+}
+
+async function playAll() {
+  const r = await postJSON('/api/play/all', cPayload());
+  toast(r && r.ok ? 'Playing local + LoRa' : (r?.err || 'Error'), r && r.ok ? 'ok' : 'err');
+}
+
+async function stopAll() {
+  const r = await postJSON('/api/stop', {});
+  toast(r && r.ok ? 'Stopped' : (r?.err || 'Error'), r && r.ok ? 'ok' : 'err');
+}
+
+async function syncSchedule() {
+  const r = await postJSON('/api/sync', {});
+  toast(r && r.ok ? 'Schedule sent to clients' : (r?.err || 'Error'), r && r.ok ? 'ok' : 'err');
+}
+
+function rssiClass(rssi) {
+  if (rssi >= -90) return 'rssi-good';
+  if (rssi >= -110) return 'rssi-ok';
+  return 'rssi-bad';
+}
+
+async function loadClients() {
+  const grid = document.getElementById('clientGrid');
+  if (!grid) return;
+  try {
+    const r = await fetch('/api/clients');
+    const list = await r.json();
+    if (!list.length) {
+      grid.innerHTML = '<div class="empty-row" style="grid-column:1/-1">No clients seen yet.</div>';
+      return;
+    }
+    grid.innerHTML = list.map(c => `
+      <div class="client-card">
+        <div class="client-name">${esc(c.id)}</div>
+        <div class="client-meta">
+          <span class="${rssiClass(c.rssi)}">RSSI: ${c.rssi} dBm</span><br>
+          RTT: ${c.rtt_ms || 0} ms<br>
+          Seen: ${Math.round((c.seen_ms || 0) / 1000)}s ago
+        </div>
+      </div>`).join('');
+  } catch { /* ignore — status badge already shows offline state */ }
+}
+
+// ─────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────
 async function postJSON(url, body, method = 'POST') {
@@ -734,7 +867,7 @@ async function postJSON(url, body, method = 'POST') {
 // ─────────────────────────────────────────────
 // Collapsible cards
 // ─────────────────────────────────────────────
-const CARD_IDS = ['sectionSchedule','sectionClock','sectionSecurity'];
+const CARD_IDS = ['sectionSchedule','sectionClock','sectionSecurity','sectionClients'];
 
 function initCards() {
   CARD_IDS.forEach(id => {

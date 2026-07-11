@@ -74,7 +74,7 @@ def sot223(x, y, ref, name, pin1_name, pin1_net, pin2_name, pin2_net, pin3_name,
 # ─────────────────────────────────────────
 # TITLE
 # ─────────────────────────────────────────
-text(430, 22, 'Gong LoRa Server — Schematic v1.0',
+text(430, 22, 'Gong LoRa Server — Schematic v1.1 (Ra-02)',
      anchor='center', size='13pt', bold='bold', color='#222222')
 
 # ─────────────────────────────────────────
@@ -135,8 +135,10 @@ right_pins = [
     'GPIO19',   # LORA_MISO
     'GPIO18',   # LORA_SCK
     'GPIO5',    # LORA_NSS
-    'GPIO17', 'GPIO16', 'GPIO4', 'GPIO0',
+    'GPIO17', 'GPIO16',
     'GPIO4',    # LORA_DIO0 (interrupt on Core 0)
+    'GPIO0',
+    'GPIO2',    # strapping pin, was used for DIO0 before the move to GPIO4 — NC, do not reconnect
     'GPIO15', 'GPIO8', 'GPIO7',
 ]
 right_nets = {
@@ -161,12 +163,12 @@ for i, pname in enumerate(right_pins):
         nc_mark(ex, py)
 
 # ─────────────────────────────────────────
-# U2 — Ra-01 LoRa  (2×4, справа)
+# U2 — Ra-02 LoRa (SMA-антенна)  (2×4, справа)
 # ─────────────────────────────────────────
 R2X, R2Y = 590, 60
 rect(R2X, R2Y, 130, 110)
 text(R2X+65, R2Y+14, 'U2', bold='bold', size='11pt')
-text(R2X+65, R2Y+28, 'Ra-01  SX1278', size='8pt')
+text(R2X+65, R2Y+28, 'Ra-02  SX1278', size='8pt')
 
 # Left col: pin1 MISO, pin3 SCK, pin5 NSS, pin7 RST
 ra_left = [('MISO','LORA_MISO'), ('SCK','LORA_SCK'),
@@ -297,7 +299,7 @@ schematic = {
     "head": {
         "type": "schematic",
         "title": "Gong LoRa Server",
-        "description": "ESP32-DevKitC-V4 + Ra-01 LoRa + MAX98357A + DS3231 + HLK-10M05",
+        "description": "ESP32-DevKitC-V4 + Ra-02 LoRa (SMA) + MAX98357A + DS3231 + HLK-10M05",
         "canvas": CANVAS,
         "version": "6.5.38",
         "encryptedDataCompliant": False
