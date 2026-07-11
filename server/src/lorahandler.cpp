@@ -135,12 +135,18 @@ static bool loraSend(uint8_t type, const String& payload) {
 }
 
 // ── Core 0: LoRa task — non-blocking TX state machine + RX dispatch ──────
+// If DIO0 never fires (bad wiring, module fault, RF issue), a TX must not
+// wedge the radio task forever — that would silently kill ALL future TX/RX
+// (heartbeats, gongs, client replies) with no further symptom in the logs.
+static const uint32_t TX_TIMEOUT_MS = 4000;  // generous margin over ~100-150ms SF9 airtime
+
 static void loraTask(void*) {
-    bool    txBusy = false;
-    uint8_t txType = 0;
+    bool     txBusy   = false;
+    uint8_t  txType   = 0;
+    uint32_t txStart  = 0;
 
     for (;;) {
-        // ── TX in flight: wait for DIO0 (TX-done) ──────────────────────
+        // ── TX in flight: wait for DIO0 (TX-done), or time out ──────────
         if (txBusy) {
             if (dioFlag) {
                 dioFlag = false;
@@ -148,8 +154,17 @@ static void loraTask(void*) {
                 txBusy = false;
                 if (st != RADIOLIB_ERR_NONE)
                     logPrintf("[LORA] TX finish error: %d\n", st);
+                else
+                    logPrintf("[LORA] TX done type=0x%02X\n", txType);
                 if (txType == MSG_GONG)
                     xSemaphoreGive(txGongDone);
+                radio.startReceive();
+            } else if (millis() - txStart > TX_TIMEOUT_MS) {
+                logPrintf("[LORA] TX timeout (no DIO0) type=0x%02X — check DIO0 wiring! Recovering.\n", txType);
+                txBusy = false;
+                if (txType == MSG_GONG)
+                    xSemaphoreGive(txGongDone);
+                radio.standby();
                 radio.startReceive();
             }
             vTaskDelay(1);
@@ -167,7 +182,9 @@ static void loraTask(void*) {
                 if (req.type == MSG_GONG) xSemaphoreGive(txGongDone);
                 radio.startReceive();
             } else {
-                txBusy = true;
+                txBusy  = true;
+                txStart = millis();
+                logPrintf("[LORA] TX started type=0x%02X len=%u\n", req.type, (unsigned)req.len);
             }
             vTaskDelay(1);
             continue;
