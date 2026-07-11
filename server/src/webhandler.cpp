@@ -3,6 +3,7 @@
 #include "schedule.h"
 #include "mp3handler.h"
 #include "rtchandler.h"
+#include "lorahandler.h"
 #include <SPIFFS.h>
 #include <WiFi.h>
 #include <ESPmDNS.h>
@@ -208,7 +209,7 @@ static void handleTimeSource() {
 // -------------------------------------------------------
 static void handleStatus() {
     if (!checkAuth()) return;
-    DynamicJsonDocument doc(384);
+    DynamicJsonDocument doc(512);
     doc["mode"]   = "AP";
     doc["ip"]     = WiFi.softAPIP().toString();
     doc["ssid"]   = AP_SSID;
@@ -229,6 +230,8 @@ static void handleStatus() {
     doc["time_source"] = (timeSrc == TimeSrc::MANUAL) ? "manual" : "rtc";
     doc["active_day"]  = sched_getActiveDay();
     doc["day_count"]   = DAY_COUNT;
+    doc["lora_ready"]  = lora_isReady();
+    doc["clients"]     = lora_clientCount();
 
     String s;
     serializeJson(doc, s);
@@ -350,6 +353,63 @@ static void handleDayEntryDELETE() {
     else sendErr("not found");
 }
 
+// -------------------------------------------------------
+// /api/play*  /api/stop  /api/sync  /api/clients — manual + LoRa control
+// -------------------------------------------------------
+static bool parsePlayArgs(uint8_t& track, uint8_t& vol, uint8_t& loop) {
+    DynamicJsonDocument doc(128);
+    if (deserializeJson(doc, server.arg("plain"))) return false;
+    track = doc["track"] | DEFAULT_TRACK;
+    vol   = doc["vol"]   | DEFAULT_VOLUME;
+    loop  = doc["loop"]  | 1;
+    return true;
+}
+
+static void handlePlayLocal() {
+    if (!checkAuth()) return;
+    uint8_t track, vol, loop;
+    if (!parsePlayArgs(track, vol, loop)) { sendErr("bad json"); return; }
+    mp3_setVolume(vol);
+    mp3_play(track, loop);
+    sendOK();
+}
+
+static void handlePlayLoRa() {
+    if (!checkAuth()) return;
+    uint8_t track, vol, loop;
+    if (!parsePlayArgs(track, vol, loop)) { sendErr("bad json"); return; }
+    lora_sendGong(track, vol, loop);
+    sendOK();
+}
+
+static void handlePlayAll() {
+    if (!checkAuth()) return;
+    uint8_t track, vol, loop;
+    if (!parsePlayArgs(track, vol, loop)) { sendErr("bad json"); return; }
+    lora_sendGong(track, vol, loop);   // TX first, then local — stays in sync
+    mp3_setVolume(vol);
+    mp3_play(track, loop);
+    sendOK();
+}
+
+static void handleStop() {
+    if (!checkAuth()) return;
+    mp3_stop();
+    lora_sendStop();
+    sendOK();
+}
+
+static void handleSync() {
+    if (!checkAuth()) return;
+    lora_sendSchedule(sched_toJSON());
+    sendOK();
+}
+
+static void handleClients() {
+    if (!checkAuth()) return;
+    sendJSON(200, lora_clientsJSON());
+}
+
 static void handleFavicon() {
     server.send(204);
 }
@@ -400,6 +460,12 @@ void web_setup() {
     server.on("/api/day/entry",   HTTP_OPTIONS, handleOptions);
     server.on("/api/logs",        HTTP_OPTIONS, handleOptions);
     server.on("/api/tracks",      HTTP_OPTIONS, handleOptions);
+    server.on("/api/play",        HTTP_OPTIONS, handleOptions);
+    server.on("/api/play/lora",   HTTP_OPTIONS, handleOptions);
+    server.on("/api/play/all",    HTTP_OPTIONS, handleOptions);
+    server.on("/api/stop",        HTTP_OPTIONS, handleOptions);
+    server.on("/api/sync",        HTTP_OPTIONS, handleOptions);
+    server.on("/api/clients",     HTTP_OPTIONS, handleOptions);
 
     // Routes
     server.on("/favicon.ico",     HTTP_GET,    handleFavicon);
@@ -425,6 +491,13 @@ void web_setup() {
     server.on("/api/day/entry",      HTTP_PUT,    handleDayEntryPUT);
     server.on("/api/day/entry",      HTTP_DELETE, handleDayEntryDELETE);
     server.on("/api/tracks",         HTTP_GET,  handleTracksGet);
+
+    server.on("/api/play",        HTTP_POST, handlePlayLocal);
+    server.on("/api/play/lora",   HTTP_POST, handlePlayLoRa);
+    server.on("/api/play/all",    HTTP_POST, handlePlayAll);
+    server.on("/api/stop",        HTTP_POST, handleStop);
+    server.on("/api/sync",        HTTP_POST, handleSync);
+    server.on("/api/clients",     HTTP_GET,  handleClients);
 
     server.onNotFound(handleNotFound);
     server.begin();

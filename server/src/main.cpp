@@ -6,14 +6,19 @@
 #include "schedule.h"
 #include "webhandler.h"
 #include "rtchandler.h"
+#include "lorahandler.h"
 
 static unsigned long lastSchedCheck = 0;
+static unsigned long lastHeartbeat  = 0;
 
 // -------------------------------------------------------
-// Called when a schedule entry fires — plays locally.
+// Called when a schedule entry fires — broadcasts over LoRa first (blocks
+// briefly until TX completes), then plays locally, so both sides start
+// audio together.
 // -------------------------------------------------------
 static void onGongFire(uint8_t track, uint8_t loop) {
     logPrintf("[MAIN] Schedule fired: track=%d loop=%d\n", track, loop);
+    lora_sendGong(track, DEFAULT_VOLUME, loop);
     mp3_setVolume(DEFAULT_VOLUME);
     mp3_play(track, loop);
 }
@@ -28,7 +33,7 @@ void setup() {
     logbuffer_init();  // capture logs for web debug
 
     logPrintf("\n==============================\n");
-    logPrintf("  Gong Server v3.0 (WiFi-only)\n");
+    logPrintf("  Gong Server v4.0 (WiFi + LoRa)\n");
     logPrintf("==============================\n");
 
     if (!SPIFFS.begin(true)) {
@@ -41,6 +46,7 @@ void setup() {
     rtc_setup();     // probe DS3231; if found, load time into system clock
     mp3_setup();
     mp3_startAudioTask();
+    lora_setup();    // starts Core-0 radio task; degrades gracefully if module absent
     sched_setup();
     web_setup();     // starts local AP + HTTP server
 
@@ -55,5 +61,9 @@ void loop() {
     if (now - lastSchedCheck >= 1000) {
         sched_check();
         lastSchedCheck = now;
+    }
+    if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
+        lora_sendHeartbeat();
+        lastHeartbeat = now;
     }
 }
