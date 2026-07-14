@@ -5,6 +5,16 @@
 #include <new>
 #include <ArduinoJson.h>
 
+// ── JSON pool capacity for a full day of schedule entries ─────────────────
+// A real 16-entry day with Cyrillic descriptions is ~3.4 KB of JSON text;
+// deserializing from a File copies ALL keys and strings into the pool, so 16
+// entries already consume ~3 KB. At MAX_SCHEDULES = 32 the old 4096-byte pool
+// overflowed: deserializeJson returned NoMemory (whole day silently loaded as
+// EMPTY) and createNestedObject started returning null (entries silently
+// DROPPED on save → data loss). 8192 covers 32 entries with ~25 % headroom;
+// overflow is additionally checked at every save point below.
+#define SCHED_JSON_CAPACITY 8192
+
 void (*onScheduleTrigger)(uint8_t track, uint8_t loop) = nullptr;
 
 static ScheduleEntry entries[MAX_SCHEDULES];
@@ -210,7 +220,7 @@ bool sched_del(uint32_t id) {
 // Use heap for large JSON to avoid stack overflow on ESP32 (was 4KB on stack)
 // -------------------------------------------------------
 String sched_toJSON() {
-    DynamicJsonDocument *doc = new (std::nothrow) DynamicJsonDocument(4096);
+    DynamicJsonDocument *doc = new (std::nothrow) DynamicJsonDocument(SCHED_JSON_CAPACITY);
     if (!doc) return "[]";
     JsonArray arr = doc->to<JsonArray>();
     for (uint8_t i = 0; i < count; i++) {
@@ -223,14 +233,25 @@ String sched_toJSON() {
         o["en"]    = entries[i].enabled;
         o["desc"]  = entries[i].description;
     }
+    // If the pool overflowed, entries were silently dropped — writing that
+    // result to disk would be permanent data loss. Log loudly; sched_save()
+    // below refuses to persist an overflowed snapshot.
+    if (doc->overflowed())
+        logPrintf("[SCHED] ERROR: JSON pool overflow in sched_toJSON — increase SCHED_JSON_CAPACITY\n");
+    bool overflowed = doc->overflowed();
     String s;
     serializeJson(*doc, s);
     delete doc;
+    if (overflowed) return String();   // empty marker — callers treat as error
     return s;
 }
 
 void sched_save() {
     String json = sched_toJSON();
+    if (json.length() == 0) {   // overflow marker from sched_toJSON
+        logPrintf("[SCHED] Save ABORTED — JSON overflow, on-disk data left untouched\n");
+        return;
+    }
 
     File f = SPIFFS.open(SCHEDULE_FILE, "w");
     if (!f) { logPrintf("[SCHED] Save failed\n"); return; }
@@ -252,7 +273,7 @@ void sched_save() {
 static bool sched_parseFromPath(const char* path) {
     File f = SPIFFS.open(path, "r");
     if (!f) return false;
-    DynamicJsonDocument *doc = new (std::nothrow) DynamicJsonDocument(4096);
+    DynamicJsonDocument *doc = new (std::nothrow) DynamicJsonDocument(SCHED_JSON_CAPACITY);
     if (!doc) { f.close(); return false; }
     if (deserializeJson(*doc, f)) {
         f.close(); delete doc; return false;
@@ -315,7 +336,9 @@ bool sched_activateDay(uint8_t day) {
         // First-ever activation (no activeday.conf): seed with current schedule so
         // existing entries are not lost. Subsequent new days start empty.
         bool firstActivation = (sched_getActiveDay() < 0);
-        nf.print(firstActivation ? sched_toJSON() : String("[]"));
+        String seed = firstActivation ? sched_toJSON() : String("[]");
+        if (seed.length() == 0) seed = "[]";   // overflow marker — never write ""
+        nf.print(seed);
         nf.close();
         logPrintf("[SCHED] Day %02d created (%s)\n", (int)day,
                       firstActivation ? "seeded from current" : "empty");
@@ -332,6 +355,7 @@ bool sched_activateDay(uint8_t day) {
     // because activeday.conf still holds the old day number and would
     // overwrite the old day's file with the new day's content.
     String json = sched_toJSON();
+    if (json.length() == 0) return false;   // overflow marker — don't persist
     File gf = SPIFFS.open(SCHEDULE_FILE, "w");
     if (!gf) return false;
     gf.print(json);
@@ -399,6 +423,10 @@ static JsonArray loadDayArray(uint8_t day, DynamicJsonDocument& doc) {
 }
 
 static bool saveDayArray(uint8_t day, DynamicJsonDocument& doc) {
+    if (doc.overflowed()) {   // entries were silently dropped — never persist
+        logPrintf("[SCHED] Day %02d: JSON pool overflow — NOT saved\n", (int)day);
+        return false;
+    }
     char path[16];
     snprintf(path, sizeof(path), "/day%02d.conf", (int)day);
     File wf = SPIFFS.open(path, "w");
@@ -415,7 +443,7 @@ bool sched_addToDay(uint8_t day, uint8_t h, uint8_t m,
     if (loop < 1) loop = 1;
     if (loop > 7) loop = 7;
 
-    DynamicJsonDocument doc(4096);
+    DynamicJsonDocument doc(SCHED_JSON_CAPACITY);
     JsonArray arr = loadDayArray(day, doc);
     if ((int)arr.size() >= MAX_SCHEDULES) return false;
     if (dayTimeTaken(arr, h, m, 0)) return false;
@@ -445,7 +473,7 @@ bool sched_editInDay(uint8_t day, uint32_t id, uint8_t h, uint8_t m,
     if (loop < 1) loop = 1;
     if (loop > 7) loop = 7;
 
-    DynamicJsonDocument doc(4096);
+    DynamicJsonDocument doc(SCHED_JSON_CAPACITY);
     JsonArray arr = loadDayArray(day, doc);
     if (dayTimeTaken(arr, h, m, id)) return false;
 
@@ -472,7 +500,7 @@ bool sched_editInDay(uint8_t day, uint32_t id, uint8_t h, uint8_t m,
 bool sched_delFromDay(uint8_t day, uint32_t id) {
     if (isActiveDay(day)) return sched_del(id);
 
-    DynamicJsonDocument doc(4096);
+    DynamicJsonDocument doc(SCHED_JSON_CAPACITY);
     JsonArray arr = loadDayArray(day, doc);
 
     int idx = -1, i = 0;

@@ -44,7 +44,15 @@ static ClientInfo        clients[MAX_CLIENTS];
 static uint8_t           cliCount   = 0;
 static SemaphoreHandle_t clientsMtx = nullptr;
 
-static volatile uint32_t lastHeartbeatSentMs   = 0;
+// ── Heartbeat RTT bookkeeping ─────────────────────────────────────────────
+// RTT is valid ONLY for an ACK that echoes the seq of the LAST heartbeat
+// ("hb" field) and is measured from the moment that heartbeat's TX actually
+// finished (DIO0 TX-done), not from when it was queued. ACKs to GONG carry
+// no "hb" field and never touch RTT — previously every ACK was measured
+// against the last heartbeat, poisoning the EMA with values of up to
+// HEARTBEAT_INTERVAL_MS.
+static volatile uint32_t hbSeq      = 0;   // seq of the last heartbeat sent
+static volatile uint32_t hbTxDoneMs = 0;   // millis() at that heartbeat's TX-done
 static const uint32_t    ACK_RANDOM_DELAY_AVG_MS = 45;  // client jitters its ACK to avoid collisions
 
 static void upsertClient(const String& id, int rssi, uint32_t rtt) {
@@ -118,8 +126,15 @@ static bool loraSend(uint8_t type, const String& payload) {
         finalPayload = payload.substring(0, payload.length() - 1) + ",\"sig\":\"" + sig + "\"}";
     }
 
+    // Never truncate: the HMAC was computed over the FULL payload, so a
+    // truncated frame is both broken JSON and a guaranteed bad signature.
+    // Refuse loudly instead.
     size_t plen = finalPayload.length();
-    if (plen > LORA_PAYLOAD_MAX) plen = LORA_PAYLOAD_MAX;
+    if (plen > LORA_PAYLOAD_MAX) {
+        logPrintf("[LORA] TX rejected: payload %u > %u bytes type=0x%02X\n",
+                  (unsigned)plen, (unsigned)LORA_PAYLOAD_MAX, type);
+        return false;
+    }
 
     TxReq req;
     req.type   = type;
@@ -156,6 +171,8 @@ static void loraTask(void*) {
                     logPrintf("[LORA] TX finish error: %d\n", st);
                 else
                     logPrintf("[LORA] TX done type=0x%02X\n", txType);
+                if (st == RADIOLIB_ERR_NONE && txType == MSG_HEARTBEAT)
+                    hbTxDoneMs = millis();   // RTT reference point (see above)
                 if (txType == MSG_GONG)
                     xSemaphoreGive(txGongDone);
                 radio.startReceive();
@@ -218,8 +235,11 @@ static void loraTask(void*) {
             DynamicJsonDocument doc(256);
             if (!deserializeJson(doc, payload)) {
                 String id  = doc["id"] | "unknown";
-                uint32_t rtt = (lastHeartbeatSentMs > 0)
-                               ? (uint32_t)(millis() - lastHeartbeatSentMs) : 0;
+                // RTT only when the ACK echoes the seq of the LAST heartbeat;
+                // ACKs to GONG (no "hb") pass rtt=0 → registry keeps old value.
+                uint32_t hb  = doc["hb"] | 0;
+                uint32_t rtt = (hb != 0 && hb == hbSeq && hbTxDoneMs != 0)
+                               ? (uint32_t)(millis() - hbTxDoneMs) : 0;
                 xSemaphoreTake(clientsMtx, portMAX_DELAY);
                 upsertClient(id, rssi, rtt);
                 xSemaphoreGive(clientsMtx);
@@ -274,6 +294,12 @@ void lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop) {
     String s;
     serializeJson(doc, s);
 
+    // Drain a stale token first: if a previous gong's TX completed AFTER its
+    // 5 s waiter had already given up, the semaphore still holds one token and
+    // the take below would return instantly — skipping the very sync wait this
+    // semaphore exists for.
+    xSemaphoreTake(txGongDone, 0);
+
     if (loraSend(MSG_GONG, s)) {
         // Block Core 1 briefly until TX completes — local + remote start
         // together. At SF9 this is ~100-150ms, inaudible as a delay.
@@ -306,15 +332,20 @@ void lora_sendHeartbeat() {
     }
     doc["clients"] = lora_clientCount();
     doc["ts"]      = nowTs();
+    doc["seq"]     = ++hbSeq;   // clients echo this back as "hb" in their ACK
+    hbTxDoneMs     = 0;         // invalid until THIS heartbeat's TX-done fires;
+                                // otherwise, after a TX timeout, an ACK to the
+                                // new seq would be measured from the PREVIOUS
+                                // heartbeat's timestamp
     String s;
     serializeJson(doc, s);
-    lastHeartbeatSentMs = millis();
     loraSend(MSG_HEARTBEAT, s);
 }
 
-void lora_sendSchedule(const String& scheduleJson) {
-    loraSend(MSG_SCHEDULE, scheduleJson);
-}
+// NOTE: lora_sendSchedule() was removed. A full schedule (~3.5 KB of JSON)
+// can never fit a 255-byte LoRa frame, MSG_SCHEDULE was unsigned, and clients
+// discarded it anyway — the schedule lives on the server; clients only need
+// GONG/STOP. /api/sync now reports this honestly (see webhandler.cpp).
 
 // ────────────────────────────────────────────────────────────────────────
 String lora_clientsJSON() {

@@ -103,7 +103,9 @@ static void handleRoot() {
 // -------------------------------------------------------
 static void handleScheduleGET() {
     if (!checkAuth()) return;
-    sendJSON(200, sched_toJSON());
+    String json = sched_toJSON();
+    if (json.length() == 0) { sendErr("schedule JSON overflow — see logs"); return; }
+    sendJSON(200, json);
 }
 
 static void handleSchedulePOST() {
@@ -401,8 +403,11 @@ static void handleStop() {
 
 static void handleSync() {
     if (!checkAuth()) return;
-    lora_sendSchedule(sched_toJSON());
-    sendOK();
+    // Schedule sync over LoRa was never functional: ~3.5 KB of JSON cannot
+    // fit a 255-byte frame and clients discard MSG_SCHEDULE anyway. The
+    // schedule lives on the server; clients only need GONG/STOP. Answer
+    // honestly instead of returning a fake "ok".
+    sendErr("schedule sync over LoRa is not supported (clients don't store schedules)");
 }
 
 static void handleClients() {
@@ -459,6 +464,7 @@ void web_setup() {
     server.on("/api/day/activate",HTTP_OPTIONS, handleOptions);
     server.on("/api/day/entry",   HTTP_OPTIONS, handleOptions);
     server.on("/api/logs",        HTTP_OPTIONS, handleOptions);
+    server.on("/api/status",      HTTP_OPTIONS, handleOptions);
     server.on("/api/tracks",      HTTP_OPTIONS, handleOptions);
     server.on("/api/play",        HTTP_OPTIONS, handleOptions);
     server.on("/api/play/lora",   HTTP_OPTIONS, handleOptions);

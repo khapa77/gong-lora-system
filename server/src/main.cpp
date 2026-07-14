@@ -27,10 +27,21 @@ void setup() {
     Serial.begin(115200);
     delay(500);
 
-    // Erase any stale core dump from previous crash
-    esp_core_dump_image_erase();
+    logbuffer_init();  // capture logs for web debug (must precede logPrintf below)
 
-    logbuffer_init();  // capture logs for web debug
+    // If the previous run crashed, a core dump sits in the coredump partition.
+    // Log its presence BEFORE erasing — the old code erased it as the very
+    // first action, destroying the only evidence of the crash and making the
+    // 128 KB coredump partition useless for diagnostics.
+    {
+        size_t cdAddr = 0, cdSize = 0;
+        if (esp_core_dump_image_get(&cdAddr, &cdSize) == ESP_OK && cdSize > 0) {
+            logPrintf("[MAIN] Previous run CRASHED — core dump found (%u bytes @0x%X), erasing. "
+                      "To keep dumps for offline analysis, remove the erase below.\n",
+                      (unsigned)cdSize, (unsigned)cdAddr);
+        }
+    }
+    esp_core_dump_image_erase();
 
     logPrintf("\n==============================\n");
     logPrintf("  Gong Server v4.0 (WiFi + LoRa)\n");

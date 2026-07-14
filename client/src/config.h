@@ -3,7 +3,7 @@
 // =============================================================
 //  CLIENT CONFIG — change CLIENT_ID for EVERY device before flashing!
 // =============================================================
-#define CLIENT_ID      "tester"   // unique per device, e.g. "room_A"
+#define CLIENT_ID      "client_twoX"   // unique per device, e.g. "room_A"
 
 // ── LoRa module pins — same wiring as the server (Ra-02, SMA antenna) ─────
 #define LORA_SS        5   // NSS
