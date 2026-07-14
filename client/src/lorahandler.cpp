@@ -86,10 +86,14 @@ struct RxCmd {
 static QueueHandle_t rxQueue = nullptr;
 
 // ── ACK — always sent synchronously from Core 0, inside loraTask ─────────
-static void sendAck(int rxRssi) {
+// hbSeq != 0 → this ACK answers a heartbeat; the seq is echoed back as "hb"
+// so the server computes RTT only from matching heartbeat/ACK pairs (ACKs to
+// GONG carry no "hb" and must not touch the server's RTT statistics).
+static void sendAck(int rxRssi, uint32_t hbSeq = 0) {
     DynamicJsonDocument doc(128);
     doc["id"]   = CLIENT_ID;
     doc["rssi"] = rxRssi;
+    if (hbSeq != 0) doc["hb"] = hbSeq;
     String payload;
     serializeJson(doc, payload);
 
@@ -160,27 +164,33 @@ static void loraTask(void*) {
                 radio.startReceive();
                 continue;
             }
-            serializeJson(doc, payload);
-        }
 
-        if (type == MSG_HEARTBEAT) {
-            sendAck(rssi);  // startReceive() called inside sendAck
-            continue;
-        }
+            if (type == MSG_HEARTBEAT) {
+                uint32_t seq = doc["seq"] | 0;
+                sendAck(rssi, seq);  // startReceive() called inside sendAck
+                continue;
+            }
 
-        if (type == MSG_GONG) {
-            DynamicJsonDocument doc(128);
-            RxCmd cmd = {};
-            cmd.type = type;
-            cmd.rssi = rssi;
-            if (!deserializeJson(doc, payload)) {
+            if (type == MSG_GONG) {
+                RxCmd cmd = {};
+                cmd.type  = type;
+                cmd.rssi  = rssi;
                 cmd.track = doc["track"] | 1;
                 cmd.vol   = doc["vol"]   | DEFAULT_VOLUME;
                 cmd.loop  = doc["loop"]  | 1;
+                // Queue the command BEFORE transmitting the ACK: lora_poll()
+                // on Core 1 starts the audio while Core 0 is still busy with
+                // the ACK (10–80 ms jitter + ~150 ms airtime). The previous
+                // order (ACK first) systematically delayed the client's gong
+                // by ~200–250 ms relative to the server, defeating the whole
+                // "both sides start together" design.
+                xQueueSend(rxQueue, &cmd, 0);
+                sendAck(rssi);  // no "hb": GONG ACKs must not affect RTT stats
+                continue;
             }
-            sendAck(rssi);  // ACK on Core 0, audio dispatched to Core 1
-            xQueueSend(rxQueue, &cmd, 0);
-        } else if (type == MSG_STOP) {
+        }
+
+        if (type == MSG_STOP) {
             RxCmd cmd = {};
             cmd.type = type;
             cmd.rssi = rssi;

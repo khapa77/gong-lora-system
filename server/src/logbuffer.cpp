@@ -1,6 +1,8 @@
 #include "logbuffer.h"
 #include <stdarg.h>
 #include <string.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 #define LOG_LINE_COUNT  64
 #define LOG_LINE_LEN    120
@@ -11,7 +13,16 @@ static struct {
     int  wrapped;   // how many total lines written (for display count)
 } ring;
 
+// logPrintf is called concurrently from loraTask (Core 0) and loopTask /
+// audioFeederTask (Core 1). Without a lock, two writers can race on
+// ring.head and clobber each other's slot (garbled log lines; no crash,
+// indices stay bounded — but logs are exactly what you need intact when
+// debugging). Serial output is serialised under the same lock so interleaved
+// half-lines from two cores don't happen either.
+static SemaphoreHandle_t logMtx = nullptr;
+
 void logbuffer_init() {
+    if (!logMtx) logMtx = xSemaphoreCreateMutex();
     ring.head    = 0;
     ring.wrapped = 0;
     memset(ring.lines, 0, sizeof(ring.lines));
@@ -26,6 +37,10 @@ void logPrintf(const char* fmt, ...) {
     if (len <= 0) return;
     if (len >= LOG_LINE_LEN) len = LOG_LINE_LEN - 1;
     tmp[len] = '\0';
+
+    // Formatting is done into the local buffer above (no lock needed);
+    // only the shared Serial + ring state is guarded.
+    if (logMtx) xSemaphoreTake(logMtx, portMAX_DELAY);
 
     // Write to serial
     Serial.write((const uint8_t*)tmp, len);
@@ -42,10 +57,15 @@ void logPrintf(const char* fmt, ...) {
 
     ring.head = (ring.head + 1) % LOG_LINE_COUNT;
     ring.wrapped++;
+
+    if (logMtx) xSemaphoreGive(logMtx);
 }
 
 String logbuffer_toJSON(int maxLines) {
     String res = "[";
+
+    if (logMtx) xSemaphoreTake(logMtx, portMAX_DELAY);
+
     int avail = ring.wrapped < LOG_LINE_COUNT ? ring.wrapped : LOG_LINE_COUNT;
     if (maxLines > avail) maxLines = avail;
 
@@ -65,11 +85,17 @@ String logbuffer_toJSON(int maxLines) {
             else if (c == '\\') res += "\\\\";
             else if (c == '\n') res += "\\n";
             else if (c == '\r') res += "\\r";
-            else if (c >= 0x20) res += c;
+            // char is SIGNED on Xtensa: UTF-8 continuation bytes (>= 0x80)
+            // are negative and the old `c >= 0x20` test silently dropped
+            // them, mangling every Cyrillic log line in /api/logs. Compare
+            // as unsigned so multi-byte UTF-8 passes through intact.
+            else if ((unsigned char)c >= 0x20) res += c;
         }
         res += '"';
     }
 
     res += ']';
+
+    if (logMtx) xSemaphoreGive(logMtx);
     return res;
 }
