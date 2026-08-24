@@ -1,6 +1,6 @@
 #include "mp3handler.h"
 #include "config.h"
-#include <SPIFFS.h>
+#include <LittleFS.h>
 #include <Audio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -42,14 +42,14 @@ static void _startPlay(uint8_t track) {
     char path[16];
     snprintf(path, sizeof(path), "/%04d.mp3", track);
 
-    if (!SPIFFS.exists(path)) {
+    if (!LittleFS.exists(path)) {
         logPrintf("[MP3] File not found: %s\n", path);
         loopRemain = 0;
         return;
     }
 
     audio.setVolume(0);
-    if (audio.connecttoFS(SPIFFS, path)) {
+    if (audio.connecttoFS(LittleFS, path)) {
         ramping   = true;
         rampStart = millis();
         logPrintf("[MP3] Playing: %s\n", path);
@@ -82,7 +82,10 @@ void mp3_setVolume(uint8_t vol) {
 }
 
 uint8_t mp3_getVolume() {
-    return curVol;
+    if (!audioLock()) return curVol;
+    uint8_t v = curVol;
+    audioUnlock();
+    return v;
 }
 
 void mp3_play(uint8_t track, uint8_t loops) {
@@ -109,6 +112,14 @@ void mp3_loop() {
     if (!audioLock()) return;
     audio.loop();
 
+    // M-2: logPrintf() takes logMtx and writes to Serial — doing that while
+    // holding audioMtx established an undocumented lock order
+    // (audioMtx -> logMtx -> UART) on the highest-priority task in the
+    // system. A congested UART buffer would then block audio decoding
+    // indirectly through a lock nobody would think to suspect. Log order:
+    // audioMtx is always released BEFORE logMtx is ever taken.
+    int pendingLoopLog = -1;
+
     if (ramping) {
         if (millis() - rampStart >= 40) {
             applyVolume();
@@ -117,8 +128,10 @@ void mp3_loop() {
     } else {
         // Mute only after sustained silence to avoid glitches between DMA chunks
         static uint8_t idleCount = 0;
+        static bool    muted     = false;
         if (audio.isRunning()) {
             idleCount = 0;
+            muted     = false;
         } else if (idleCount < 20) {
             idleCount++;
         } else {
@@ -126,14 +139,19 @@ void mp3_loop() {
             if (loopRemain > 0) {
                 loopRemain--;
                 idleCount = 0;
-                logPrintf("[MP3] Loop repeat — remaining=%d\n", loopRemain);
+                pendingLoopLog = loopRemain;
                 _startPlay(loopTrack);
-            } else {
+            } else if (!muted) {
+                // Low: this branch used to run audio.setVolume(0) on every
+                // 1ms feeder tick forever while idle — harmless but pointless.
                 audio.setVolume(0);
+                muted = true;
             }
         }
     }
     audioUnlock();
+
+    if (pendingLoopLog >= 0) logPrintf("[MP3] Loop repeat — remaining=%d\n", pendingLoopLog);
 }
 
 bool mp3_isPlaying() {
@@ -146,7 +164,7 @@ bool mp3_isPlaying() {
 String mp3_listTracksJSON() {
     String s = "[";
     bool first = true;
-    File root = SPIFFS.open("/");
+    File root = LittleFS.open("/");
     File f = root.openNextFile();
     while (f) {
         String name = f.name();
@@ -179,13 +197,18 @@ static void audioFeederTask(void*) {
     }
 }
 
+// M-1: configMAX_PRIORITIES-1 (24) sat above every task on Core 1, including
+// loopTask (web handlers, scheduler) — mp3_loop() holding audioMtx while a
+// priority-24 task preempted everything else starved the HTTP server and
+// scheduler down to scraps. Priority 10 is still comfortably above loopTask
+// (1); Wi-Fi tasks stay on Core 0.
+#define AUDIO_TASK_PRIORITY 10
+
 void mp3_startAudioTask() {
     if (audioTaskHandle) return;
     // Stack 8192: MP3 decoding happens INSIDE audio.loop() in this library
-    // and 4096 was borderline (typical working sizes are 5–8 KB). Priority
-    // configMAX_PRIORITIES-1 (24) is safe here: Wi-Fi tasks live on Core 0,
-    // and this task yields every 1 ms tick, so nothing on Core 1 starves.
+    // and 4096 was borderline (typical working sizes are 5–8 KB).
     xTaskCreatePinnedToCore(audioFeederTask, "audio_feed", 8192, nullptr,
-                            configMAX_PRIORITIES - 1, &audioTaskHandle, 1);
-    Serial.println("[MP3] Audio feeder task started on Core 1 (priority 24)");
+                            AUDIO_TASK_PRIORITY, &audioTaskHandle, 1);
+    logPrintf("[MP3] Audio feeder task started on Core 1 (priority %d)\n", AUDIO_TASK_PRIORITY);
 }

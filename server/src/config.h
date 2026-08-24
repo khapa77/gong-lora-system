@@ -1,5 +1,30 @@
 #pragma once
+#include <time.h>
 #include "logbuffer.h"
+#include "lora_shared.h"
+
+// Low: exposed in /api/status so an operator can confirm every client and
+// the server were flashed from the same build (no version info existed at all before).
+#define FW_VERSION "5.0"
+
+// ── Время: неблокирующая замена getLocalTime() ─────────────────────────────
+// Штатный getLocalTime(tm*, ms=5000) крутит delay(10) до 5 СЕКУНД, если время
+// ещё не установлено — а "время не установлено" это состояние ПО УМОЛЧАНИЮ
+// на устройстве без DS3231 (и после разряда его батарейки). Это превращало
+// каждый вызов /api/status, sched_check() (раз в секунду!) и heartbeat в
+// многосекундное зависание всего главного цикла. См. 01_AUDIT_REPORT.md C-1.
+#define TIME_VALID_EPOCH 1700000000UL   // 2023-11-14 — всё раньше считаем "не задано"
+
+static inline bool timeIsSet() {
+    return (uint32_t)time(nullptr) > TIME_VALID_EPOCH;
+}
+
+static inline bool localNow(struct tm& out) {
+    time_t t = time(nullptr);
+    if ((uint32_t)t <= TIME_VALID_EPOCH) return false;
+    localtime_r(&t, &out);
+    return true;
+}
 
 // ── WiFi (standalone AP only — never joins another network) ───────────────
 #define AP_SSID           "GongServer"
@@ -27,15 +52,9 @@
 #define AUTH_REALM        "Gong Server"
 
 // ── LoRa (Ra-02 / SX1278, внешняя SMA-антенна) ─────────────────────────────
-// ВАЖНО: LORA_FREQ и LORA_BW уже в MHz/kHz — передавать в radio.begin()
-// БЕЗ деления на 1e6/1e3. Историческая ошибка: конверсия единиц измерения
-// молча ломала radio.begin() (см. git history "bug-lora-init-units").
-#define LORA_FREQ      433.0     // MHz
-#define LORA_SF        9         // Spreading factor 7..12 — SF9 = "сбалансированный" режим
-#define LORA_BW        125.0     // kHz
-#define LORA_CR        5         // Coding rate 5..8 (4/5)
-#define LORA_SYNC_WORD 0xF3      // Приватное слово синхронизации (не публичное LoRaWAN 0x34)
-#define LORA_TX_POWER  17        // dBm — стартовое значение для SMA-антенны Ra-02
+// Общие RF-параметры и типы сообщений — см. lora_shared.h (common/).
+// Историческая ошибка: конверсия единиц измерения молча ломала radio.begin()
+// (см. git history "bug-lora-init-units") — LORA_FREQ/LORA_BW уже в MHz/kHz.
 
 #define LORA_SS           5   // NSS
 #define LORA_RST          14  // RST
@@ -45,18 +64,22 @@
 #define LORA_SPI_MISO     19
 #define LORA_SPI_MOSI     23
 
-// ── LoRa типы сообщений ───────────────────────────────────────────────────
-#define MSG_GONG          0x01
-#define MSG_HEARTBEAT     0x02
-#define MSG_SCHEDULE      0x03
-#define MSG_ACK           0x04
-#define MSG_STOP          0x05
-
 // ── LoRa HMAC-подпись ─────────────────────────────────────────────────────
 // Секретный ключ — одинаковый на сервере и на ВСЕХ клиентах.
-// Смените перед развёртыванием (минимум 16 символов)!
+// Смените перед развёртыванием (минимум 16 символов)! H-7: можно передать
+// ключ через build_flags вместо правки файла — see platformio.ini:
+//   build_flags = -DLORA_HMAC_KEY='"${sysenv.GONG_KEY}"'
+#ifndef LORA_HMAC_KEY
 #define LORA_HMAC_KEY           "change_me_before_deploy_32chars!"
+#endif
+static_assert(sizeof(LORA_HMAC_KEY) - 1 >= 16, "LORA_HMAC_KEY короче 16 символов");
 
 // ── LoRa тайминги ─────────────────────────────────────────────────────────
 #define HEARTBEAT_INTERVAL_MS   30000UL
 #define CLIENT_TIMEOUT_MS       90000UL
+
+// ── M-14: догоняющее срабатывание после перезагрузки ────────────────────────
+// Если сервер перезагрузился в узком окне вокруг времени гонга, тот гонг не
+// должен пропадать бесследно — и не должен звонить второй раз, если он уже
+// успел сработать. См. schedule.cpp: sched_setup()/CATCHUP.
+#define CATCHUP_WINDOW_S   120UL   // считаем пропущенным, если ребут был не позже этого окна

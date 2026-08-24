@@ -4,12 +4,11 @@
 #include <SPI.h>
 #include <RadioLib.h>
 #include <ArduinoJson.h>
-#include "mbedtls/md.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
-
-#define LORA_PAYLOAD_MAX 256
+#include <esp_system.h>
+#include <Preferences.h>
 
 static Module mod(LORA_SS, LORA_DIO0, LORA_RST, RADIOLIB_NC);
 static SX1278 radio(&mod);
@@ -19,62 +18,180 @@ static void IRAM_ATTR onDio0() { dioFlag = true; }
 
 static volatile bool loraReady = false;
 
-// ── HMAC-SHA256 (mirrors server) ─────────────────────────────────────────
-static String computeHMAC(uint8_t msgType, const String& payload) {
-    uint8_t hmac[32];
-    mbedtls_md_context_t ctx;
-    mbedtls_md_init(&ctx);
-    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
-    mbedtls_md_hmac_starts(&ctx, (const uint8_t*)LORA_HMAC_KEY, strlen(LORA_HMAC_KEY));
-    mbedtls_md_hmac_update(&ctx, &msgType, 1);
-    mbedtls_md_hmac_update(&ctx, (const uint8_t*)payload.c_str(), payload.length());
-    mbedtls_md_hmac_finish(&ctx, hmac);
-    mbedtls_md_free(&ctx);
-    char hex[17];
-    for (int i = 0; i < 8; i++) snprintf(hex + i * 2, 3, "%02x", hmac[i]);
-    hex[16] = '\0';
-    return String(hex);
+// ── Client ID — H-6: default used to be a hardcoded string ("client_twoX")
+// that was easy to forget to change on a second device, silently merging two
+// clients into one entry on the server. Derive a unique ID from the MAC
+// address unless the operator opted into a human-readable name.
+static String g_clientId;
+
+static String resolveClientId() {
+#ifdef CLIENT_ID_OVERRIDE
+    return String(CLIENT_ID_OVERRIDE);
+#else
+    uint8_t mac[6];
+    esp_efuse_mac_get_default(mac);
+    char b[16];
+    snprintf(b, sizeof(b), "cli_%02X%02X%02X", mac[3], mac[4], mac[5]);
+    return String(b);
+#endif
 }
 
-// ── Replay protection ─────────────────────────────────────────────────────
-static uint32_t lastServerTs  = 0;
-static String   lastServerSig = "";
+const char* lora_clientId() { return g_clientId.c_str(); }
 
-// A backward jump this large means the server rebooted without RTC/NTP and
-// restarted its clock near zero — treat it as a resync, not an attack. Only
-// a small backward/equal jump is flagged as a real replay.
-static const uint32_t REPLAY_RESYNC_GAP_S = 3600;
+static uint16_t ackSlot() {
+    // FNV-1a over the client ID — deterministic, so every client picks a
+    // different slot without ever having to coordinate with the others.
+    uint32_t h = 2166136261u;
+    for (const char* p = g_clientId.c_str(); *p; ++p) { h ^= (uint8_t)*p; h *= 16777619u; }
+    return (uint16_t)(h % ACK_SLOT_COUNT);
+}
 
-static bool verifyMsg(uint8_t type, DynamicJsonDocument& doc) {
-    String sig = doc["sig"] | "";
-    if (sig.length() == 0) {
-        Serial.printf("[LORA] No sig on 0x%02X — rejected\n", type);
+// ── Replay protection (C-2) ───────────────────────────────────────────────
+// The server's nowTs() is guaranteed monotonic across reboots (NVS
+// water-mark, see server lorahandler.cpp ts_setup()/nowTs()), so a strict
+// `ts <= lastServerTs` rejection is both correct and simple. lastServerTs is
+// persisted in NVS so a client reboot doesn't reset protection to "accept
+// anything".
+static Preferences rpPrefs;
+static uint32_t    lastServerTs = 0;
+
+static void replay_setup() {
+    rpPrefs.begin("gong", false);
+    lastServerTs = rpPrefs.getUInt("lastts", 0);
+}
+
+static bool checkReplay(uint32_t ts) {
+    if (ts == 0) { Serial.println("[LORA] No ts — rejected"); return false; }
+    if (ts <= lastServerTs) {
+        Serial.printf("[LORA] Replay/dup ts=%u last=%u — rejected\n", ts, lastServerTs);
         return false;
     }
-    doc.remove("sig");
-    String payload;
-    serializeJson(doc, payload);
-    if (sig != computeHMAC(type, payload)) {
+    lastServerTs = ts;
+    static uint32_t lastWrite = 0;
+    if (ts > lastWrite + 60) { lastWrite = ts; rpPrefs.putUInt("lastts", ts); }
+    return true;
+}
+
+// H-3/M-5/M-6: frame is [type][8-byte HMAC tag][payload], tag at a fixed
+// offset, computed directly over the raw payload bytes — no JSON
+// re-serialization involved, so nothing can make the check drift from what
+// was actually signed. `buf`/`len` are the full received frame (type byte
+// included); on success `payload`/`plen` point at the bytes after the tag.
+static bool verifyFrame(uint8_t type, const uint8_t* buf, size_t len,
+                         const uint8_t*& payload, size_t& plen) {
+    if (len < 1 + LORA_TAG_LEN) {
+        Serial.printf("[LORA] Short frame type=0x%02X len=%u\n", type, (unsigned)len);
+        return false;
+    }
+    payload = buf + 1 + LORA_TAG_LEN;
+    plen    = len - 1 - LORA_TAG_LEN;
+    uint8_t expected[LORA_TAG_LEN];
+    lora_hmacTag(LORA_HMAC_KEY, type, payload, plen, expected);
+    if (!lora_tagEqual(buf + 1, expected)) {
         Serial.printf("[LORA] Bad sig on 0x%02X — rejected\n", type);
         return false;
     }
-    uint32_t ts = doc["ts"] | 0;
-    if (ts > 0) {
-        if (ts < lastServerTs) {
-            uint32_t drop = lastServerTs - ts;
-            if (drop < REPLAY_RESYNC_GAP_S) {
-                Serial.printf("[LORA] Replay ts=%u last=%u — rejected\n", ts, lastServerTs);
-                return false;
-            }
-            Serial.printf("[LORA] Server clock reset (ts=%u < last=%u) — resyncing\n", ts, lastServerTs);
-        } else if (ts == lastServerTs && sig == lastServerSig) {
-            Serial.printf("[LORA] Duplicate packet ts=%u — rejected\n", ts);
-            return false;
-        }
-        lastServerTs  = ts;
-        lastServerSig = sig;
-    }
     return true;
+}
+
+// ── H-5: virtual clock, kept in sync from the "time" field of every
+// heartbeat. The client has no RTC at all — this is only ever as accurate as
+// the last heartbeat it saw, which is exactly why it's only trusted for the
+// autonomous fallback schedule, not presented as real time anywhere.
+static uint32_t vclockAnchorMs  = 0;
+static int32_t  vclockAnchorSec = -1;   // seconds-of-day at the anchor; -1 = never synced
+
+static void syncVirtualClock(const String& hhmmss) {
+    if (hhmmss.length() != 8 || hhmmss == "--:--:--") return;   // server itself has no valid time
+    int hh = hhmmss.substring(0, 2).toInt();
+    int mm = hhmmss.substring(3, 5).toInt();
+    int ss = hhmmss.substring(6, 8).toInt();
+    vclockAnchorSec = hh * 3600 + mm * 60 + ss;
+    vclockAnchorMs  = millis();
+}
+
+static int32_t virtualSecOfDay() {
+    if (vclockAnchorSec < 0) return -1;
+    uint32_t elapsedS = (millis() - vclockAnchorMs) / 1000;
+    return (int32_t)((vclockAnchorSec + elapsedS) % 86400);
+}
+
+// ── H-5: autonomous fallback schedule, received via MSG_SCHEDULE and kept in
+// NVS. A dead server no longer means a silent gong for the rest of the day —
+// see 01_AUDIT_REPORT.md H-5, the single worst operational risk flagged.
+static Preferences schedPrefs;
+static uint8_t     g_schedDay   = 0xFF;
+static uint8_t     g_schedCount = 0;
+static SchedBin     g_sched[SCHED_BIN_MAX];
+
+static void loadStoredSchedule() {
+    schedPrefs.begin("gong", true);
+    g_schedDay   = schedPrefs.getUChar("schday", 0xFF);
+    g_schedCount = schedPrefs.getUChar("schcnt", 0);
+    if (g_schedCount > SCHED_BIN_MAX) g_schedCount = SCHED_BIN_MAX;
+    if (g_schedCount) schedPrefs.getBytes("schdata", g_sched, (size_t)g_schedCount * sizeof(SchedBin));
+    schedPrefs.end();
+    if (g_schedCount)
+        Serial.printf("[LORA] Loaded stored schedule: day=%02d entries=%u\n", (int)g_schedDay, (unsigned)g_schedCount);
+}
+
+static void handleScheduleFrame(const uint8_t* p, size_t plen) {
+    if (plen < sizeof(SchedBinHeader)) return;
+    SchedBinHeader hdr;
+    memcpy(&hdr, p, sizeof(hdr));
+    uint8_t cnt = hdr.count;
+    if (cnt > SCHED_BIN_MAX) cnt = SCHED_BIN_MAX;
+    size_t need = sizeof(hdr) + (size_t)cnt * sizeof(SchedBin);
+    if (plen < need) return;
+
+    g_schedDay   = hdr.day;
+    g_schedCount = cnt;
+    if (cnt) memcpy(g_sched, p + sizeof(hdr), (size_t)cnt * sizeof(SchedBin));
+
+    schedPrefs.begin("gong", false);
+    schedPrefs.putUChar("schday", g_schedDay);
+    schedPrefs.putUChar("schcnt", g_schedCount);
+    if (g_schedCount) schedPrefs.putBytes("schdata", g_sched, (size_t)g_schedCount * sizeof(SchedBin));
+    schedPrefs.end();
+
+    Serial.printf("[LORA] Schedule stored: day=%02d entries=%u\n", (int)g_schedDay, (unsigned)g_schedCount);
+}
+
+static volatile uint32_t lastHeartbeatMs = 0;
+
+bool lora_heartbeatLost()      { return millis() - lastHeartbeatMs >= HEARTBEAT_LOST_MS; }
+uint32_t lora_msSinceHeartbeat() { return millis() - lastHeartbeatMs; }
+
+// H-5: called once a second from loop(). Mirrors the server's sched_check()
+// anti-double-fire pattern (one trigger per minute).
+static int      autoLastFiredKey = -1;
+static uint32_t autoLastFiredMs  = 0;
+
+void lora_autonomousTick() {
+    if (!lora_heartbeatLost()) return;               // server alive — stay slave, do nothing
+    if (g_schedCount == 0 || g_schedDay == 0xFF) return;  // nothing to fall back to
+    int32_t sec = virtualSecOfDay();
+    if (sec < 0) return;                              // never got a valid time from the server
+
+    int key = sec / 60;
+    if (autoLastFiredKey == key && millis() - autoLastFiredMs < 65000UL) return;
+
+    int hh = sec / 3600, mm = (sec % 3600) / 60;
+    for (uint8_t i = 0; i < g_schedCount; i++) {
+        if (!schedbin_enabled(g_sched[i].loopEn)) continue;
+        if (g_sched[i].hour != hh || g_sched[i].minute != mm) continue;
+
+        uint8_t loopCount = schedbin_loop(g_sched[i].loopEn);
+        Serial.printf("[LORA] AUTONOMOUS gong (server silent %lus): track=%d vol=%d loop=%d\n",
+                      (unsigned long)(lora_msSinceHeartbeat() / 1000),
+                      g_sched[i].track, g_sched[i].vol, loopCount);
+        if (STATUS_LED >= 0) digitalWrite(STATUS_LED, HIGH);
+        mp3_setVolume(g_sched[i].vol);
+        mp3_play(g_sched[i].track, loopCount);
+        autoLastFiredKey = key;
+        autoLastFiredMs  = millis();
+        break;
+    }
 }
 
 // ── Command queue: Core 0 → Core 1 (audio calls stay off the radio task) ──
@@ -85,19 +202,33 @@ struct RxCmd {
 };
 static QueueHandle_t rxQueue = nullptr;
 
-// ── ACK — always sent synchronously from Core 0, inside loraTask ─────────
-// hbSeq != 0 → this ACK answers a heartbeat; the seq is echoed back as "hb"
-// so the server computes RTT only from matching heartbeat/ACK pairs (ACKs to
-// GONG carry no "hb" and must not touch the server's RTT statistics).
-static void sendAck(int rxRssi, uint32_t hbSeq = 0) {
+// ── ACK — always sent synchronously from Core 0, inside loraTask. Only ever
+// sent for MSG_HEARTBEAT now (C-3 measure 2: GONG never gets one — the
+// server already ignores it for stats, and holding the radio for ~140ms
+// right when a STOP might follow is a window we can't afford to be deaf in).
+static void sendAck(int rxRssi, uint32_t hbSeq) {
     DynamicJsonDocument doc(128);
-    doc["id"]   = CLIENT_ID;
+    doc["id"]   = g_clientId;
     doc["rssi"] = rxRssi;
     if (hbSeq != 0) doc["hb"] = hbSeq;
     String payload;
     serializeJson(doc, payload);
 
-    vTaskDelay(pdMS_TO_TICKS(10 + random(0, 70)));  // jitter to reduce collisions
+    // C-3 measure 3: deterministic per-client slot instead of a 0-70ms random
+    // jitter — that window was 4x shorter than one ACK's airtime at the old
+    // SF9, guaranteeing collisions with 2+ clients. At SF7 + a slot per
+    // client, two clients' ACKs can no longer land on top of each other.
+    vTaskDelay(pdMS_TO_TICKS(ACK_GUARD_MS + ackSlot() * ACK_SLOT_MS));
+
+    // H-2: a packet may have arrived while this client waited for its slot
+    // (e.g. STOP right after a GONG). Blindly clearing dioFlag and
+    // transmitting would silently destroy it. Skip the ACK and let loraTask's
+    // next iteration handle the pending packet — the server sees this client
+    // again on the next heartbeat regardless.
+    if (dioFlag) {
+        Serial.println("[LORA] RX pending during ACK slot — skipping ACK, handling packet first");
+        return;
+    }
 
     uint8_t buf[LORA_PAYLOAD_MAX + 1];
     buf[0] = MSG_ACK;
@@ -132,9 +263,53 @@ static void sendAck(int rxRssi, uint32_t hbSeq = 0) {
     radio.startReceive();
 }
 
+// ── M-8: radio init / self-heal ───────────────────────────────────────────
+static uint32_t lastRadioOk = 0;
+
+static bool radioInit() {
+    float freqMHz = (float)LORA_FREQ;   // already MHz — do NOT divide
+    float bwKHz   = (float)LORA_BW;     // already kHz — do NOT divide
+    int state = radio.begin(freqMHz, bwKHz, LORA_SF, LORA_CR,
+                            LORA_SYNC_WORD, LORA_TX_POWER, 8, 0);
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[LORA] Init FAILED: %d (freq=%.3fMHz bw=%.2fkHz) — check module wiring!\n",
+                      state, freqMHz, bwKHz);
+        loraReady = false;
+        return false;
+    }
+    dioFlag = false;
+    radio.startReceive();
+    lastRadioOk = millis();
+    loraReady   = true;
+    Serial.printf("[LORA] Client '%s' ready @ %.0f MHz  SF=%d BW=%.0fk  (Core 0)\n",
+                  g_clientId.c_str(), freqMHz, LORA_SF, bwKHz);
+    return true;
+}
+
+static const uint32_t RADIO_SILENCE_MS = 300000UL;  // M-8: 5 min with no successful RX → reinit
+static const uint32_t RADIO_RETRY_MS   = 30000UL;   // M-8: retry a failed init this often
+
 // ── Core 0: LoRa task — RX + ACK; audio dispatched to Core 1 via queue ───
 static void loraTask(void*) {
+    uint32_t lastInitAttempt = 0;
+
     for (;;) {
+        if (!loraReady) {
+            if (millis() - lastInitAttempt >= RADIO_RETRY_MS) {
+                lastInitAttempt = millis();
+                radioInit();
+            }
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+
+        if (millis() - lastRadioOk > RADIO_SILENCE_MS) {
+            Serial.println("[LORA] No activity 5 min — reinitialising radio");
+            radio.reset();
+            radioInit();
+            continue;
+        }
+
         if (!dioFlag) {
             vTaskDelay(pdMS_TO_TICKS(1));
             continue;
@@ -152,22 +327,34 @@ static void loraTask(void*) {
             radio.startReceive();
             continue;
         }
+        lastRadioOk = millis();
 
         uint8_t type = buf[0];
-        String  payload = "";
-        for (size_t i = 1; i < len; i++) payload += (char)buf[i];
-        int rssi = (int)radio.getRSSI();
+        int     rssi = (int)radio.getRSSI();
 
-        if (type == MSG_GONG || type == MSG_HEARTBEAT || type == MSG_STOP) {
-            DynamicJsonDocument doc(512);
-            if (deserializeJson(doc, payload) || !verifyMsg(type, doc)) {
+        if (type == MSG_GONG || type == MSG_HEARTBEAT || type == MSG_STOP || type == MSG_SCHEDULE) {
+            const uint8_t* payload; size_t plen;
+            if (!verifyFrame(type, buf, len, payload, plen)) { radio.startReceive(); continue; }
+
+            if (type == MSG_SCHEDULE) {
+                if (plen < 4) { radio.startReceive(); continue; }
+                uint32_t ts; memcpy(&ts, payload, 4);
+                if (!checkReplay(ts)) { radio.startReceive(); continue; }
+                handleScheduleFrame(payload + 4, plen - 4);
                 radio.startReceive();
                 continue;
             }
 
+            DynamicJsonDocument doc(512);
+            if (deserializeJson(doc, payload, plen)) { radio.startReceive(); continue; }
+            uint32_t ts = doc["ts"] | 0;
+            if (!checkReplay(ts)) { radio.startReceive(); continue; }
+
             if (type == MSG_HEARTBEAT) {
+                lastHeartbeatMs = millis();
+                syncVirtualClock(doc["time"] | "");
                 uint32_t seq = doc["seq"] | 0;
-                sendAck(rssi, seq);  // startReceive() called inside sendAck
+                sendAck(rssi, seq);   // startReceive() called inside sendAck
                 continue;
             }
 
@@ -178,58 +365,48 @@ static void loraTask(void*) {
                 cmd.track = doc["track"] | 1;
                 cmd.vol   = doc["vol"]   | DEFAULT_VOLUME;
                 cmd.loop  = doc["loop"]  | 1;
-                // Queue the command BEFORE transmitting the ACK: lora_poll()
-                // on Core 1 starts the audio while Core 0 is still busy with
-                // the ACK (10–80 ms jitter + ~150 ms airtime). The previous
-                // order (ACK first) systematically delayed the client's gong
-                // by ~200–250 ms relative to the server, defeating the whole
-                // "both sides start together" design.
+                // Queue the command BEFORE returning to RX: lora_poll() on
+                // Core 1 starts the audio immediately, while Core 0 goes
+                // straight back to listening — no ACK, no delay (see above).
                 xQueueSend(rxQueue, &cmd, 0);
-                sendAck(rssi);  // no "hb": GONG ACKs must not affect RTT stats
+                radio.startReceive();
+                continue;
+            }
+
+            if (type == MSG_STOP) {
+                RxCmd cmd = {};
+                cmd.type = type;
+                cmd.rssi = rssi;
+                radio.startReceive();
+                xQueueSend(rxQueue, &cmd, 0);
                 continue;
             }
         }
 
-        if (type == MSG_STOP) {
-            RxCmd cmd = {};
-            cmd.type = type;
-            cmd.rssi = rssi;
-            radio.startReceive();
-            xQueueSend(rxQueue, &cmd, 0);
-        } else if (type == MSG_SCHEDULE) {
-            Serial.printf("[LORA] Schedule received (%u bytes)\n", (unsigned)(len - 1));
-            radio.startReceive();
-        } else {
-            Serial.printf("[LORA] Unknown type 0x%02X\n", type);
-            radio.startReceive();
-        }
+        Serial.printf("[LORA] Unknown type 0x%02X\n", type);
+        radio.startReceive();
     }
 }
 
 // ────────────────────────────────────────────────────────────────────────
 void lora_setup() {
+    g_clientId      = resolveClientId();
+    lastHeartbeatMs = millis();   // grace period at boot — not instantly "lost"
+    replay_setup();
+    loadStoredSchedule();
+
     // RTOS primitives FIRST — must exist even if the radio isn't wired up.
     rxQueue = xQueueCreate(4, sizeof(RxCmd));
 
     SPI.begin(LORA_SPI_SCK, LORA_SPI_MISO, LORA_SPI_MOSI, LORA_SS);
-
-    float freqMHz = (float)LORA_FREQ;   // already MHz — do NOT divide
-    float bwKHz   = (float)LORA_BW;     // already kHz — do NOT divide
-    int state = radio.begin(freqMHz, bwKHz, LORA_SF, LORA_CR,
-                            LORA_SYNC_WORD, LORA_TX_POWER, 8, 0);
-    if (state != RADIOLIB_ERR_NONE) {
-        Serial.printf("[LORA] Init FAILED: %d (freq=%.3fMHz bw=%.2fkHz) — check module wiring! "
-                      "(queue created, LoRa disabled, rest of firmware unaffected)\n",
-                      state, freqMHz, bwKHz);
-        return;
-    }
-    Serial.printf("[LORA] Client '%s' ready @ %.0f MHz  SF=%d BW=%.0fk  (Core 0)\n",
-                  CLIENT_ID, freqMHz, LORA_SF, bwKHz);
-
     attachInterrupt(digitalPinToInterrupt(LORA_DIO0), onDio0, RISING);
-    radio.startReceive();
+
+    if (strcmp(LORA_HMAC_KEY, "change_me_before_deploy_32chars!") == 0)
+        Serial.println("[SEC] !!! LORA_HMAC_KEY IS THE REPO DEFAULT — ANYONE WITH AN Ra-02 AND "
+                        "THIS REPO CAN RING THE GONG. CHANGE IT IN config.h BEFORE DEPLOYMENT !!!");
+
+    radioInit();   // failure is not fatal — loraTask retries every 30s (M-8)
     xTaskCreatePinnedToCore(loraTask, "lora_rx", 5120, nullptr, 2, nullptr, 0);
-    loraReady = true;
 }
 
 bool lora_isReady() { return loraReady; }
