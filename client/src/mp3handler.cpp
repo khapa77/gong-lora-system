@@ -1,6 +1,6 @@
 #include "mp3handler.h"
 #include "config.h"
-#include <SPIFFS.h>
+#include <LittleFS.h>
 #include <Audio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -42,14 +42,14 @@ static void _startPlay(uint8_t track) {
     char path[16];
     snprintf(path, sizeof(path), "/%04d.mp3", track);
 
-    if (!SPIFFS.exists(path)) {
+    if (!LittleFS.exists(path)) {
         Serial.printf("[MP3] File not found: %s\n", path);
         loopRemain = 0;
         return;
     }
 
     audio.setVolume(0);
-    if (audio.connecttoFS(SPIFFS, path)) {
+    if (audio.connecttoFS(LittleFS, path)) {
         ramping   = true;
         rampStart = millis();
         Serial.printf("[MP3] Playing: %s\n", path);
@@ -82,7 +82,10 @@ void mp3_setVolume(uint8_t vol) {
 }
 
 uint8_t mp3_getVolume() {
-    return curVol;
+    if (!audioLock()) return curVol;
+    uint8_t v = curVol;
+    audioUnlock();
+    return v;
 }
 
 void mp3_play(uint8_t track, uint8_t loops) {
@@ -117,8 +120,10 @@ void mp3_loop() {
     } else {
         // Mute only after sustained silence to avoid glitches between DMA chunks
         static uint8_t idleCount = 0;
+        static bool    muted     = false;
         if (audio.isRunning()) {
             idleCount = 0;
+            muted     = false;
         } else if (idleCount < 20) {
             idleCount++;
         } else {
@@ -128,8 +133,11 @@ void mp3_loop() {
                 idleCount = 0;
                 Serial.printf("[MP3] Loop repeat — remaining=%d\n", loopRemain);
                 _startPlay(loopTrack);
-            } else {
+            } else if (!muted) {
+                // Low: this branch used to run audio.setVolume(0) on every
+                // 1ms feeder tick forever while idle — harmless but pointless.
                 audio.setVolume(0);
+                muted = true;
             }
         }
     }
@@ -155,13 +163,18 @@ static void audioFeederTask(void*) {
     }
 }
 
+// M-1: configMAX_PRIORITIES-1 (24) sat above every task on Core 1, including
+// loopTask (lora_poll/mp3 calls) — mp3_loop() holding audioMtx while a
+// priority-24 task preempted everything else starved the rest of the core
+// down to scraps. Priority 10 is still comfortably above loopTask (1) and
+// Wi-Fi/system tasks stay on Core 0, but no longer treats them as irrelevant.
+#define AUDIO_TASK_PRIORITY 10
+
 void mp3_startAudioTask() {
     if (audioTaskHandle) return;
     // Stack 8192: MP3 decoding happens INSIDE audio.loop() in this library
-    // and 4096 was borderline (typical working sizes are 5–8 KB). Priority
-    // configMAX_PRIORITIES-1 (24) is safe here: the LoRa task lives on
-    // Core 0, and this task yields every 1 ms tick, so nothing starves.
+    // and 4096 was borderline (typical working sizes are 5–8 KB).
     xTaskCreatePinnedToCore(audioFeederTask, "audio_feed", 8192, nullptr,
-                            configMAX_PRIORITIES - 1, &audioTaskHandle, 1);
-    Serial.println("[MP3] Audio feeder task started on Core 1 (priority 24)");
+                            AUDIO_TASK_PRIORITY, &audioTaskHandle, 1);
+    Serial.printf("[MP3] Audio feeder task started on Core 1 (priority %d)\n", AUDIO_TASK_PRIORITY);
 }

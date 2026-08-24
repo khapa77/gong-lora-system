@@ -230,6 +230,10 @@ tr:hover td { background: rgba(79,158,248,.04); }
           <tr><td colspan="6" class="empty-row">Loading&#8230;</td></tr>
         </tbody>
       </table>
+      <p style="color:var(--muted);font-size:.78rem;margin-top:10px">
+        На одну минуту можно поставить только один гонг. Нужно два подряд — используйте поле «Loop»
+        (повторы) или разнесите записи на соседние минуты.
+      </p>
     </div>
   </div>
 
@@ -342,7 +346,6 @@ tr:hover td { background: rgba(79,158,248,.04); }
         <button class="btn btn-primary" onclick="playLoRa()">&#128225; LoRa broadcast</button>
         <button class="btn btn-green"   onclick="playAll()">&#127925; All (Local + LoRa)</button>
         <button class="btn btn-red"     onclick="stopAll()">&#9632;&#9632; Stop</button>
-        <button class="btn btn-yellow"  onclick="syncSchedule()">&#8635; Sync Schedule</button>
       </div>
       <div id="clientGrid" class="client-grid">
         <div class="empty-row" style="grid-column:1/-1">No clients seen yet.</div>
@@ -370,6 +373,10 @@ tr:hover td { background: rgba(79,158,248,.04); }
       <div class="col form-group">
         <label>Loop</label>
         <input type="number" id="mLoop" min="1" max="7" value="1">
+      </div>
+      <div class="col form-group">
+        <label>Vol (0-30)</label>
+        <input type="number" id="mVol" min="0" max="30" value="30">
       </div>
     </div>
     <div class="form-group">
@@ -477,19 +484,28 @@ function updateCountdown() {
   el.textContent = '⏱ ' + pad(entry.hour) + ':' + pad(entry.min) + ' → ' + countdown;
 }
 
-// Guards against overlapping runs: if a previous refreshAll is still waiting
-// on the ESP32 (e.g. a flaky Wi-Fi link), a new setInterval tick used to fire
-// 5 more parallel fetches on top of the stuck ones. On the ESP32's WebServer
-// (synchronous, single connection at a time) that pileup starved real user
-// actions — like a schedule edit or "Activate this day" click — behind a
-// growing queue of stale polling requests, which is what caused clicks to
-// take minutes to take effect.
+// M-10: one bundled request (/api/state) instead of five parallel ones.
+// Five separate round trips against the ESP32's single-threaded WebServer
+// (handleClient() serves one connection at a time) meant a real user action
+// — a schedule edit, "Activate this day" — queued up behind whichever of the
+// five polling requests happened to be in flight; on a flaky AP link that
+// pileup was what made clicks take minutes to take effect. refreshInFlight
+// still guards against a slow response overlapping the next 5s tick.
 let refreshInFlight = false;
 async function refreshAll() {
   if (refreshInFlight) return;
   refreshInFlight = true;
   try {
-    await Promise.all([loadStatus(), loadSchedules(), loadAuthStatus(), loadDaysStatus(), loadClients()]);
+    const r = await fetch('/api/state');
+    if (!r.ok) { document.getElementById('wifiStat').innerHTML = '<span class="dot dot-red"></span>Server error ' + r.status; return; }
+    const d = await r.json();
+    applyStatus(d.status);
+    applySchedule(d.schedule);
+    applyAuth(d.auth);
+    await applyDays(d.days);
+    renderClients(d.clients);
+  } catch {
+    document.getElementById('wifiStat').innerHTML = '<span class="dot dot-red"></span>Offline';
   } finally {
     refreshInFlight = false;
   }
@@ -499,7 +515,7 @@ async function refreshAll() {
 // Status
 // ─────────────────────────────────────────────
 async function setTimeSource(src) {
-  await fetch('/api/time/source?s=' + src, { method: 'POST' });
+  await fetch('/api/time/source?s=' + src, { method: 'POST', headers: { 'X-Gong-Request': '1' } });
   switchClockTab(src);
   await loadStatus();
 }
@@ -517,7 +533,14 @@ async function loadStatus() {
   try {
     const r = await fetch('/api/status');
     if (!r.ok) { document.getElementById('wifiStat').innerHTML = '<span class="dot dot-red"></span>Server error ' + r.status; return; }
-    const d = await r.json();
+    applyStatus(await r.json());
+  } catch {
+    document.getElementById('wifiStat').innerHTML = '<span class="dot dot-red"></span>Offline';
+  }
+}
+
+function applyStatus(d) {
+  try {
     const wEl = document.getElementById('wifiStat');
     wEl.innerHTML = '<span class="dot dot-yellow"></span>AP: ' + (d.ssid||'?') + ' (' + (d.ip||'?') + ')';
     const kb = Math.round((d.heap || 0) / 1024);
@@ -570,10 +593,14 @@ async function loadStatus() {
 async function loadSchedules() {
   try {
     const r = await fetch('/api/schedule');
-    liveSchedules = await r.json();
-    if (!isPreview) viewSchedules = liveSchedules;
-    renderSchedule();
+    applySchedule(await r.json());
   } catch { /* ignore */ }
+}
+
+function applySchedule(list) {
+  liveSchedules = list || [];
+  if (!isPreview) viewSchedules = liveSchedules;
+  renderSchedule();
 }
 
 function renderSchedule() {
@@ -593,7 +620,7 @@ function renderSchedule() {
     <tr>
       <td><span class="time-badge">${pad(s.hour)}:${pad(s.min)}</span></td>
       <td>${esc(s.desc)}</td>
-      <td style="color:var(--muted)">&#127925;&nbsp;${s.track}</td>
+      <td style="color:var(--muted)">&#127925;&nbsp;${s.track}<span style="opacity:.55">&nbsp;&middot;&nbsp;${s.vol ?? 30}</span></td>
       <td style="color:var(--muted)">${s.loop > 1 ? '&#x21BA;&nbsp;' + s.loop : '1'}</td>
       <td><span class="tag ${s.en ? 'tag-on' : 'tag-off'}">${s.en ? 'ON' : 'OFF'}</span></td>
       <td style="text-align:right">${actions(s)}</td>
@@ -602,7 +629,8 @@ function renderSchedule() {
 
 async function deleteSched(id) {
   if (!confirm('Delete this schedule?')) return;
-  const r = await fetch('/api/day/entry?day=' + schedDayView + '&id=' + id, { method: 'DELETE' });
+  const r = await fetch('/api/day/entry?day=' + schedDayView + '&id=' + id,
+    { method: 'DELETE', headers: { 'X-Gong-Request': '1' } });
   if (r.ok) { toast('Deleted', 'ok'); await reloadDayView(); }
   else        toast('Error', 'err');
 }
@@ -648,24 +676,28 @@ async function setTime() {
 async function loadAuthStatus() {
   try {
     const r = await fetch('/api/auth/status');
-    const d = await r.json();
-    const badge = document.getElementById('authBadge');
-    const disBtn = document.getElementById('authDisableBtn');
-    const disInfo = document.getElementById('authDisabledInfo');
-    if (d.enabled) {
-      badge.textContent = '🔒 Protected';
-      badge.style.background = 'rgba(52,201,126,.15)';
-      badge.style.color = 'var(--green)';
-      disBtn.style.display = '';
-      disInfo.style.display = 'none';
-    } else {
-      badge.textContent = '🔓 Open';
-      badge.style.background = 'rgba(248,195,79,.12)';
-      badge.style.color = 'var(--yellow)';
-      disBtn.style.display = 'none';
-      disInfo.style.display = '';
-    }
+    applyAuth(await r.json());
   } catch { /* ignore */ }
+}
+
+function applyAuth(d) {
+  if (!d) return;
+  const badge = document.getElementById('authBadge');
+  const disBtn = document.getElementById('authDisableBtn');
+  const disInfo = document.getElementById('authDisabledInfo');
+  if (d.enabled) {
+    badge.textContent = '🔒 Protected';
+    badge.style.background = 'rgba(52,201,126,.15)';
+    badge.style.color = 'var(--green)';
+    disBtn.style.display = '';
+    disInfo.style.display = 'none';
+  } else {
+    badge.textContent = '🔓 Open';
+    badge.style.background = 'rgba(248,195,79,.12)';
+    badge.style.color = 'var(--yellow)';
+    disBtn.style.display = 'none';
+    disInfo.style.display = '';
+  }
 }
 
 async function saveAuth() {
@@ -726,6 +758,7 @@ function openAddModal() {
   document.getElementById('mMin').value   = 0;
   fillTrackSelect(availableTracks[0]);
   document.getElementById('mLoop').value  = 1;
+  document.getElementById('mVol').value   = 30;
   document.getElementById('mDesc').value  = '';
   document.getElementById('mEnRow').style.display = 'none';
   document.getElementById('overlay').classList.add('open');
@@ -741,6 +774,7 @@ function openEditModal(id) {
   document.getElementById('mMin').value     = s.min;
   fillTrackSelect(s.track);
   document.getElementById('mLoop').value    = s.loop || 1;
+  document.getElementById('mVol').value     = (s.vol ?? 30);
   document.getElementById('mDesc').value    = s.desc;
   document.getElementById('mEnabled').checked = s.en;
   document.getElementById('mEnRow').style.display = 'block';
@@ -757,6 +791,7 @@ async function saveModal() {
     min:   parseInt(document.getElementById('mMin').value),
     track: parseInt(document.getElementById('mTrack').value),
     loop:  parseInt(document.getElementById('mLoop').value) || 1,
+    vol:   orDefault(parseInt(document.getElementById('mVol').value), 30),
     desc:  document.getElementById('mDesc').value.trim(),
     en:    document.getElementById('mEnabled').checked
   };
@@ -789,11 +824,15 @@ async function saveModal() {
 // ─────────────────────────────────────────────
 // LoRa Clients / Manual Control
 // ─────────────────────────────────────────────
+// M-11: `parseInt(...) || 30` mapped a deliberately-entered 0 to 30 (0 is
+// falsy in JS) — silent gong at "0" was never reachable from the UI.
+function orDefault(v, d) { return Number.isFinite(v) ? v : d; }
+
 function cPayload() {
   return {
-    track: parseInt(document.getElementById('cTrack').value) || availableTracks[0] || 1,
-    vol:   parseInt(document.getElementById('cVol').value)   || 30,
-    loop:  parseInt(document.getElementById('cLoop').value)  || 1,
+    track: orDefault(parseInt(document.getElementById('cTrack').value), availableTracks[0] || 1),
+    vol:   orDefault(parseInt(document.getElementById('cVol').value),   30),
+    loop:  orDefault(parseInt(document.getElementById('cLoop').value),  1),
   };
 }
 
@@ -817,36 +856,45 @@ async function stopAll() {
   toast(r && r.ok ? 'Stopped' : (r?.err || 'Error'), r && r.ok ? 'ok' : 'err');
 }
 
-async function syncSchedule() {
-  const r = await postJSON('/api/sync', {});
-  toast(r && r.ok ? 'Schedule sent to clients' : (r?.err || 'Error'), r && r.ok ? 'ok' : 'err');
-}
-
 function rssiClass(rssi) {
   if (rssi >= -90) return 'rssi-good';
   if (rssi >= -110) return 'rssi-ok';
   return 'rssi-bad';
 }
 
-async function loadClients() {
+// C-4: RSSI told you the signal is loud, not whether it's usable — SNR is
+// what actually predicts demodulation failure. Thresholds from the SF7 LoRa
+// demod floor (~-7.5dB); RTT/one-way "distance" numbers are gone entirely —
+// they only ever measured this project's own airtime + ACK-slot delay, five
+// orders of magnitude larger than actual radio propagation time.
+function snrClass(snr) {
+  if (snr >= 0)  return 'rssi-good';
+  if (snr >= -7) return 'rssi-ok';
+  return 'rssi-bad';
+}
+
+function renderClients(list) {
   const grid = document.getElementById('clientGrid');
   if (!grid) return;
+  if (!list || !list.length) {
+    grid.innerHTML = '<div class="empty-row" style="grid-column:1/-1">No clients seen yet.</div>';
+    return;
+  }
+  grid.innerHTML = list.map(c => `
+    <div class="client-card">
+      <div class="client-name">${esc(c.id)}</div>
+      <div class="client-meta">
+        <span class="${rssiClass(c.rssi)}">RSSI: ${c.rssi} dBm</span><br>
+        <span class="${snrClass(c.snr ?? 0)}">SNR: ${(c.snr ?? 0).toFixed(1)} dB</span><br>
+        Seen: ${Math.round((c.seen_ms || 0) / 1000)}s ago
+      </div>
+    </div>`).join('');
+}
+
+async function loadClients() {
   try {
     const r = await fetch('/api/clients');
-    const list = await r.json();
-    if (!list.length) {
-      grid.innerHTML = '<div class="empty-row" style="grid-column:1/-1">No clients seen yet.</div>';
-      return;
-    }
-    grid.innerHTML = list.map(c => `
-      <div class="client-card">
-        <div class="client-name">${esc(c.id)}</div>
-        <div class="client-meta">
-          <span class="${rssiClass(c.rssi)}">RSSI: ${c.rssi} dBm</span><br>
-          RTT: ${c.rtt_ms || 0} ms<br>
-          Seen: ${Math.round((c.seen_ms || 0) / 1000)}s ago
-        </div>
-      </div>`).join('');
+    renderClients(await r.json());
   } catch { /* ignore — status badge already shows offline state */ }
 }
 
@@ -857,7 +905,10 @@ async function postJSON(url, body, method = 'POST') {
   try {
     const r = await fetch(url, {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      // H-9: no CORS/preflight is answered any more — a cross-origin page
+      // cannot set this custom header, so it cannot forge a state-changing
+      // request even with auth disabled. See webhandler.cpp checkOrigin().
+      headers: { 'Content-Type': 'application/json', 'X-Gong-Request': '1' },
       body: JSON.stringify(body)
     });
     return await r.json();
@@ -883,8 +934,13 @@ function toggleCard(id) {
 
 function pad(n) { return String(n).padStart(2, '0'); }
 function esc(s) {
+  // Low: quotes weren't escaped — safe only as long as esc() is never used
+  // inside an HTML attribute. Operator-entered descriptions are the one
+  // input that already flows into a text node here; escaping quotes too
+  // removes the trap for the next call site that puts esc() in an attribute.
   return String(s)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 let toastTimer;
@@ -912,13 +968,17 @@ function togglePass(id, btn) {
 async function loadDaysStatus() {
   try {
     const r = await fetch('/api/days');
-    const d = await r.json();
-    activeDayNum = d.active;
-    dayCount     = d.count || 12;
-    courseEnded  = !!d.ended;
-    if (schedDayView < 0) schedDayView = activeDayNum >= 0 ? activeDayNum : 0;
-    await updateSchedView();
+    await applyDays(await r.json());
   } catch { /* ignore */ }
+}
+
+async function applyDays(d) {
+  if (!d) return;
+  activeDayNum = d.active;
+  dayCount     = d.count || 12;
+  courseEnded  = !!d.ended;
+  if (schedDayView < 0) schedDayView = activeDayNum >= 0 ? activeDayNum : 0;
+  await updateSchedView();
 }
 
 // ─────────────────────────────────────────────
@@ -993,7 +1053,7 @@ async function activateViewedDay() {
     'Гонг сразу начнёт звонить по этому расписанию вместо Дня ' + pad(activeDayNum) + '.';
   if (!confirm(msg)) return;
   try {
-    const r = await fetch('/api/day/activate?n=' + schedDayView, { method: 'POST' });
+    const r = await fetch('/api/day/activate?n=' + schedDayView, { method: 'POST', headers: { 'X-Gong-Request': '1' } });
     const d = await r.json();
     if (d && d.ok) {
       toast('День ' + pad(schedDayView) + ' активирован', 'ok');

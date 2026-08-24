@@ -1,9 +1,12 @@
 #pragma once
+#include "lora_shared.h"
 
 // =============================================================
 //  CLIENT CONFIG — change CLIENT_ID for EVERY device before flashing!
 // =============================================================
-#define CLIENT_ID      "client_twoX"   // unique per device, e.g. "room_A"
+// Раскомментировать для говорящего имени; иначе CLIENT_ID выводится из MAC
+// (см. clientId() в lorahandler.cpp — H-6: дефолт больше нельзя "забыть поменять").
+// #define CLIENT_ID_OVERRIDE "room_A"
 
 // ── LoRa module pins — same wiring as the server (Ra-02, SMA antenna) ─────
 #define LORA_SS        5   // NSS
@@ -14,31 +17,28 @@
 #define LORA_SPI_MISO  19
 #define LORA_SPI_MOSI  23
 
-// ── LoRa RF settings — MUST match the server's config.h exactly, or the
-// devices will simply never hear each other (no error, just silence) ──────
-#define LORA_FREQ      433.0     // MHz — already MHz, pass unconverted to radio.begin()
-#define LORA_SF        9         // Spreading factor 7..12
-#define LORA_BW        125.0     // kHz — already kHz, pass unconverted to radio.begin()
-#define LORA_CR        5         // Coding rate 5..8 (4/5)
-#define LORA_SYNC_WORD 0xF3      // Private network word
-#define LORA_TX_POWER  17        // dBm
-
-// ── LoRa message types (must match server) ─────────────────────────────────
-#define MSG_GONG       0x01
-#define MSG_HEARTBEAT  0x02
-#define MSG_SCHEDULE   0x03
-#define MSG_ACK        0x04
-#define MSG_STOP       0x05
+// RF-параметры и типы сообщений — см. lora_shared.h (common/). ДОЛЖНЫ
+// совпадать с сервером, иначе устройства просто не услышат друг друга.
 
 // ── LoRa HMAC-подпись — должен совпадать с сервером! ───────────────────────
+// H-7: можно передать через build_flags вместо правки файла — see
+// platformio.ini: build_flags = -DLORA_HMAC_KEY='"${sysenv.GONG_KEY}"'
+#ifndef LORA_HMAC_KEY
 #define LORA_HMAC_KEY  "change_me_before_deploy_32chars!"
+#endif
+static_assert(sizeof(LORA_HMAC_KEY) - 1 >= 16, "LORA_HMAC_KEY короче 16 символов");
 
 // ── I2S pins for MAX98357A ──────────────────────────────────────────────
 #define I2S_BCLK       26   // Bit Clock
 #define I2S_LRC        25   // Left/Right Clock (Word Select)
 #define I2S_DOUT       33   // Data Out
 
-// Status LED; set to -1 to disable (GPIO33 is used by I2S_DOUT)
-#define STATUS_LED     -1
+// Status LED (H-11) — без экрана, сети и кнопок это единственный способ
+// понять "жив ли клиент, слышит ли он сервер" без ноутбука по USB.
+// GPIO13/32 свободны (см. 01_AUDIT_REPORT.md 1.2); set to -1 to disable.
+#define STATUS_LED     13
 
 #define DEFAULT_VOLUME 25
+
+// ── H-5: автономный режим при потере связи с сервером ───────────────────────
+#define HEARTBEAT_LOST_MS   (10UL * 60UL * 1000UL)   // 10 минут без heartbeat → автономно

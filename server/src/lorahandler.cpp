@@ -4,13 +4,11 @@
 #include <RadioLib.h>
 #include <ArduinoJson.h>
 #include <time.h>
-#include "mbedtls/md.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
-
-#define LORA_PAYLOAD_MAX 256
+#include <Preferences.h>
 
 static Module mod(LORA_SS, LORA_DIO0, LORA_RST, RADIOLIB_NC);
 static SX1278 radio(&mod);
@@ -20,14 +18,20 @@ static volatile bool dioFlag = false;
 static void IRAM_ATTR onDio0() { dioFlag = true; }
 
 // ── TX queue (Core 1 → Core 0) ────────────────────────────────────────────
+// H-1: playLocal/track/vol/loop let the TX-done handler queue a local play
+// once airtime is actually spent, so lora_sendGong() itself never blocks.
 struct TxReq {
-    uint8_t type;
-    uint8_t buf[LORA_PAYLOAD_MAX + 1];
-    size_t  len;
+    uint8_t  type;
+    uint8_t  buf[1 + LORA_PAYLOAD_MAX];
+    size_t   len;
+    bool     playLocal;
+    uint8_t  track, vol, loop;
 };
-static QueueHandle_t     txQueue    = nullptr;
-static SemaphoreHandle_t txGongDone = nullptr;  // signaled by Core 0 when GONG TX done
-static volatile bool     loraReady  = false;    // true once radio.begin() succeeded and loraTask is running
+struct LocalPlay { uint8_t track, vol, loop; };
+
+static QueueHandle_t     txQueue        = nullptr;
+static QueueHandle_t     localPlayQueue = nullptr;   // Core 0 → Core 1 (H-1)
+static volatile bool     loraReady      = false;     // true once radio is initialised and loraTask can TX/RX
 
 // ── Client registry + mutex ────────────────────────────────────────────────
 #define MAX_CLIENTS 16
@@ -35,41 +39,33 @@ static volatile bool     loraReady  = false;    // true once radio.begin() succe
 struct ClientInfo {
     String   id;
     int      rssi;
+    float    snr;
     uint32_t lastSeenMs;
-    uint32_t rttMs;
-    uint32_t oneWayMs;
+    uint32_t respMs;   // time from last heartbeat's TX-done to this ACK — diagnostic only, NOT distance (see C-4)
 };
 
 static ClientInfo        clients[MAX_CLIENTS];
 static uint8_t           cliCount   = 0;
 static SemaphoreHandle_t clientsMtx = nullptr;
 
-// ── Heartbeat RTT bookkeeping ─────────────────────────────────────────────
-// RTT is valid ONLY for an ACK that echoes the seq of the LAST heartbeat
-// ("hb" field) and is measured from the moment that heartbeat's TX actually
+// ── Heartbeat bookkeeping ─────────────────────────────────────────────────
+// respMs is valid ONLY for an ACK that echoes the seq of the LAST heartbeat
+// ("hb" field), measured from the moment that heartbeat's TX actually
 // finished (DIO0 TX-done), not from when it was queued. ACKs to GONG carry
-// no "hb" field and never touch RTT — previously every ACK was measured
-// against the last heartbeat, poisoning the EMA with values of up to
-// HEARTBEAT_INTERVAL_MS.
-static volatile uint32_t hbSeq      = 0;   // seq of the last heartbeat sent
-static volatile uint32_t hbTxDoneMs = 0;   // millis() at that heartbeat's TX-done
-static const uint32_t    ACK_RANDOM_DELAY_AVG_MS = 45;  // client jitters its ACK to avoid collisions
+// no "hb" field and never touch this figure.
+static volatile uint32_t hbSeq        = 0;   // seq of the last heartbeat sent
+static volatile uint32_t hbTxDoneMs   = 0;   // millis() at that heartbeat's TX-done
+static volatile uint32_t ackWindowUntil = 0; // C-3: server stays silent (except GONG/STOP) while clients' ACK slots play out
 
-static void upsertClient(const String& id, int rssi, uint32_t rtt) {
+static void upsertClient(const String& id, int rssi, float snr, uint32_t respMs) {
     unsigned long now = millis();
 
     for (uint8_t i = 0; i < cliCount; i++) {
         if (clients[i].id == id) {
             clients[i].rssi       = rssi;
+            clients[i].snr        = snr;
             clients[i].lastSeenMs = now;
-            if (rtt > 0) {
-                uint32_t trueRtt = (rtt > ACK_RANDOM_DELAY_AVG_MS)
-                                   ? rtt - ACK_RANDOM_DELAY_AVG_MS : 0;
-                clients[i].rttMs    = (clients[i].rttMs == 0)
-                                      ? trueRtt
-                                      : (clients[i].rttMs * 7 + trueRtt * 3) / 10;
-                clients[i].oneWayMs = clients[i].rttMs / 2;
-            }
+            if (respMs > 0) clients[i].respMs = respMs;
             return;
         }
     }
@@ -82,65 +78,77 @@ static void upsertClient(const String& id, int rssi, uint32_t rtt) {
         }
         if (now - clients[oldest].lastSeenMs > CLIENT_TIMEOUT_MS) {
             logPrintf("[LORA] Evicting stale client: %s\n", clients[oldest].id.c_str());
-            clients[oldest] = { id, rssi, now, 0, 0 };
+            clients[oldest] = { id, rssi, snr, now, respMs };
             return;
         }
         logPrintf("[LORA] MAX_CLIENTS reached, new client ignored\n");
         return;
     }
 
-    clients[cliCount++] = { id, rssi, now, 0, 0 };
+    clients[cliCount++] = { id, rssi, snr, now, respMs };
     logPrintf("[LORA] New client registered: %s\n", id.c_str());
 }
 
-// ── HMAC-SHA256 (8-byte truncated hex tag) ────────────────────────────────
-static String computeHMAC(uint8_t msgType, const String& payload) {
-    uint8_t hmac[32];
-    mbedtls_md_context_t ctx;
-    mbedtls_md_init(&ctx);
-    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
-    mbedtls_md_hmac_starts(&ctx, (const uint8_t*)LORA_HMAC_KEY, strlen(LORA_HMAC_KEY));
-    mbedtls_md_hmac_update(&ctx, &msgType, 1);
-    mbedtls_md_hmac_update(&ctx, (const uint8_t*)payload.c_str(), payload.length());
-    mbedtls_md_hmac_finish(&ctx, hmac);
-    mbedtls_md_free(&ctx);
-    char hex[17];
-    for (int i = 0; i < 8; i++) snprintf(hex + i * 2, 3, "%02x", hmac[i]);
-    hex[16] = '\0';
-    return String(hex);
+// ── C-2: monotonic ts ──────────────────────────────────────────────────────
+// The old nowTs() fell back to millis()/1000 whenever system time wasn't set
+// — which is NOT monotonic across a reboot: uptime restarts at 0, jumps
+// backwards relative to whatever the client last saw, and the client's
+// anti-replay guard then rejects every packet until uptime climbs back past
+// the old value (up to tens of minutes of total silence after every server
+// reboot). tsBase, persisted in NVS with a safety margin, guarantees nowTs()
+// never goes backwards — regardless of reboots or RTC/NTP availability.
+// See 01_AUDIT_REPORT.md C-2.
+static Preferences tsPrefs;
+static uint32_t    tsBase      = 0;   // NVS-persisted floor for the uptime-based fallback
+static uint32_t    tsPersisted = 0;   // last value actually written to NVS
+
+static void ts_setup() {
+    tsPrefs.begin("gong", false);
+    tsBase      = tsPrefs.getUInt("tsbase", 0);
+    tsPersisted = tsBase;
 }
 
 static uint32_t nowTs() {
-    time_t t = time(nullptr);
-    return (t > 100000UL) ? (uint32_t)t : (uint32_t)(millis() / 1000);
+    uint32_t real = (uint32_t)time(nullptr);
+    uint32_t up   = tsBase + (uint32_t)(millis() / 1000);
+    uint32_t v    = (real > TIME_VALID_EPOCH && real > up) ? real : up;
+
+    // Persist a "water mark" 120 s ahead of the highest value seen so far, at
+    // most once a minute, so an unrecorded window between writes still can't
+    // cause a backward jump on the next boot.
+    if (v > tsPersisted + 60) {
+        tsPersisted = v;
+        tsPrefs.putUInt("tsbase", v + 120);
+    }
+    return v;
 }
 
 // ── loraSend — enqueue a TX request from Core 1. Returns false if it never
-// made it onto the queue (radio not ready / queue full) — callers MUST check
-// this before blocking on txGongDone, otherwise they can wait forever.
-static bool loraSend(uint8_t type, const String& payload) {
-    String finalPayload = payload;
-
-    if (type == MSG_GONG || type == MSG_HEARTBEAT || type == MSG_STOP) {
-        String sig = computeHMAC(type, payload);
-        finalPayload = payload.substring(0, payload.length() - 1) + ",\"sig\":\"" + sig + "\"}";
-    }
-
-    // Never truncate: the HMAC was computed over the FULL payload, so a
-    // truncated frame is both broken JSON and a guaranteed bad signature.
-    // Refuse loudly instead.
-    size_t plen = finalPayload.length();
-    if (plen > LORA_PAYLOAD_MAX) {
+// made it onto the queue (radio not ready / queue full).
+// H-3/M-5/M-6: the frame is [type][8-byte HMAC tag][payload] — the tag sits
+// at a fixed offset and is computed directly over the raw payload bytes that
+// go on the air, so there's no string surgery to append a "sig" field and no
+// re-serialization for the receiver to depend on.
+static bool loraSendRaw(uint8_t type, const uint8_t* payload, size_t plen,
+                         bool playLocal, uint8_t track, uint8_t vol, uint8_t loop) {
+    if (plen > (size_t)(LORA_PAYLOAD_MAX - LORA_TAG_LEN)) {
         logPrintf("[LORA] TX rejected: payload %u > %u bytes type=0x%02X\n",
-                  (unsigned)plen, (unsigned)LORA_PAYLOAD_MAX, type);
+                  (unsigned)plen, (unsigned)(LORA_PAYLOAD_MAX - LORA_TAG_LEN), type);
         return false;
     }
 
-    TxReq req;
+    TxReq req{};
     req.type   = type;
     req.buf[0] = type;
-    memcpy(req.buf + 1, finalPayload.c_str(), plen);
-    req.len = 1 + plen;
+    uint8_t tag[LORA_TAG_LEN];
+    lora_hmacTag(LORA_HMAC_KEY, type, payload, plen, tag);
+    memcpy(req.buf + 1, tag, LORA_TAG_LEN);
+    if (plen) memcpy(req.buf + 1 + LORA_TAG_LEN, payload, plen);
+    req.len       = 1 + LORA_TAG_LEN + plen;
+    req.playLocal = playLocal;
+    req.track     = track;
+    req.vol       = vol;
+    req.loop      = loop;
 
     if (!loraReady || xQueueSend(txQueue, &req, pdMS_TO_TICKS(200)) != pdTRUE) {
         logPrintf("[LORA] TX not sent (not ready or queue full) type=0x%02X\n", type);
@@ -149,38 +157,87 @@ static bool loraSend(uint8_t type, const String& payload) {
     return true;
 }
 
+static bool loraSend(uint8_t type, const String& payload,
+                      bool playLocal = false, uint8_t track = 0, uint8_t vol = 0, uint8_t loop = 0) {
+    return loraSendRaw(type, (const uint8_t*)payload.c_str(), payload.length(), playLocal, track, vol, loop);
+}
+
+// ── M-8: radio init / self-heal ───────────────────────────────────────────
+static uint32_t lastRadioOk = 0;
+
+static bool radioInit() {
+    float freqMHz = (float)LORA_FREQ;   // already MHz — do NOT divide
+    float bwKHz   = (float)LORA_BW;     // already kHz — do NOT divide
+    int state = radio.begin(freqMHz, bwKHz, LORA_SF, LORA_CR,
+                            LORA_SYNC_WORD, LORA_TX_POWER, 8, 0);
+    if (state != RADIOLIB_ERR_NONE) {
+        logPrintf("[LORA] Init FAILED: %d (freq=%.3fMHz bw=%.2fkHz) — check module wiring!\n",
+                  state, freqMHz, bwKHz);
+        loraReady = false;
+        return false;
+    }
+    dioFlag = false;
+    radio.startReceive();
+    lastRadioOk = millis();
+    loraReady   = true;
+    logPrintf("[LORA] Server ready @ %.0f MHz  SF=%d BW=%.0fk  (Core 0)\n", freqMHz, LORA_SF, bwKHz);
+    return true;
+}
+
 // ── Core 0: LoRa task — non-blocking TX state machine + RX dispatch ──────
 // If DIO0 never fires (bad wiring, module fault, RF issue), a TX must not
 // wedge the radio task forever — that would silently kill ALL future TX/RX
 // (heartbeats, gongs, client replies) with no further symptom in the logs.
-static const uint32_t TX_TIMEOUT_MS = 4000;  // generous margin over ~100-150ms SF9 airtime
+static const uint32_t TX_TIMEOUT_MS       = 4000;     // generous margin over SF7 airtime (~140ms)
+static const uint32_t RADIO_SILENCE_MS    = 300000UL; // M-8: 5 min with no successful TX/RX → reinit
+static const uint32_t RADIO_RETRY_MS      = 30000UL;  // M-8: retry a failed init this often
 
 static void loraTask(void*) {
-    bool     txBusy   = false;
-    uint8_t  txType   = 0;
-    uint32_t txStart  = 0;
+    bool     txBusy      = false;
+    uint8_t  txType       = 0;
+    uint32_t txStart      = 0;
+    bool     txPlayLocal  = false;
+    uint8_t  txTrack = 0, txVol = 0, txLoop = 0;
+    uint32_t lastInitAttempt = 0;
 
     for (;;) {
+        // ── Not initialised (or lost) — retry periodically, do nothing else ──
+        if (!loraReady) {
+            if (millis() - lastInitAttempt >= RADIO_RETRY_MS) {
+                lastInitAttempt = millis();
+                radioInit();
+            }
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+
         // ── TX in flight: wait for DIO0 (TX-done), or time out ──────────
         if (txBusy) {
             if (dioFlag) {
                 dioFlag = false;
+                lastRadioOk = millis();   // DIO0 fired — chip is alive regardless of finishTransmit's result
                 int st = radio.finishTransmit();
                 txBusy = false;
                 if (st != RADIOLIB_ERR_NONE)
                     logPrintf("[LORA] TX finish error: %d\n", st);
                 else
                     logPrintf("[LORA] TX done type=0x%02X\n", txType);
-                if (st == RADIOLIB_ERR_NONE && txType == MSG_HEARTBEAT)
-                    hbTxDoneMs = millis();   // RTT reference point (see above)
-                if (txType == MSG_GONG)
-                    xSemaphoreGive(txGongDone);
+                if (st == RADIOLIB_ERR_NONE && txType == MSG_HEARTBEAT) {
+                    hbTxDoneMs     = millis();   // resp_ms reference point (see above)
+                    ackWindowUntil = millis() + ACK_WINDOW_MS;
+                }
+                if (txType == MSG_GONG && txPlayLocal) {
+                    LocalPlay lp = { txTrack, txVol, txLoop };
+                    xQueueSend(localPlayQueue, &lp, 0);
+                }
                 radio.startReceive();
             } else if (millis() - txStart > TX_TIMEOUT_MS) {
                 logPrintf("[LORA] TX timeout (no DIO0) type=0x%02X — check DIO0 wiring! Recovering.\n", txType);
                 txBusy = false;
-                if (txType == MSG_GONG)
-                    xSemaphoreGive(txGongDone);
+                if (txType == MSG_GONG && txPlayLocal) {
+                    LocalPlay lp = { txTrack, txVol, txLoop };
+                    xQueueSend(localPlayQueue, &lp, 0);
+                }
                 radio.standby();
                 radio.startReceive();
             }
@@ -188,20 +245,38 @@ static void loraTask(void*) {
             continue;
         }
 
-        // ── Start next queued TX ────────────────────────────────────────
+        // ── M-8: no successful TX/RX in a long time — reinit the module ──
+        if (millis() - lastRadioOk > RADIO_SILENCE_MS) {
+            logPrintf("[LORA] No activity %lu s — reinitialising radio\n", (unsigned long)(RADIO_SILENCE_MS / 1000));
+            radio.reset();
+            radioInit();   // sets loraReady accordingly; on failure the top-of-loop retry takes over
+            continue;
+        }
+
+        // ── C-3: stay off the air (except GONG/STOP) while clients' ACK
+        // slots are still playing out after the last heartbeat ────────────
         TxReq req;
-        if (xQueueReceive(txQueue, &req, 0) == pdTRUE) {
-            dioFlag = false;  // clear any stale RX flag before TX
-            txType  = req.type;
-            int st  = radio.startTransmit(req.buf, req.len);
-            if (st != RADIOLIB_ERR_NONE) {
-                logPrintf("[LORA] TX start error: %d\n", st);
-                if (req.type == MSG_GONG) xSemaphoreGive(txGongDone);
-                radio.startReceive();
-            } else {
-                txBusy  = true;
-                txStart = millis();
-                logPrintf("[LORA] TX started type=0x%02X len=%u\n", req.type, (unsigned)req.len);
+        if (xQueuePeek(txQueue, &req, 0) == pdTRUE) {
+            bool mustWait = (millis() < ackWindowUntil) && req.type != MSG_GONG && req.type != MSG_STOP;
+            if (!mustWait) {
+                xQueueReceive(txQueue, &req, 0);
+                dioFlag = false;  // clear any stale RX flag before TX
+                txType  = req.type;
+                int st  = radio.startTransmit(req.buf, req.len);
+                if (st != RADIOLIB_ERR_NONE) {
+                    logPrintf("[LORA] TX start error: %d\n", st);
+                    if (req.type == MSG_GONG && req.playLocal) {
+                        LocalPlay lp = { req.track, req.vol, req.loop };
+                        xQueueSend(localPlayQueue, &lp, 0);
+                    }
+                    radio.startReceive();
+                } else {
+                    txBusy      = true;
+                    txStart     = millis();
+                    txPlayLocal = req.playLocal;
+                    txTrack = req.track; txVol = req.vol; txLoop = req.loop;
+                    logPrintf("[LORA] TX started type=0x%02X len=%u\n", req.type, (unsigned)req.len);
+                }
             }
             vTaskDelay(1);
             continue;
@@ -225,25 +300,29 @@ static void loraTask(void*) {
             radio.startReceive();
             continue;
         }
+        lastRadioOk = millis();
 
         uint8_t msgType = buf[0];
-        String  payload = "";
-        for (size_t i = 1; i < len; i++) payload += (char)buf[i];
-        int rssi = (int)radio.getRSSI();
+        int     rssi    = (int)radio.getRSSI();
 
         if (msgType == MSG_ACK) {
+            // ACK is not signed (server doesn't act on it beyond bookkeeping) —
+            // still framed as [type][json], just no HMAC tag prefix.
+            buf[len] = '\0';   // M-17: one conversion instead of 256 String reallocations
+            String payload((const char*)(buf + 1));
             DynamicJsonDocument doc(256);
             if (!deserializeJson(doc, payload)) {
                 String id  = doc["id"] | "unknown";
-                // RTT only when the ACK echoes the seq of the LAST heartbeat;
-                // ACKs to GONG (no "hb") pass rtt=0 → registry keeps old value.
-                uint32_t hb  = doc["hb"] | 0;
-                uint32_t rtt = (hb != 0 && hb == hbSeq && hbTxDoneMs != 0)
+                // resp_ms only when the ACK echoes the seq of the LAST heartbeat;
+                // ACKs to GONG (no "hb") pass 0 → registry keeps old value.
+                uint32_t hb   = doc["hb"] | 0;
+                uint32_t resp = (hb != 0 && hb == hbSeq && hbTxDoneMs != 0)
                                ? (uint32_t)(millis() - hbTxDoneMs) : 0;
+                float snr = radio.getSNR();
                 xSemaphoreTake(clientsMtx, portMAX_DELAY);
-                upsertClient(id, rssi, rtt);
+                upsertClient(id, rssi, snr, resp);
                 xSemaphoreGive(clientsMtx);
-                logPrintf("[LORA] ACK from '%s' RSSI=%d dBm\n", id.c_str(), rssi);
+                logPrintf("[LORA] ACK from '%s' RSSI=%d SNR=%.1f\n", id.c_str(), rssi, snr);
             }
         } else {
             logPrintf("[LORA] RX unhandled type=0x%02X len=%u RSSI=%d\n",
@@ -256,36 +335,37 @@ static void loraTask(void*) {
 
 // ────────────────────────────────────────────────────────────────────────
 void lora_setup() {
+    ts_setup();
+
     // RTOS primitives FIRST — must exist even if the radio isn't wired up.
-    txQueue    = xQueueCreate(8, sizeof(TxReq));
-    txGongDone = xSemaphoreCreateBinary();
-    clientsMtx = xSemaphoreCreateMutex();
+    txQueue        = xQueueCreate(8, sizeof(TxReq));
+    localPlayQueue = xQueueCreate(4, sizeof(LocalPlay));
+    clientsMtx     = xSemaphoreCreateMutex();
 
     SPI.begin(LORA_SPI_SCK, LORA_SPI_MISO, LORA_SPI_MOSI, LORA_SS);
-
-    float freqMHz = (float)LORA_FREQ;   // already MHz — do NOT divide
-    float bwKHz   = (float)LORA_BW;     // already kHz — do NOT divide
-    int state = radio.begin(freqMHz, bwKHz, LORA_SF, LORA_CR,
-                            LORA_SYNC_WORD, LORA_TX_POWER, 8, 0);
-    if (state != RADIOLIB_ERR_NONE) {
-        logPrintf("[LORA] Init FAILED: %d (freq=%.3fMHz bw=%.2fkHz) — check module wiring! "
-                  "(queues created, LoRa disabled, rest of firmware unaffected)\n",
-                  state, freqMHz, bwKHz);
-        return;
-    }
-    logPrintf("[LORA] Server ready @ %.0f MHz  SF=%d BW=%.0fk  (Core 0)\n",
-              freqMHz, LORA_SF, bwKHz);
-
     attachInterrupt(digitalPinToInterrupt(LORA_DIO0), onDio0, RISING);
-    radio.startReceive();
+
+    radioInit();   // failure is not fatal — loraTask retries every 30s (M-8)
     xTaskCreatePinnedToCore(loraTask, "lora", 6144, nullptr, 2, nullptr, 0);
-    loraReady = true;
 }
 
 bool lora_isReady() { return loraReady; }
 
+// H-7: the repo ships LORA_HMAC_KEY with a placeholder value so the project
+// builds out of the box — but if nobody changes it before deployment, anyone
+// with an Ra-02 and this repo can sign valid GONG/HEARTBEAT/STOP frames.
+// Can now be overridden at build time (see config.h); this is the runtime
+// "at least warn loudly" floor for anyone who didn't.
+bool lora_usesDefaultKey() {
+    return strcmp(LORA_HMAC_KEY, "change_me_before_deploy_32chars!") == 0;
+}
+
 // ────────────────────────────────────────────────────────────────────────
-void lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop) {
+// H-1: non-blocking. Local playback (if requested) happens from
+// lora_pollLocalPlay() once the TX-done handler in loraTask queues it —
+// there is no more waiting here for airtime (~140ms at SF7, up to 4s on a
+// TX timeout) before this function returns.
+void lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop, bool playLocal) {
     DynamicJsonDocument doc(128);
     doc["track"] = track;
     doc["vol"]   = vol;
@@ -294,19 +374,14 @@ void lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop) {
     String s;
     serializeJson(doc, s);
 
-    // Drain a stale token first: if a previous gong's TX completed AFTER its
-    // 5 s waiter had already given up, the semaphore still holds one token and
-    // the take below would return instantly — skipping the very sync wait this
-    // semaphore exists for.
-    xSemaphoreTake(txGongDone, 0);
-
-    if (loraSend(MSG_GONG, s)) {
-        // Block Core 1 briefly until TX completes — local + remote start
-        // together. At SF9 this is ~100-150ms, inaudible as a delay.
-        if (xSemaphoreTake(txGongDone, pdMS_TO_TICKS(5000)) != pdTRUE)
-            logPrintf("[LORA] WARNING: txGongDone timed out — playing locally anyway\n");
-    } else {
-        logPrintf("[LORA] GONG not broadcast — playing locally only\n");
+    if (!loraSend(MSG_GONG, s, playLocal, track, vol, loop)) {
+        logPrintf("[LORA] GONG not broadcast\n");
+        if (playLocal) {
+            // Radio path failed outright (not ready / queue full) — the
+            // TX-done handler that would normally queue this never runs.
+            LocalPlay lp = { track, vol, loop };
+            xQueueSend(localPlayQueue, &lp, 0);
+        }
     }
 }
 
@@ -318,12 +393,15 @@ void lora_sendStop() {
     loraSend(MSG_STOP, s);
 }
 
-void lora_sendHeartbeat() {
-    if (uxQueueMessagesWaiting(txQueue) > 0) return;  // higher-priority TX pending
+// M-7: returns false if the heartbeat couldn't even be queued, so the caller
+// can retry soon instead of silently waiting a full HEARTBEAT_INTERVAL_MS —
+// during which the client-side registry can time a client out.
+bool lora_sendHeartbeat() {
+    if (uxQueueMessagesWaiting(txQueue) > 0) return false;  // higher-priority TX pending
 
     DynamicJsonDocument doc(128);
     struct tm ti;
-    if (getLocalTime(&ti)) {
+    if (localNow(ti)) {
         char buf[9];
         snprintf(buf, sizeof(buf), "%02d:%02d:%02d", ti.tm_hour, ti.tm_min, ti.tm_sec);
         doc["time"] = buf;
@@ -339,13 +417,36 @@ void lora_sendHeartbeat() {
                                 // heartbeat's timestamp
     String s;
     serializeJson(doc, s);
-    loraSend(MSG_HEARTBEAT, s);
+    return loraSend(MSG_HEARTBEAT, s);
 }
 
-// NOTE: lora_sendSchedule() was removed. A full schedule (~3.5 KB of JSON)
-// can never fit a 255-byte LoRa frame, MSG_SCHEDULE was unsigned, and clients
-// discarded it anyway — the schedule lives on the server; clients only need
-// GONG/STOP. /api/sync now reports this honestly (see webhandler.cpp).
+// H-5: binary, signed broadcast of the active day's schedule — clients store
+// it in NVS and fall back to it if the server goes silent for too long (see
+// client/src/lorahandler.cpp). Wire payload: [4B ts][SchedBinHeader][SchedBin...].
+void lora_broadcastSchedule(uint8_t day, const SchedBin* entries, uint8_t count) {
+    if (count > SCHED_BIN_MAX) count = SCHED_BIN_MAX;
+    uint8_t payload[4 + sizeof(SchedBinHeader) + SCHED_BIN_MAX * sizeof(SchedBin)];
+    size_t  off = 0;
+    uint32_t ts = nowTs();
+    memcpy(payload + off, &ts, sizeof(ts)); off += sizeof(ts);
+    SchedBinHeader hdr = { day, count };
+    memcpy(payload + off, &hdr, sizeof(hdr)); off += sizeof(hdr);
+    if (count) { memcpy(payload + off, entries, (size_t)count * sizeof(SchedBin)); off += (size_t)count * sizeof(SchedBin); }
+
+    if (loraSendRaw(MSG_SCHEDULE, payload, off, false, 0, 0, 0))
+        logPrintf("[LORA] Schedule broadcast: day=%02d entries=%u\n", (int)day, (unsigned)count);
+    else
+        logPrintf("[LORA] Schedule broadcast failed (radio not ready or queue full)\n");
+}
+
+// H-1: called every loop() from Core 1 (see main.cpp).
+bool lora_pollLocalPlay(uint8_t& track, uint8_t& vol, uint8_t& loop) {
+    if (!localPlayQueue) return false;
+    LocalPlay lp;
+    if (xQueueReceive(localPlayQueue, &lp, 0) != pdTRUE) return false;
+    track = lp.track; vol = lp.vol; loop = lp.loop;
+    return true;
+}
 
 // ────────────────────────────────────────────────────────────────────────
 String lora_clientsJSON() {
@@ -357,11 +458,11 @@ String lora_clientsJSON() {
         unsigned long age = now - clients[i].lastSeenMs;
         if (age > CLIENT_TIMEOUT_MS) continue;
         JsonObject o = arr.createNestedObject();
-        o["id"]         = clients[i].id;
-        o["rssi"]       = clients[i].rssi;
-        o["seen_ms"]    = age;
-        o["rtt_ms"]     = clients[i].rttMs;
-        o["one_way_ms"] = clients[i].oneWayMs;
+        o["id"]      = clients[i].id;
+        o["rssi"]    = clients[i].rssi;
+        o["snr"]     = clients[i].snr;
+        o["seen_ms"] = age;
+        o["resp_ms"] = clients[i].respMs;
     }
     String s;
     serializeJson(doc, s);
@@ -378,19 +479,4 @@ int lora_clientCount() {
     }
     xSemaphoreGive(clientsMtx);
     return active;
-}
-
-uint32_t lora_getAvgOneWayMs() {
-    xSemaphoreTake(clientsMtx, portMAX_DELAY);
-    unsigned long now = millis();
-    uint32_t sum = 0;
-    uint8_t  n   = 0;
-    for (uint8_t i = 0; i < cliCount; i++) {
-        if (now - clients[i].lastSeenMs <= CLIENT_TIMEOUT_MS && clients[i].oneWayMs > 0) {
-            sum += clients[i].oneWayMs;
-            n++;
-        }
-    }
-    xSemaphoreGive(clientsMtx);
-    return n ? sum / n : 0;
 }

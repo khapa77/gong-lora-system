@@ -28,26 +28,35 @@ void logbuffer_init() {
     memset(ring.lines, 0, sizeof(ring.lines));
 }
 
+// M-3: the ring buffer stores lines truncated to LOG_LINE_LEN (bounded RAM,
+// fine for the on-screen debug log), but Serial used to get that SAME
+// truncated copy — a ~150-char LoRa init error got cut off exactly where the
+// useful part started. SERIAL_LINE_LEN is generous headroom for Serial only;
+// the ring buffer's per-line budget is unchanged.
+#define SERIAL_LINE_LEN 256
+
 void logPrintf(const char* fmt, ...) {
-    char tmp[LOG_LINE_LEN];
+    char tmp[SERIAL_LINE_LEN];
     va_list args;
     va_start(args, fmt);
     int len = vsnprintf(tmp, sizeof(tmp), fmt, args);
     va_end(args);
     if (len <= 0) return;
-    if (len >= LOG_LINE_LEN) len = LOG_LINE_LEN - 1;
+    if (len >= SERIAL_LINE_LEN) len = SERIAL_LINE_LEN - 1;
     tmp[len] = '\0';
 
     // Formatting is done into the local buffer above (no lock needed);
     // only the shared Serial + ring state is guarded.
     if (logMtx) xSemaphoreTake(logMtx, portMAX_DELAY);
 
-    // Write to serial
+    // Write the FULL line to serial — never truncated to the ring buffer's
+    // shorter per-line budget.
     Serial.write((const uint8_t*)tmp, len);
 
-    // Strip trailing newline for storage
+    // Strip trailing newline, then truncate to what the ring buffer can hold.
     int slen = len;
     while (slen > 0 && (tmp[slen-1] == '\n' || tmp[slen-1] == '\r')) slen--;
+    if (slen >= LOG_LINE_LEN) slen = LOG_LINE_LEN - 1;
     tmp[slen] = '\0';
 
     if (slen > 0) {
