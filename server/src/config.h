@@ -29,7 +29,13 @@ static inline bool localNow(struct tm& out) {
 // ── WiFi (standalone AP only — never joins another network) ───────────────
 #define AP_SSID           "GongServer"
 #define MDNS_NAME         "gong"        // http://gong.local
+// Смените перед развёртыванием! Можно передать через build_flags вместо
+// правки файла — see platformio.ini:
+//   build_flags = -DAP_PASSWORD='"${sysenv.GONG_AP_PASSWORD}"'
+#ifndef AP_PASSWORD
 #define AP_PASSWORD       "vipassana"   // минимум 8 символов для WPA2
+#endif
+static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD короче 8 символов (минимум для WPA2)");
 
 // ── I2S пины для MAX98357A ────────────────────────────────────────────────
 #define I2S_BCLK          26   // Bit Clock
