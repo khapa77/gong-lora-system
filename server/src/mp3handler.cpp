@@ -126,19 +126,26 @@ void mp3_loop() {
             ramping = false;
         }
     } else {
-        // Mute only after sustained silence to avoid glitches between DMA chunks
-        static uint8_t idleCount = 0;
-        static bool    muted     = false;
+        // Mute only after sustained silence to avoid glitches between DMA
+        // chunks. M8: counted mp3_loop() calls, not real time — correct only
+        // as long as the feeder task's cadence stays exactly ~1ms (it does
+        // today, see audioFeederTask), but that coupling was implicit and
+        // silent. millis()-based makes the 20ms threshold explicit and
+        // independent of however often this happens to get called.
+        static uint32_t idleSinceMs = 0;
+        static bool     muted       = false;
         if (audio.isRunning()) {
-            idleCount = 0;
-            muted     = false;
-        } else if (idleCount < 20) {
-            idleCount++;
+            idleSinceMs = 0;
+            muted       = false;
+        } else if (idleSinceMs == 0) {
+            idleSinceMs = millis() ? millis() : 1;   // 0 means "not idle yet"
+        } else if (millis() - idleSinceMs < 20) {
+            // still within the debounce window
         } else {
             // Track finished — check if we need to repeat
             if (loopRemain > 0) {
                 loopRemain--;
-                idleCount = 0;
+                idleSinceMs = 0;
                 pendingLoopLog = loopRemain;
                 _startPlay(loopTrack);
             } else if (!muted) {

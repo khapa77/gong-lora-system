@@ -537,6 +537,11 @@ static void wifi_startAP() {
     logPrintf("[WIFI] AP '%s' started — IP: %s\n",
                   AP_SSID, WiFi.softAPIP().toString().c_str());
     MDNS.begin(MDNS_NAME);
+    // M11: without an advertised service, some resolvers (notably Windows
+    // without Bonjour, and some Android NSD-based clients) never resolve the
+    // plain hostname — only the fact that the device offers an "http"
+    // service actually gets it into their mDNS cache.
+    MDNS.addService("http", "tcp", 80);
     logPrintf("[MDNS] http://%s.local\n", MDNS_NAME);
 }
 

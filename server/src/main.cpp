@@ -2,6 +2,8 @@
 #include <LittleFS.h>
 #include <esp_core_dump.h>
 #include <esp_task_wdt.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include "config.h"
 #include "mp3handler.h"
 #include "schedule.h"
@@ -117,4 +119,14 @@ void loop() {
         }
         lastSchedBroadcast = now;
     }
+
+    // M10: this loop() never blocks on its own — web_loop() returns
+    // immediately when no client is connected, and everything else above is
+    // a millis() check. Arduino-ESP32's loopTask carries no automatic yield,
+    // so with nothing here ever ceding the CPU, the Core-1 IDLE task (and
+    // its watchdog check) could starve for as long as the device sits with
+    // no HTTP traffic — which for hardware meant to ring unattended at 04:00
+    // is most of the night. audio itself is unaffected: it runs on its own
+    // higher-priority task (audioFeederTask), not inside this loop.
+    vTaskDelay(pdMS_TO_TICKS(1));
 }

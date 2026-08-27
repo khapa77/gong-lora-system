@@ -3,6 +3,8 @@
 #include <WiFi.h>
 #include "esp32-hal-bt.h"
 #include <esp_task_wdt.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include "config.h"
 #include "mp3handler.h"
 #include "lorahandler.h"
@@ -92,4 +94,9 @@ void loop() {
     }
     updateStatusLed();
     // Audio fed by dedicated FreeRTOS task (mp3_startAudioTask)
+
+    // M10 (code_review.md): nothing above ever blocks, so with no yield here
+    // the Core-1 IDLE task could starve indefinitely — same reasoning as the
+    // server's loop(), see server/src/main.cpp.
+    vTaskDelay(pdMS_TO_TICKS(1));
 }
