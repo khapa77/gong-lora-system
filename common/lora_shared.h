@@ -12,9 +12,10 @@
 // Версия протокола кадра — растёт при любом несовместимом изменении формата.
 // Позволяет диагностировать рассинхронизацию парка устройств вместо молчания
 // без единой ошибки в логе.
-#define LORA_PROTO_VERSION 5   // 4: fixed-offset signed frame (H-3), binary schedule (H-5)
+#define LORA_PROTO_VERSION 6   // 4: fixed-offset signed frame (H-3), binary schedule (H-5)
                                 // 5: "n" sub-second replay tie-breaker added to every signed
                                 //    frame incl. MSG_SCHEDULE's wire layout (code_review.md C2)
+                                // 6: MSG_ACK now signed too (code_review.md M6)
 
 // ── LoRa радио-параметры (Ra-02 / SX1278) ───────────────────────────────────
 // ВАЖНО: LORA_FREQ и LORA_BW уже в MHz/kHz — передавать в radio.begin()
@@ -45,8 +46,9 @@
 // строковой хирургией в конец JSON (`substring(0,len-1)+",\"sig\":...}"`,
 // ломалось на "{}") и проверялась через parse→remove("sig")→ре-serialize —
 // работало только пока ArduinoJson сохраняет порядок/типы полей побайтово.
-// Кадр подписывается для MSG_GONG/HEARTBEAT/STOP/SCHEDULE. MSG_ACK не
-// подписывается — сервер не выполняет по нему никаких действий.
+// Кадр подписывается для MSG_GONG/HEARTBEAT/STOP/SCHEDULE/ACK (M6: раньше ACK
+// был единственным неподписанным типом — любой с Ra-02 мог забить 16-слотовый
+// реестр клиентов фейковыми ID и вытеснить настоящих).
 #define LORA_TAG_LEN 8
 
 static inline void lora_hmacTag(const char* key, uint8_t type,

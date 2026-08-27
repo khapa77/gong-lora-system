@@ -270,7 +270,7 @@ cd server/data && gzip -9 -k -f index.html
 | `GONG` (0x01) | сервер | да | JSON: track/vol/loop/ts/n |
 | `HEARTBEAT` (0x02) | сервер | да | JSON: time/clients/ts/n/seq |
 | `SCHEDULE` (0x03) | сервер | да | бинарный: ts + n + до 16 записей активного дня |
-| `ACK` (0x04) | клиент | нет | JSON: id/rssi/[hb] |
+| `ACK` (0x04) | клиент | да | JSON: id/rssi/[hb] |
 | `STOP` (0x05) | сервер | да | JSON: ts/n |
 
 - **Anti-replay**: `ts` — монотонная метка (реальное время либо

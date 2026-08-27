@@ -320,10 +320,21 @@ static void loraTask(void*) {
         int     rssi    = (int)radio.getRSSI();
 
         if (msgType == MSG_ACK) {
-            // ACK is not signed (server doesn't act on it beyond bookkeeping) —
-            // still framed as [type][json], just no HMAC tag prefix.
-            buf[len] = '\0';   // M-17: one conversion instead of 256 String reallocations
-            String payload((const char*)(buf + 1));
+            // M6: signed like every other frame type — an unsigned ACK let
+            // anyone with an Ra-02 flood the 16-slot client registry with
+            // fake IDs and evict real clients from it, no key needed.
+            if (len < 1 + LORA_TAG_LEN) { radio.startReceive(); continue; }
+            const uint8_t* ackPayload = buf + 1 + LORA_TAG_LEN;
+            size_t         ackPlen    = len - 1 - LORA_TAG_LEN;
+            uint8_t expected[LORA_TAG_LEN];
+            lora_hmacTag(LORA_HMAC_KEY, MSG_ACK, ackPayload, ackPlen, expected);
+            if (!lora_tagEqual(buf + 1, expected)) {
+                logPrintf("[LORA] Bad sig on ACK — rejected\n");
+                radio.startReceive();
+                continue;
+            }
+            buf[1 + LORA_TAG_LEN + ackPlen] = '\0';   // M-17: one conversion instead of 256 String reallocations
+            String payload((const char*)ackPayload);
             DynamicJsonDocument doc(256);
             if (!deserializeJson(doc, payload)) {
                 String id  = doc["id"] | "unknown";

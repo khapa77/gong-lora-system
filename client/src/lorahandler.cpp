@@ -241,14 +241,18 @@ static void sendAck(int rxRssi, uint32_t hbSeq) {
     uint8_t buf[LORA_PAYLOAD_MAX + 1];
     buf[0] = MSG_ACK;
     size_t plen = payload.length();
-    if (plen > LORA_PAYLOAD_MAX) plen = LORA_PAYLOAD_MAX;
-    memcpy(buf + 1, payload.c_str(), plen);
+    if (plen > (size_t)(LORA_PAYLOAD_MAX - LORA_TAG_LEN)) plen = LORA_PAYLOAD_MAX - LORA_TAG_LEN;
+    // M6: signed like every other frame type now.
+    uint8_t tag[LORA_TAG_LEN];
+    lora_hmacTag(LORA_HMAC_KEY, MSG_ACK, (const uint8_t*)payload.c_str(), plen, tag);
+    memcpy(buf + 1, tag, LORA_TAG_LEN);
+    memcpy(buf + 1 + LORA_TAG_LEN, payload.c_str(), plen);
 
     // Non-blocking split TX — radio.transmit() busy-waits internally with no
     // yield, which at long-airtime SF starves IDLE0 long enough to trip the
     // task watchdog. startTransmit()/finishTransmit() let us yield every tick.
     dioFlag = false;
-    int state = radio.startTransmit(buf, 1 + plen);
+    int state = radio.startTransmit(buf, 1 + LORA_TAG_LEN + plen);
     if (state == RADIOLIB_ERR_NONE) {
         uint32_t waitStart = millis();
         const uint32_t txTimeoutMs = 5000;
