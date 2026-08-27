@@ -47,7 +47,7 @@ def passive(x, y, ref, value, net_top, net_bot, fill='#fff8e8'):
 # ─────────────────────────────────────────
 def sot223(x, y, ref, name, pin1_name, pin1_net, pin2_name, pin2_net, pin3_name, pin3_net, w=100, h=130):
     """
-    SOT-223 pinout (AMS1117-3.3):
+    SOT-223 pinout (LD1117V33, pin-compatible с AMS1117-3.3):
     Pin 1 (left)  = GND / ADJ  → для фиксированного 3.3V это GND
     Pin 2 (tab)   = VOUT       — большая пластина, подключена к pin2
     Pin 3 (right) = VIN
@@ -74,7 +74,7 @@ def sot223(x, y, ref, name, pin1_name, pin1_net, pin2_name, pin2_net, pin3_name,
 # ─────────────────────────────────────────
 # TITLE
 # ─────────────────────────────────────────
-text(430, 22, 'Gong LoRa Server — Schematic v1.0',
+text(430, 22, 'Gong LoRa Server — Schematic v1.2 (Ra-02, LD1117V33, audio decoupling)',
      anchor='center', size='13pt', bold='bold', color='#222222')
 
 # ─────────────────────────────────────────
@@ -135,8 +135,10 @@ right_pins = [
     'GPIO19',   # LORA_MISO
     'GPIO18',   # LORA_SCK
     'GPIO5',    # LORA_NSS
-    'GPIO17', 'GPIO16', 'GPIO4', 'GPIO0',
+    'GPIO17', 'GPIO16',
     'GPIO4',    # LORA_DIO0 (interrupt on Core 0)
+    'GPIO0',
+    'GPIO2',    # strapping pin, was used for DIO0 before the move to GPIO4 — NC, do not reconnect
     'GPIO15', 'GPIO8', 'GPIO7',
 ]
 right_nets = {
@@ -161,12 +163,12 @@ for i, pname in enumerate(right_pins):
         nc_mark(ex, py)
 
 # ─────────────────────────────────────────
-# U2 — Ra-01 LoRa  (2×4, справа)
+# U2 — Ra-02 LoRa (SMA-антенна)  (2×4, справа)
 # ─────────────────────────────────────────
 R2X, R2Y = 590, 60
 rect(R2X, R2Y, 130, 110)
 text(R2X+65, R2Y+14, 'U2', bold='bold', size='11pt')
-text(R2X+65, R2Y+28, 'Ra-01  SX1278', size='8pt')
+text(R2X+65, R2Y+28, 'Ra-02  SX1278', size='8pt')
 
 # Left col: pin1 MISO, pin3 SCK, pin5 NSS, pin7 RST
 ra_left = [('MISO','LORA_MISO'), ('SCK','LORA_SCK'),
@@ -203,7 +205,7 @@ u3_pins = [
     ('GAIN', None),        # NC
     ('SD',   'MAX_SD'),
     ('GND',  'GND'),
-    ('VIN',  '+5V'),
+    ('VIN',  '+5V_AUDIO'),  # через FB1, не напрямую с PWR_5V
 ]
 for i,(pn,net) in enumerate(u3_pins):
     py = U3Y + 52 + i*20
@@ -287,7 +289,23 @@ passive(120, 310, 'C2', '100nF',     '+5V',  'GND')
 passive(70,  420, 'C3', '100nF',     '+3V3', 'GND')
 passive(70,  530, 'R1', '4.7k',      '+3V3', 'I2C_SDA', fill='#fff0f0')
 passive(120, 530, 'R2', '4.7k',      '+3V3', 'I2C_SCL', fill='#fff0f0')
-passive(70,  640, 'R3', '1M',        '+5V',  'MAX_SD',  fill='#fff0f0')
+passive(70,  640, 'R3', '1M',        '+5V_AUDIO',  'MAX_SD',  fill='#fff0f0')
+
+# ─────────────────────────────────────────
+# FB1 — ферритовая бусина в разрыв +5V перед аудио-секцией (MAX98357A)
+# развязывает импульсные токи class-D усилителя от PWR_5V (ESP32/RTC)
+# ─────────────────────────────────────────
+FB1X, FB1Y = 780, 180
+rect(FB1X, FB1Y, 60, 26, fill='#e8f4ff')
+text(FB1X+30, FB1Y+13, 'FB1', bold='bold', size='7pt')
+wire(FB1X-20, FB1Y+13, FB1X, FB1Y+13)
+text(FB1X-24, FB1Y+13, '', anchor='right')
+netlabel(FB1X-20, FB1Y+13, '+5V', rot=180)
+wire(FB1X+60, FB1Y+13, FB1X+80, FB1Y+13)
+netlabel(FB1X+80, FB1Y+13, '+5V_AUDIO', rot=0)
+
+# C8 — локальный bulk-конденсатор у VIN/GND MAX98357A (гасит импульсы class-D на месте)
+passive(U3X - 90, U3Y + 130, 'C8', '220uF/10V', '+5V_AUDIO', 'GND')
 
 # ─────────────────────────────────────────
 # BUILD JSON
@@ -297,7 +315,7 @@ schematic = {
     "head": {
         "type": "schematic",
         "title": "Gong LoRa Server",
-        "description": "ESP32-DevKitC-V4 + Ra-01 LoRa + MAX98357A + DS3231 + HLK-10M05",
+        "description": "ESP32-DevKitC-V4 + Ra-02 LoRa (SMA) + MAX98357A + DS3231 + HLK-10M05",
         "canvas": CANVAS,
         "version": "6.5.38",
         "encryptedDataCompliant": False

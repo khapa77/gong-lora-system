@@ -2,3 +2,13 @@
 .vscode/
 __pycache__/
 *.pyc
+*.swp
+upload_log
+.DS_Store
+Thumbs.db
+._*
+
+# secrets — never commit real credentials (see code_review.md C1)
+wifi.conf
+auth.conf
+secrets.ini
