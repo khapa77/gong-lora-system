@@ -54,19 +54,27 @@ static uint16_t ackSlot() {
 // anything".
 static Preferences rpPrefs;
 static uint32_t    lastServerTs = 0;
+// code_review.md C2: sub-second tie-breaker within the same "ts". Not
+// persisted — after a reboot "ts" alone is already guaranteed to jump
+// strictly forward past anything seen before (server-side tsBase water-mark),
+// so the very first post-reboot frame passes on "ts" regardless of "n"
+// starting back at 0. See lora_shared.h / server lorahandler.cpp nowTs().
+static uint32_t lastServerN  = 0;
 
 static void replay_setup() {
     rpPrefs.begin("gong", false);
     lastServerTs = rpPrefs.getUInt("lastts", 0);
 }
 
-static bool checkReplay(uint32_t ts) {
+static bool checkReplay(uint32_t ts, uint32_t n) {
     if (ts == 0) { Serial.println("[LORA] No ts — rejected"); return false; }
-    if (ts <= lastServerTs) {
-        Serial.printf("[LORA] Replay/dup ts=%u last=%u — rejected\n", ts, lastServerTs);
+    bool newer = (ts > lastServerTs) || (ts == lastServerTs && n > lastServerN);
+    if (!newer) {
+        Serial.printf("[LORA] Replay/dup ts=%u n=%u last=%u/%u — rejected\n", ts, n, lastServerTs, lastServerN);
         return false;
     }
     lastServerTs = ts;
+    lastServerN  = n;
     static uint32_t lastWrite = 0;
     if (ts > lastWrite + 60) { lastWrite = ts; rpPrefs.putUInt("lastts", ts); }
     return true;
@@ -337,10 +345,10 @@ static void loraTask(void*) {
             if (!verifyFrame(type, buf, len, payload, plen)) { radio.startReceive(); continue; }
 
             if (type == MSG_SCHEDULE) {
-                if (plen < 4) { radio.startReceive(); continue; }
-                uint32_t ts; memcpy(&ts, payload, 4);
-                if (!checkReplay(ts)) { radio.startReceive(); continue; }
-                handleScheduleFrame(payload + 4, plen - 4);
+                if (plen < 8) { radio.startReceive(); continue; }
+                uint32_t ts, n; memcpy(&ts, payload, 4); memcpy(&n, payload + 4, 4);
+                if (!checkReplay(ts, n)) { radio.startReceive(); continue; }
+                handleScheduleFrame(payload + 8, plen - 8);
                 radio.startReceive();
                 continue;
             }
@@ -348,7 +356,8 @@ static void loraTask(void*) {
             DynamicJsonDocument doc(512);
             if (deserializeJson(doc, payload, plen)) { radio.startReceive(); continue; }
             uint32_t ts = doc["ts"] | 0;
-            if (!checkReplay(ts)) { radio.startReceive(); continue; }
+            uint32_t n  = doc["n"]  | 0;
+            if (!checkReplay(ts, n)) { radio.startReceive(); continue; }
 
             if (type == MSG_HEARTBEAT) {
                 lastHeartbeatMs = millis();

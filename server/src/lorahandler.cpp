@@ -57,6 +57,20 @@ static volatile uint32_t hbSeq        = 0;   // seq of the last heartbeat sent
 static volatile uint32_t hbTxDoneMs   = 0;   // millis() at that heartbeat's TX-done
 static volatile uint32_t ackWindowUntil = 0; // C-3: server stays silent (except GONG/STOP) while clients' ACK slots play out
 
+// ── code_review.md C2: sub-second replay tie-breaker ────────────────────────
+// nowTs() (below) is monotonic across reboots but only 1-second resolution.
+// Two signed frames sent in the same wall-clock second (e.g. Play then Stop
+// right after it) would otherwise carry an identical "ts", and the client's
+// `ts <= lastServerTs` replay guard would silently drop the second one. "n"
+// is a plain per-boot send counter, carried alongside "ts" on every signed
+// frame, that the client uses to break ties within the same "ts" value. It
+// does not need to survive a reboot itself — after a reboot "ts" is already
+// guaranteed to jump strictly forward past anything the client saw before
+// (see tsBase below), so the very first post-reboot frame is accepted on the
+// "ts" comparison alone, regardless of "n" starting back at 0.
+static uint32_t txSeqCounter = 0;
+static uint32_t nextN() { return ++txSeqCounter; }
+
 static void upsertClient(const String& id, int rssi, float snr, uint32_t respMs) {
     unsigned long now = millis();
 
@@ -371,6 +385,7 @@ void lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop, bool playLocal) {
     doc["vol"]   = vol;
     doc["loop"]  = loop;
     doc["ts"]    = nowTs();
+    doc["n"]     = nextN();   // C2: sub-second replay tie-breaker
     String s;
     serializeJson(doc, s);
 
@@ -388,6 +403,7 @@ void lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop, bool playLocal) {
 void lora_sendStop() {
     DynamicJsonDocument doc(64);
     doc["ts"] = nowTs();
+    doc["n"]  = nextN();   // C2: sub-second replay tie-breaker
     String s;
     serializeJson(doc, s);
     loraSend(MSG_STOP, s);
@@ -410,6 +426,7 @@ bool lora_sendHeartbeat() {
     }
     doc["clients"] = lora_clientCount();
     doc["ts"]      = nowTs();
+    doc["n"]       = nextN();   // C2: sub-second replay tie-breaker
     doc["seq"]     = ++hbSeq;   // clients echo this back as "hb" in their ACK
     hbTxDoneMs     = 0;         // invalid until THIS heartbeat's TX-done fires;
                                 // otherwise, after a TX timeout, an ACK to the
@@ -425,10 +442,12 @@ bool lora_sendHeartbeat() {
 // client/src/lorahandler.cpp). Wire payload: [4B ts][SchedBinHeader][SchedBin...].
 void lora_broadcastSchedule(uint8_t day, const SchedBin* entries, uint8_t count) {
     if (count > SCHED_BIN_MAX) count = SCHED_BIN_MAX;
-    uint8_t payload[4 + sizeof(SchedBinHeader) + SCHED_BIN_MAX * sizeof(SchedBin)];
+    uint8_t payload[4 + 4 + sizeof(SchedBinHeader) + SCHED_BIN_MAX * sizeof(SchedBin)];
     size_t  off = 0;
     uint32_t ts = nowTs();
     memcpy(payload + off, &ts, sizeof(ts)); off += sizeof(ts);
+    uint32_t n = nextN();   // C2: sub-second replay tie-breaker
+    memcpy(payload + off, &n, sizeof(n)); off += sizeof(n);
     SchedBinHeader hdr = { day, count };
     memcpy(payload + off, &hdr, sizeof(hdr)); off += sizeof(hdr);
     if (count) { memcpy(payload + off, entries, (size_t)count * sizeof(SchedBin)); off += (size_t)count * sizeof(SchedBin); }

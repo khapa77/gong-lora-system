@@ -12,7 +12,9 @@
 // Версия протокола кадра — растёт при любом несовместимом изменении формата.
 // Позволяет диагностировать рассинхронизацию парка устройств вместо молчания
 // без единой ошибки в логе.
-#define LORA_PROTO_VERSION 4   // 4: fixed-offset signed frame (H-3), binary schedule (H-5)
+#define LORA_PROTO_VERSION 5   // 4: fixed-offset signed frame (H-3), binary schedule (H-5)
+                                // 5: "n" sub-second replay tie-breaker added to every signed
+                                //    frame incl. MSG_SCHEDULE's wire layout (code_review.md C2)
 
 // ── LoRa радио-параметры (Ra-02 / SX1278) ───────────────────────────────────
 // ВАЖНО: LORA_FREQ и LORA_BW уже в MHz/kHz — передавать в radio.begin()
