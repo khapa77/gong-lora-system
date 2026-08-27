@@ -1,6 +1,7 @@
 #include "lorahandler.h"
 #include "config.h"
 #include "mp3handler.h"
+#include "rtchandler.h"
 #include <SPI.h>
 #include <RadioLib.h>
 #include <ArduinoJson.h>
@@ -108,10 +109,12 @@ static bool verifyFrame(uint8_t type, const uint8_t* buf, size_t len,
     return true;
 }
 
-// ── H-5: virtual clock, kept in sync from the "time" field of every
-// heartbeat. The client has no RTC at all — this is only ever as accurate as
-// the last heartbeat it saw, which is exactly why it's only trusted for the
-// autonomous fallback schedule, not presented as real time anywhere.
+// ── H-5 / lora-ds-autonomy: virtual clock, kept in sync from the "time"
+// field of every heartbeat. Used as-is when no DS3231 is fitted; when one is
+// present, it's the seed/fallback and the RTC (see rtchandler.h) becomes the
+// source of truth instead — the RTC survives a CLIENT reboot that would
+// otherwise reset this anchor to "never synced" right when autonomous mode
+// needs it most (server already silent).
 static uint32_t vclockAnchorMs  = 0;
 static int32_t  vclockAnchorSec = -1;   // seconds-of-day at the anchor; -1 = never synced
 
@@ -122,9 +125,12 @@ static void syncVirtualClock(const String& hhmmss) {
     int ss = hhmmss.substring(6, 8).toInt();
     vclockAnchorSec = hh * 3600 + mm * 60 + ss;
     vclockAnchorMs  = millis();
+    rtc_setTimeOfDay((uint8_t)hh, (uint8_t)mm, (uint8_t)ss);   // no-op if no DS3231 fitted
 }
 
 static int32_t virtualSecOfDay() {
+    int32_t rtcSec = rtc_getTimeOfDaySec();
+    if (rtcSec >= 0) return rtcSec;               // DS3231 fitted and valid — authoritative
     if (vclockAnchorSec < 0) return -1;
     uint32_t elapsedS = (millis() - vclockAnchorMs) / 1000;
     return (int32_t)((vclockAnchorSec + elapsedS) % 86400);

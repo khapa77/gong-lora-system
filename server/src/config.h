@@ -5,7 +5,7 @@
 
 // Low: exposed in /api/status so an operator can confirm every client and
 // the server were flashed from the same build (no version info existed at all before).
-#define FW_VERSION "5.0"
+#define FW_VERSION "5.1"
 
 // ── Время: неблокирующая замена getLocalTime() ─────────────────────────────
 // Штатный getLocalTime(tm*, ms=5000) крутит delay(10) до 5 СЕКУНД, если время
@@ -83,6 +83,13 @@ static_assert(sizeof(LORA_HMAC_KEY) - 1 >= 16, "LORA_HMAC_KEY короче 16 с
 // ── LoRa тайминги ─────────────────────────────────────────────────────────
 #define HEARTBEAT_INTERVAL_MS   30000UL
 #define CLIENT_TIMEOUT_MS       90000UL
+
+// ── lora-ds-autonomy: пауза перед рассылкой изменённого расписания ─────────
+// Каждое save/edit/del/activate откладывает LoRa-рассылку ещё на этот срок —
+// несколько правок подряд (забыл добавить запись, тут же дописал) сливаются
+// в одну передачу вместо одной на каждое сохранение. Часовая подстраховка в
+// main.cpp (клиент, который был вне зоны действия) не зависит от этой паузы.
+#define SCHED_BROADCAST_DEBOUNCE_MS  (4UL * 60UL * 1000UL)   // 4 минуты
 
 // ── M-14: догоняющее срабатывание после перезагрузки ────────────────────────
 // Если сервер перезагрузился в узком окне вокруг времени гонга, тот гонг не

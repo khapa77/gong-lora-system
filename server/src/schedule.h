@@ -45,10 +45,12 @@ bool   sched_delFromDay(uint8_t day, uint32_t id);
 // H-5: binary snapshot of the ACTIVE day's enabled entries (capped at
 // SCHED_BIN_MAX) for LoRa broadcast — see lora_broadcastSchedule().
 uint8_t sched_activeBinSnapshot(SchedBin* out, uint8_t maxCount);
-// True once (and only once) since the last call, if the active schedule
-// changed (add/edit/del/activate) — lets main.cpp broadcast promptly instead
-// of only on the hourly timer.
-bool    sched_consumeChanged();
+// lora-ds-autonomy: true (once) if the active schedule changed (add/edit/
+// del/activate) AND `debounceMs` has passed since the LAST such change —
+// every new change pushes the wait back out, so a burst of edits coalesces
+// into a single broadcast instead of one per save. Call from main.cpp's
+// loop() alongside the hourly safety-net broadcast.
+bool    sched_pendingBroadcastReady(uint32_t debounceMs);
 
 // Callback: fired when a scheduled gong triggers
 extern void (*onScheduleTrigger)(uint8_t track, uint8_t loop, uint8_t vol);

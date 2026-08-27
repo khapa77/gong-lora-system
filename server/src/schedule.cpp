@@ -32,10 +32,17 @@ static unsigned long lastTimeLog     = 0;
 // stamped in /activeday.conf. Cheap check, no need to run every second.
 static unsigned long lastDateCheckMs = 0;
 
-// H-5: set whenever the active schedule changes (add/edit/del/activate) so
-// main.cpp can broadcast the new binary schedule promptly instead of only on
-// the hourly timer.
-static volatile bool scheduleChangedFlag = true;   // force one broadcast after boot
+// H-5 / lora-ds-autonomy: set whenever the active schedule changes (add/edit/
+// del/activate); scheduleChangedAtMs resets on every subsequent change, so
+// sched_pendingBroadcastReady() only fires once edits have gone quiet for the
+// configured debounce window instead of once per save.
+static volatile bool     scheduleDirty      = true;   // force one broadcast after boot
+static volatile uint32_t scheduleChangedAtMs = 0;
+
+static void markScheduleDirty() {
+    scheduleDirty       = true;
+    scheduleChangedAtMs = millis();
+}
 
 // M-16: don't write to SPIFFS while a track is playing — a write landing
 // exactly then competes with the audio task for the same flash and causes
@@ -368,7 +375,7 @@ static void sched_saveNow() {
         if (df) { df.print(json); df.close(); }
     }
 
-    scheduleChangedFlag = true;   // H-5
+    markScheduleDirty();   // H-5
     logPrintf("[SCHED] Saved %d entries\n", count);
 }
 
@@ -485,7 +492,7 @@ bool sched_activateDay(uint8_t day) {
     // day changes even across a missed midnight tick — see sched_check()).
     writeActiveDayFile(day, currentDateStr());
 
-    scheduleChangedFlag = true;   // H-5
+    markScheduleDirty();   // H-5
     logPrintf("[SCHED] Activated day %02d (%d entries)\n", (int)day, count);
     return true;
 }
@@ -520,9 +527,10 @@ uint8_t sched_activeBinSnapshot(SchedBin* out, uint8_t maxCount) {
     return n;
 }
 
-bool sched_consumeChanged() {
-    if (!scheduleChangedFlag) return false;
-    scheduleChangedFlag = false;
+bool sched_pendingBroadcastReady(uint32_t debounceMs) {
+    if (!scheduleDirty) return false;
+    if (millis() - scheduleChangedAtMs < debounceMs) return false;   // still coalescing
+    scheduleDirty = false;
     return true;
 }
 

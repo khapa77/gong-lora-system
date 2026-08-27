@@ -49,7 +49,7 @@ void setup() {
     esp_core_dump_image_erase();
 
     logPrintf("\n==============================\n");
-    logPrintf("  Gong Server v5.0 (WiFi AP + LoRa)\n");
+    logPrintf("  Gong Server v5.1 (WiFi AP + LoRa)\n");
     logPrintf("==============================\n");
 
     if (!LittleFS.begin(true)) {
@@ -107,10 +107,12 @@ void loop() {
         else                      lastHeartbeat = now - HEARTBEAT_INTERVAL_MS + 2000;
     }
 
-    // H-5: broadcast the active day's schedule promptly after it changes,
-    // and otherwise once an hour as a safety net (e.g. a client that missed
-    // the original broadcast while out of range).
-    if (lora_isReady() && (sched_consumeChanged() || now - lastSchedBroadcast >= 3600000UL)) {
+    // H-5 / lora-ds-autonomy: broadcast the active day's schedule once edits
+    // have gone quiet for SCHED_BROADCAST_DEBOUNCE_MS (a burst of saves
+    // coalesces into one transmission), and otherwise once an hour as a
+    // safety net (e.g. a client that missed the original broadcast while out
+    // of range).
+    if (lora_isReady() && (sched_pendingBroadcastReady(SCHED_BROADCAST_DEBOUNCE_MS) || now - lastSchedBroadcast >= 3600000UL)) {
         int day = sched_getActiveDay();
         if (day >= 0) {
             SchedBin bin[SCHED_BIN_MAX];

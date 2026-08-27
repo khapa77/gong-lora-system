@@ -8,6 +8,7 @@
 #include "config.h"
 #include "mp3handler.h"
 #include "lorahandler.h"
+#include "rtchandler.h"
 
 static void blinkReady() {
     if (STATUS_LED < 0) return;
@@ -69,6 +70,7 @@ void setup() {
         while (true) delay(1000);
     }
 
+    rtc_setup();     // probe DS3231 (optional); if found, seeds autonomous time-of-day
     mp3_setup();
     mp3_startAudioTask();
     lora_setup();
