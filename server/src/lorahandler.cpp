@@ -48,6 +48,15 @@ static ClientInfo        clients[MAX_CLIENTS];
 static uint8_t           cliCount   = 0;
 static SemaphoreHandle_t clientsMtx = nullptr;
 
+// code_review.md S1/note-on-SF12: airtime-derived timing, computed once in
+// radioInit() right after a successful radio.begin() — see there for why
+// these aren't compile-time constants. Defaults below only matter for the
+// brief window before the first successful init.
+static uint32_t txTimeoutMs     = 4000;
+static uint32_t ackSlotMs       = 120;
+static uint32_t ackWindowMs     = ACK_GUARD_MS + 16 * 120;
+static uint32_t clientTimeoutMs = CLIENT_TIMEOUT_MS;
+
 // ── Heartbeat bookkeeping ─────────────────────────────────────────────────
 // respMs is valid ONLY for an ACK that echoes the seq of the LAST heartbeat
 // ("hb" field), measured from the moment that heartbeat's TX actually
@@ -90,7 +99,7 @@ static void upsertClient(const String& id, int rssi, float snr, uint32_t respMs)
             if (now - clients[i].lastSeenMs > now - clients[oldest].lastSeenMs)
                 oldest = i;
         }
-        if (now - clients[oldest].lastSeenMs > CLIENT_TIMEOUT_MS) {
+        if (now - clients[oldest].lastSeenMs > clientTimeoutMs) {
             logPrintf("[LORA] Evicting stale client: %s\n", clients[oldest].id.c_str());
             clients[oldest] = { id, rssi, snr, now, respMs };
             return;
@@ -194,7 +203,27 @@ static bool radioInit() {
     radio.startReceive();
     lastRadioOk = millis();
     loraReady   = true;
+
+    // +30% margin over the computed airtime, plus a small fixed floor — same
+    // shape RadioLib itself uses internally (getTimeOnAir() * 5 / 1000 for its
+    // own RX timeout), just less generous since this only guards against a
+    // wedged TX, not clock drift between two radios.
+    uint32_t ackToaMs = (uint32_t)(radio.getTimeOnAir(ACK_FRAME_MAX_LEN) / 1000);
+    uint32_t maxToaMs = (uint32_t)(radio.getTimeOnAir(LORA_PAYLOAD_MAX) / 1000);
+    ackSlotMs      = ackToaMs * 13 / 10 + 20;
+    ackWindowMs    = ACK_GUARD_MS + ACK_SLOT_COUNT * ackSlotMs;
+    txTimeoutMs    = maxToaMs * 13 / 10 + 500;
+    // A live client only gets to speak once per ACK window — must survive at
+    // least a couple of missed cycles before being dropped from the registry,
+    // or the client list would flicker every time the window (not the client)
+    // is just slow. Never go BELOW the config.h default (fine for fast SF).
+    clientTimeoutMs = ackWindowMs * 3;
+    if (clientTimeoutMs < CLIENT_TIMEOUT_MS) clientTimeoutMs = CLIENT_TIMEOUT_MS;
+
     logPrintf("[LORA] Server ready @ %.0f MHz  SF=%d BW=%.0fk  (Core 0)\n", freqMHz, LORA_SF, bwKHz);
+    logPrintf("[LORA] Airtime-derived timing: ackSlot=%lums ackWindow=%lums txTimeout=%lums clientTimeout=%lums\n",
+              (unsigned long)ackSlotMs, (unsigned long)ackWindowMs,
+              (unsigned long)txTimeoutMs, (unsigned long)clientTimeoutMs);
     return true;
 }
 
@@ -202,7 +231,7 @@ static bool radioInit() {
 // If DIO0 never fires (bad wiring, module fault, RF issue), a TX must not
 // wedge the radio task forever — that would silently kill ALL future TX/RX
 // (heartbeats, gongs, client replies) with no further symptom in the logs.
-static const uint32_t TX_TIMEOUT_MS       = 4000;     // generous margin over SF7 airtime (~140ms)
+// (Timeout itself is airtime-derived — see txTimeoutMs above.)
 static const uint32_t RADIO_SILENCE_MS    = 300000UL; // M-8: 5 min with no successful TX/RX → reinit
 static const uint32_t RADIO_RETRY_MS      = 30000UL;  // M-8: retry a failed init this often
 
@@ -238,14 +267,14 @@ static void loraTask(void*) {
                     logPrintf("[LORA] TX done type=0x%02X\n", txType);
                 if (st == RADIOLIB_ERR_NONE && txType == MSG_HEARTBEAT) {
                     hbTxDoneMs     = millis();   // resp_ms reference point (see above)
-                    ackWindowUntil = millis() + ACK_WINDOW_MS;
+                    ackWindowUntil = millis() + ackWindowMs;
                 }
                 if (txType == MSG_GONG && txPlayLocal) {
                     LocalPlay lp = { txTrack, txVol, txLoop };
                     xQueueSend(localPlayQueue, &lp, 0);
                 }
                 radio.startReceive();
-            } else if (millis() - txStart > TX_TIMEOUT_MS) {
+            } else if (millis() - txStart > txTimeoutMs) {
                 logPrintf("[LORA] TX timeout (no DIO0) type=0x%02X — check DIO0 wiring! Recovering.\n", txType);
                 txBusy = false;
                 if (txType == MSG_GONG && txPlayLocal) {
@@ -486,7 +515,7 @@ String lora_clientsJSON() {
     unsigned long now = millis();
     for (uint8_t i = 0; i < cliCount; i++) {
         unsigned long age = now - clients[i].lastSeenMs;
-        if (age > CLIENT_TIMEOUT_MS) continue;
+        if (age > clientTimeoutMs) continue;
         JsonObject o = arr.createNestedObject();
         o["id"]      = clients[i].id;
         o["rssi"]    = clients[i].rssi;
@@ -505,7 +534,7 @@ int lora_clientCount() {
     unsigned long now = millis();
     int active = 0;
     for (uint8_t i = 0; i < cliCount; i++) {
-        if (now - clients[i].lastSeenMs <= CLIENT_TIMEOUT_MS) active++;
+        if (now - clients[i].lastSeenMs <= clientTimeoutMs) active++;
     }
     xSemaphoreGive(clientsMtx);
     return active;

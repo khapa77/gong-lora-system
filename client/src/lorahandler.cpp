@@ -18,6 +18,12 @@ static void IRAM_ATTR onDio0() { dioFlag = true; }
 
 static volatile bool loraReady = false;
 
+// code_review.md S1/note-on-SF12: airtime-derived, computed once in
+// radioInit() right after a successful radio.begin() — see server's
+// lorahandler.cpp radioInit() for the full reasoning. Default only matters
+// for the brief window before the first successful init.
+static uint32_t ackSlotDelayMs = 120;
+
 // ── Client ID — H-6: default used to be a hardcoded string ("client_twoX")
 // that was easy to forget to change on a second device, silently merging two
 // clients into one entry on the server. Derive a unique ID from the MAC
@@ -226,7 +232,7 @@ static void sendAck(int rxRssi, uint32_t hbSeq) {
     // jitter — that window was 4x shorter than one ACK's airtime at the old
     // SF9, guaranteeing collisions with 2+ clients. At SF7 + a slot per
     // client, two clients' ACKs can no longer land on top of each other.
-    vTaskDelay(pdMS_TO_TICKS(ACK_GUARD_MS + ackSlot() * ACK_SLOT_MS));
+    vTaskDelay(pdMS_TO_TICKS(ACK_GUARD_MS + ackSlot() * ackSlotDelayMs));
 
     // H-2: a packet may have arrived while this client waited for its slot
     // (e.g. STOP right after a GONG). Blindly clearing dioFlag and
@@ -255,8 +261,12 @@ static void sendAck(int rxRssi, uint32_t hbSeq) {
     int state = radio.startTransmit(buf, 1 + LORA_TAG_LEN + plen);
     if (state == RADIOLIB_ERR_NONE) {
         uint32_t waitStart = millis();
-        const uint32_t txTimeoutMs = 5000;
-        while (!dioFlag && millis() - waitStart < txTimeoutMs) {
+        // Airtime-derived, computed for THIS frame's actual length — same
+        // +30%/floor shape as the server's txTimeoutMs (see its radioInit()).
+        // A fixed 5000ms here would false-positive on every single ACK once
+        // SF/BW push real airtime past that (SF12 already does).
+        uint32_t txWaitTimeoutMs = (uint32_t)(radio.getTimeOnAir(1 + LORA_TAG_LEN + plen) / 1000) * 13 / 10 + 500;
+        while (!dioFlag && millis() - waitStart < txWaitTimeoutMs) {
             vTaskDelay(pdMS_TO_TICKS(5));
         }
         if (dioFlag) {
@@ -293,8 +303,13 @@ static bool radioInit() {
     radio.startReceive();
     lastRadioOk = millis();
     loraReady   = true;
+
+    uint32_t ackToaMs = (uint32_t)(radio.getTimeOnAir(ACK_FRAME_MAX_LEN) / 1000);
+    ackSlotDelayMs = ackToaMs * 13 / 10 + 20;   // same shape as the server's ackSlotMs
+
     Serial.printf("[LORA] Client '%s' ready @ %.0f MHz  SF=%d BW=%.0fk  (Core 0)\n",
                   g_clientId.c_str(), freqMHz, LORA_SF, bwKHz);
+    Serial.printf("[LORA] Airtime-derived ackSlotDelay=%lums\n", (unsigned long)ackSlotDelayMs);
     return true;
 }
 
