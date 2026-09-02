@@ -190,6 +190,14 @@ for i,(pn,net) in enumerate(ra_right):
     netlabel(ex, py, net, rot=0)
 
 # ─────────────────────────────────────────
+# R6/R7 — NSS/RST pull-ups (strapping-пины ESP32 шумят при загрузке);
+# C9 — RST snubber (звон при длинных проводах к Ra-02). См. schematic_netlist.md.
+# ─────────────────────────────────────────
+passive(850, 60,  'R6', '10k',  '+3V3', 'LORA_NSS', fill='#fff0f0')
+passive(850, 160, 'R7', '10k',  '+3V3', 'LORA_RST', fill='#fff0f0')
+passive(900, 160, 'C9', '100nF','LORA_RST', 'GND')
+
+# ─────────────────────────────────────────
 # U3 — MAX98357A (1×7, справа)
 # ─────────────────────────────────────────
 U3X, U3Y = 590, 230

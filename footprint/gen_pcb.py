@@ -193,6 +193,12 @@ header(U2_X, U2_Y, rows=4, cols=2, pitch=100, col_pitch=100, ref='U2', name='Ra-
              '+3V3', 'LORA_MOSI', 'LORA_DIO0', 'GND'])
 keepout_marker(U2_X - 50, U2_Y - 350, 700, 700, 'antenna keep-out (SMA + кабель)')
 
+# R6/R7 — NSS/RST pull-ups; C9 — RST snubber (рядом с U2, ниже antenna keep-out)
+RR_X, RR_Y = U2_X, U2_Y + 400
+passive_th(RR_X,       RR_Y,       'R6', '10k',   '+3V3',     'LORA_NSS')
+passive_th(RR_X + 150, RR_Y,       'R7', '10k',   '+3V3',     'LORA_RST')
+passive_th(RR_X + 150, RR_Y + 250, 'C9', '100nF', 'LORA_RST', 'GND')
+
 # ═══════════════════════════════════════════════════════════════
 # ЗОНА C — аудио (MAX98357A), физически подальше от Ra-02 (внизу)
 # ═══════════════════════════════════════════════════════════════
