@@ -157,10 +157,16 @@ ESP_LEFT_X  = ZB_X + 300
 ESP_RIGHT_X = ESP_LEFT_X + 1000
 ESP_Y = ZA_Y + 150
 
-left_pins = ['GND','+3V3','EN_NC','NC','NC','NC','NC','NC',
-             'I2S_DIN','I2S_LRC','I2S_BCLK','NC','LORA_RST','NC','GND','NC','NC','NC','NC']
-right_pins = ['+5V','GND','LORA_MOSI','I2C_SCL','NC','NC','I2C_SDA','GND',
-              'LORA_MISO','LORA_SCK','LORA_NSS','NC','NC','LORA_DIO0','NC','NC','NC','NC','NC']
+# lora-ds-autonomy: порядок сверен с официальным Espressif ESP32-DevKitC-V4
+# Getting Started Guide — прежняя версия была сдвинута на 1 позицию и путала
+# местами GND/5V между колонками (см. connect.md для разбора). 5V физически —
+# последний пин ЛЕВОЙ колонки (не первый пин правой), GND — первый пин ПРАВОЙ
+# (не левой). Порядок в списке = физический порядок пинов сверху вниз в
+# колонке, начиная от края с USB-разъёмом.
+left_pins = ['+3V3','EN_NC','NC','NC','NC','NC','NC',
+             'I2S_DIN','I2S_LRC','I2S_BCLK','NC','LORA_RST','NC','GND','NC','NC','NC','NC','+5V']
+right_pins = ['GND','LORA_MOSI','I2C_SCL','NC','NC','I2C_SDA','GND',
+              'LORA_MISO','LORA_SCK','LORA_NSS','NC','NC','LORA_DIO0','NC','NC','NC','NC','NC','NC']
 
 text(ESP_LEFT_X - 40, ESP_Y - 40, 'U1 ESP32-DevKitC-V4 (socket, 2x19 female header)', size='7pt')
 for i, net in enumerate(left_pins):

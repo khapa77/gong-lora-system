@@ -89,9 +89,15 @@ STUB = 30   # длина вывода
 PIN_PITCH = 20
 PIN_START = BY + 40
 
+# lora-ds-autonomy: порядок сверен с официальным Espressif ESP32-DevKitC-V4
+# Getting Started Guide — прежняя версия была сдвинута на 1 позицию и путала
+# местами GND/5V между сторонами (см. connect.md для полного разбора). 5V —
+# физически ПОСЛЕДНИЙ пин левой стороны (не первый пин правой), GND — ПЕРВЫЙ
+# пин правой стороны (не левой).
+
 # Left pins (top→bottom)
 left_pins = [
-    'GND', '3V3', 'EN', 'GPIO36', 'GPIO39',
+    '3V3', 'EN', 'GPIO36', 'GPIO39',
     'GPIO34', 'GPIO35', 'GPIO32',
     'GPIO33',   # I2S_DIN
     'GPIO25',   # I2S_LRC
@@ -100,10 +106,12 @@ left_pins = [
     'GPIO14',   # LORA_RST
     'GPIO12', 'GND', 'GPIO13',
     'GPIO9', 'GPIO10', 'GPIO11',
+    'VIN',      # +5V — последний пин левой стороны
 ]
 left_nets = {
     'GND':    'GND',
     '3V3':    '+3V3',
+    'VIN':    '+5V',
     'GPIO33': 'I2S_DIN',
     'GPIO25': 'I2S_LRC',
     'GPIO26': 'I2S_BCLK',
@@ -125,8 +133,7 @@ for i, pname in enumerate(left_pins):
 
 # Right pins (top→bottom)
 right_pins = [
-    'VIN',      # +5V
-    'GND',
+    'GND',      # первый пин правой стороны
     'GPIO23',   # LORA_MOSI
     'GPIO22',   # I2C_SCL
     'GPIO1', 'GPIO3',
@@ -140,9 +147,9 @@ right_pins = [
     'GPIO0',
     'GPIO2',    # strapping pin, was used for DIO0 before the move to GPIO4 — NC, do not reconnect
     'GPIO15', 'GPIO8', 'GPIO7',
+    'GPIO6',    # flash CLK — последний пин правой стороны, NC
 ]
 right_nets = {
-    'VIN':    '+5V',
     'GND':    'GND',
     'GPIO23': 'LORA_MOSI',
     'GPIO22': 'I2C_SCL',
