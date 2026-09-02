@@ -18,25 +18,25 @@
 
 | № | Пин ESP32 | Сеть | Server | Client |
 |---|-----------|------|--------|--------|
-| 1 | GND | GND | — | — |
-| 2 | 3V3 | PWR_3V3 | опционально (можно не паять) | опционально |
-| 3 | EN | NC | кнопка Reset (опц.) | кнопка Reset (опц.) |
-| 4 | GPIO36/VP | NC | — | — |
-| 5 | GPIO39/VN | NC | — | — |
-| 6 | GPIO34 | NC | — | — |
-| 7 | GPIO35 | NC | — | — |
-| 8 | GPIO32 | NC | — | — |
-| 9 | GPIO33 | I2S_DIN → MAX98357A пин 3 (DIN/DOUT) | ✅ | ✅ |
-| 10 | GPIO25 | I2S_LRC → MAX98357A пин 1 | ✅ | ✅ |
-| 11 | GPIO26 | I2S_BCLK → MAX98357A пин 2 | ✅ | ✅ |
-| 12 | GPIO27 | NC | — | — |
-| 13 | GPIO14 | LORA_RST → Ra-02 пин 7 (+R7/C9, см. §7) | ✅ | ✅ |
-| 14 | GPIO12 | NC | — | — |
-| 15 | GND | GND | — | — |
-| 16 | GPIO13 | NC / **STATUS_LED** | не используется | **LED анод (через резистор 220–330 Ω)**, катод → GND |
-| 17 | GPIO9/SD2 | NC (flash) | — | — |
-| 18 | GPIO10/SD3 | NC (flash) | — | — |
-| 19 | GPIO11/CMD | NC (flash) | — | — |
+| 1 | 3V3 | PWR_3V3 | опционально (можно не паять) | опционально |
+| 2 | EN | NC | кнопка Reset (опц.) | кнопка Reset (опц.) |
+| 3 | GPIO36/VP | NC | — | — |
+| 4 | GPIO39/VN | NC | — | — |
+| 5 | GPIO34 | NC | — | — |
+| 6 | GPIO35 | NC | — | — |
+| 7 | GPIO32 | NC | — | — |
+| 8 | GPIO33 | I2S_DIN → MAX98357A пин 3 (DIN/DOUT) | ✅ | ✅ |
+| 9 | GPIO25 | I2S_LRC → MAX98357A пин 1 | ✅ | ✅ |
+| 10 | GPIO26 | I2S_BCLK → MAX98357A пин 2 | ✅ | ✅ |
+| 11 | GPIO27 | NC | — | — |
+| 12 | GPIO14 | LORA_RST → Ra-02 пин 7 (+R7/C9, см. §7) | ✅ | ✅ |
+| 13 | GPIO12 | NC | — | — |
+| 14 | GND | GND | — | — |
+| 15 | GPIO13 | NC / **STATUS_LED** | не используется | **LED анод (через резистор 220–330 Ω)**, катод → GND |
+| 16 | GPIO9/SD2 | NC (flash) | — | — |
+| 17 | GPIO10/SD3 | NC (flash) | — | — |
+| 18 | GPIO11/CMD | NC (flash) | — | — |
+| 19 | 5V | PWR_5V | ✅ | ✅ |
 
 > ⚠️ На части ревизий dev-board GPIO32/33 заняты внешним кварцем 32.768 кГц —
 > перед пайкой проверь конкретную ревизию платы (`pin-guide.md`).
@@ -45,25 +45,41 @@
 
 | № | Пин ESP32 | Сеть | Server | Client |
 |---|-----------|------|--------|--------|
-| 1 | VIN (5V) | PWR_5V | ✅ | ✅ |
-| 2 | GND | GND | — | — |
-| 3 | GPIO23 | LORA_MOSI → Ra-02 пин 4 | ✅ | ✅ |
-| 4 | GPIO22 | I2C_SCL → DS3231 пин 4 | ✅ | не используется |
-| 5 | GPIO1/TXD0 | NC (UART debug) | — | — |
-| 6 | GPIO3/RXD0 | NC (UART debug) | — | — |
-| 7 | GPIO21 | I2C_SDA → DS3231 пин 3 | ✅ | не используется |
-| 8 | GND | GND | — | — |
-| 9 | GPIO19 | LORA_MISO → Ra-02 пин 1 | ✅ | ✅ |
-| 10 | GPIO18 | LORA_SCK → Ra-02 пин 3 | ✅ | ✅ |
-| 11 | GPIO5 | LORA_NSS → Ra-02 пин 5 (+R6, см. §7) | ✅ | ✅ |
-| 12 | GPIO17 | NC | — | — |
-| 13 | GPIO16 | NC | — | — |
-| 14 | GPIO4 | LORA_DIO0 → Ra-02 пин 6 | ✅ | ✅ |
-| 15 | GPIO0 | NC (Boot button на dev-board) | — | — |
-| 16 | GPIO2 | **НЕ подключать** — strapping-пин, раньше был DIO0, мешал прошивке | — | — |
-| 17 | GPIO15 | NC | — | — |
-| 18 | GPIO8/SD1 | NC (flash) | — | — |
-| 19 | GPIO7/SD0 | NC (flash) | — | — |
+| 1 | GND | GND | — | — |
+| 2 | GPIO23 | LORA_MOSI → Ra-02 пин 4 | ✅ | ✅ |
+| 3 | GPIO22 | I2C_SCL → DS3231 пин 4 | ✅ | не используется |
+| 4 | GPIO1/TXD0 | NC (UART debug) | — | — |
+| 5 | GPIO3/RXD0 | NC (UART debug) | — | — |
+| 6 | GPIO21 | I2C_SDA → DS3231 пин 3 | ✅ | не используется |
+| 7 | GND | GND | — | — |
+| 8 | GPIO19 | LORA_MISO → Ra-02 пин 1 | ✅ | ✅ |
+| 9 | GPIO18 | LORA_SCK → Ra-02 пин 3 | ✅ | ✅ |
+| 10 | GPIO5 | LORA_NSS → Ra-02 пин 5 (+R6, см. §7) | ✅ | ✅ |
+| 11 | GPIO17 | NC | — | — |
+| 12 | GPIO16 | NC | — | — |
+| 13 | GPIO4 | LORA_DIO0 → Ra-02 пин 6 | ✅ | ✅ |
+| 14 | GPIO0 | NC (Boot button на dev-board) | — | — |
+| 15 | GPIO2 | **НЕ подключать** — strapping-пин, раньше был DIO0, мешал прошивке | — | — |
+| 16 | GPIO15 | NC | — | — |
+| 17 | GPIO8/SD1 | NC (flash) | — | — |
+| 18 | GPIO7/SD0 | NC (flash) | — | — |
+| 19 | GPIO6/CLK | NC (flash) | — | — |
+
+> ✅ **Нумерация пинов сверена с официальным Espressif ESP32-DevKitC-V4 Getting Started Guide**
+> (2026-09-02). Предыдущая версия таблицы была сдвинута на 1 позицию и путала местами
+> GND/5V между сторонами: физический `5V` (VIN) — последний пин **левой** стороны (№19),
+> а не первый пин правой; физический `GND` — первый пин **правой** стороны (№1), а не левой.
+> Из-за сдвига в таблице отсутствовали пины `5V` (левая №19) и `GPIO6/CLK` (правая №19).
+> Назначение сетей по GPIO (какой сигнал куда идёт) сдвиг не затронул — ошибка была только
+> в номерах физических позиций пина в разъёме.
+>
+> ⚠️ Та же ошибка нумерации есть в `footprint/schematic_netlist.md` (таблицы §"ESP32
+> DevKitC v4 — полный пиноут сокета") и в порядке `left_pins`/`right_pins` внутри
+> `footprint/gen_schematic.py` и `footprint/gen_pcb.py`. Для схемы это не критично
+> (просто список подписей на прямоугольнике), но `gen_pcb.py` использует этот порядок
+> для **физического** футпринта разъёма ESP32 на плате — если печатать плату по
+> текущему `gong_server_pcb.json`, посадочные места GND/5V/EN и часть GPIO будут сдвинуты
+> на 1 паз относительно реального модуля. Это нужно исправить до заказа платы.
 
 ---
 
@@ -225,6 +241,7 @@ ESP32.GPIO13 ── резистор 220–330 Ω ── LED анод; LED ка�
 ---
 
 ## Источники
+- [Espressif ESP32-DevKitC V4 Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/v5.1/esp32/hw-reference/esp32/get-started-devkitc.html) — официальная нумерация 38 пинов, использована для сверки §1.
 - `footprint/schematic_netlist.md` — полная схема и обоснование каждого номинала.
 - `pin-guide.md` — макетная (breadboard) распиновка, общая для сервера/клиента.
 - `footprint/gong_server_schematic.json`, `footprint/gong_server_pcb.json` — EasyEDA-документы.
