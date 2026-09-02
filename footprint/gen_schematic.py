@@ -47,7 +47,7 @@ def passive(x, y, ref, value, net_top, net_bot, fill='#fff8e8'):
 # ─────────────────────────────────────────
 def sot223(x, y, ref, name, pin1_name, pin1_net, pin2_name, pin2_net, pin3_name, pin3_net, w=100, h=130):
     """
-    SOT-223 pinout (LD1117V33, pin-compatible с AMS1117-3.3):
+    SOT-223 pinout (AMS1117-3.3):
     Pin 1 (left)  = GND / ADJ  → для фиксированного 3.3V это GND
     Pin 2 (tab)   = VOUT       — большая пластина, подключена к pin2
     Pin 3 (right) = VIN
@@ -74,7 +74,7 @@ def sot223(x, y, ref, name, pin1_name, pin1_net, pin2_name, pin2_net, pin3_name,
 # ─────────────────────────────────────────
 # TITLE
 # ─────────────────────────────────────────
-text(430, 22, 'Gong LoRa Server — Schematic v1.2 (Ra-02, LD1117V33, audio decoupling)',
+text(430, 22, 'Gong LoRa Server — Schematic v1.2 (Ra-02, AMS1117-3.3, audio decoupling)',
      anchor='center', size='13pt', bold='bold', color='#222222')
 
 # ─────────────────────────────────────────

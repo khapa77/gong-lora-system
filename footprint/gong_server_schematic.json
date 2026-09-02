@@ -9,7 +9,7 @@
   },
   "canvas": "CA~1000~1000~#ffffff~yes~#cccccc~10~1200~900~line~10~pixel~5~0~0",
   "shape": [
-    "T~430~22~0~center~#222222~13pt~bold~normal~none~Gong LoRa Server — Schematic v1.2 (Ra-02, LD1117V33, audio decoupling)~g00001~0",
+    "T~430~22~0~center~#222222~13pt~bold~normal~none~Gong LoRa Server — Schematic v1.2 (Ra-02, AMS1117-3.3, audio decoupling)~g00001~0",
     "RECT~310~60~0~0~160~440~#000000~#eef0ff~1~none~g00002~0",
     "T~390~74~0~center~#000000~11pt~bold~normal~none~U1~g00003~0",
     "T~390~90~0~center~#000000~8pt~normal~normal~none~ESP32-DevKitC-V4~g00004~0",
