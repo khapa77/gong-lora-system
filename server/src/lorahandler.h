@@ -23,6 +23,9 @@ uint32_t lora_hbCycleMs();
 // fall back to it if the server goes silent. `entries`/`count` come from
 // sched_activeBinSnapshot().
 void     lora_broadcastSchedule(uint8_t day, const SchedBin* entries, uint8_t count);
+// True if a client ACKed with a stored schedule different from the last one
+// broadcast (it was off/out of range at the time). Cleared by the next broadcast.
+bool     lora_scheduleStale();
 
 // H-1: call every loop() from Core 1. Drains at most one queued local-play
 // request per call; returns true and fills track/vol/loop if one was ready.

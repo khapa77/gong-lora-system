@@ -96,6 +96,11 @@ static bool inAckWindow() {
 // (see tsBase below), so the very first post-reboot frame is accepted on the
 // "ts" comparison alone, regardless of "n" starting back at 0.
 static uint32_t txSeqCounter = 0;
+
+// Fingerprint of the last MSG_SCHEDULE sent, and whether some client ACKed
+// with a different one since (see lora_scheduleStale()).
+static volatile uint16_t lastSchedHash = 0;
+static volatile bool     schedStale    = false;
 static uint32_t nextN() { return ++txSeqCounter; }
 
 static void upsertClient(const String& id, int rssi, float snr, uint32_t respMs) {
@@ -394,6 +399,13 @@ static void loraTask(void*) {
                 // resp_ms only when the ACK echoes the seq of the LAST heartbeat;
                 // ACKs to GONG (no "hb") pass 0 → registry keeps old value.
                 uint32_t hb   = doc["hb"] | 0;
+                // Client's stored fallback schedule differs from the last one
+                // broadcast → ask main.cpp to resend (see lora_scheduleStale()).
+                if (doc.containsKey("sh") && lastSchedHash != 0 &&
+                    (uint16_t)(doc["sh"] | 0) != lastSchedHash && !schedStale) {
+                    schedStale = true;
+                    logPrintf("[LORA] '%s' has an outdated schedule — will re-broadcast\n", id.c_str());
+                }
                 uint32_t resp = (hb != 0 && hb == hbSeq && hbTxDoneMs != 0)
                                ? (uint32_t)(millis() - hbTxDoneMs) : 0;
                 float snr = radio.getSNR();
@@ -515,6 +527,8 @@ bool lora_sendHeartbeat() {
 // client/src/lorahandler.cpp). Wire payload: [4B ts][SchedBinHeader][SchedBin...].
 void lora_broadcastSchedule(uint8_t day, const SchedBin* entries, uint8_t count) {
     if (count > SCHED_BIN_MAX) count = SCHED_BIN_MAX;
+    lastSchedHash = schedbin_hash(day, entries, count);
+    schedStale    = false;
     uint8_t payload[4 + 4 + sizeof(SchedBinHeader) + SCHED_BIN_MAX * sizeof(SchedBin)];
     size_t  off = 0;
     uint32_t ts = nowTs();
@@ -530,6 +544,8 @@ void lora_broadcastSchedule(uint8_t day, const SchedBin* entries, uint8_t count)
     else
         logPrintf("[LORA] Schedule broadcast failed (radio not ready or queue full)\n");
 }
+
+bool lora_scheduleStale() { return schedStale; }
 
 // H-1: called every loop() from Core 1 (see main.cpp).
 bool lora_pollLocalPlay(uint8_t& track, uint8_t& vol, uint8_t& loop) {

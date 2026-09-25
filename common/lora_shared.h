@@ -108,8 +108,8 @@ static inline bool lora_tagEqual(const uint8_t* a, const uint8_t* b) {
 // server/client lorahandler.cpp. Так она остаётся верной при ЛЮБОМ SF/BW.
 #define ACK_SLOT_COUNT     8
 #define ACK_GUARD_MS       150     // пауза после heartbeat, пока сервер уходит в RX
-#define ACK_FRAME_MAX_LEN  48      // консервативная оценка длины кадра ACK
-                                    // (1 тип + 8 тег + JSON id/rssi/hb) для
+#define ACK_FRAME_MAX_LEN  64      // консервативная оценка длины кадра ACK
+                                    // (1 тип + 8 тег + JSON id/rssi/hb/sh) для
                                     // расчёта времени в эфире одного слота
 #define HB_FRAME_TYP_LEN   72      // типичная длина кадра HEARTBEAT (1 + 8 + JSON
                                     // time/clients/ts/n/seq) — для оценки
@@ -143,3 +143,18 @@ static inline uint8_t schedbin_pack(uint8_t loopCount, bool enabled) {
 }
 static inline uint8_t schedbin_loop(uint8_t loopEn)    { return loopEn & 0x7F; }
 static inline bool    schedbin_enabled(uint8_t loopEn) { return (loopEn & 0x80) != 0; }
+
+// Short fingerprint of a stored/broadcast schedule (day + entries). The client
+// echoes it in every ACK ("sh"); the server re-broadcasts promptly when it
+// doesn't match what it last sent — e.g. a client that was off at midnight
+// kept the previous day's fallback schedule until the hourly re-broadcast.
+// Never 0, so 0 can mean "client has no schedule stored".
+static inline uint16_t schedbin_hash(uint8_t day, const SchedBin* e, uint8_t count) {
+    uint32_t h = 2166136261u;
+    h ^= day;   h *= 16777619u;
+    h ^= count; h *= 16777619u;
+    const uint8_t* p = (const uint8_t*)e;
+    for (size_t i = 0; i < (size_t)count * sizeof(SchedBin); i++) { h ^= p[i]; h *= 16777619u; }
+    uint16_t r = (uint16_t)(h ^ (h >> 16));
+    return r ? r : 1;
+}

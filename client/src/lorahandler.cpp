@@ -264,6 +264,10 @@ static void sendAck(int rxRssi, uint32_t hbSeq) {
     doc["id"]   = g_clientId;
     doc["rssi"] = rxRssi;
     if (hbSeq != 0) doc["hb"] = hbSeq;
+    // Fingerprint of the stored fallback schedule — lets the server notice a
+    // stale one (client was off during a broadcast) and resend it promptly.
+    doc["sh"] = (g_schedCount && g_schedDay != 0xFF)
+              ? schedbin_hash(g_schedDay, g_sched, g_schedCount) : 0;
     String payload;
     serializeJson(doc, payload);
 

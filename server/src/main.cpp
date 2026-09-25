@@ -119,7 +119,11 @@ void loop() {
     // H-5: broadcast the active day's schedule promptly after it changes,
     // and otherwise once an hour as a safety net (e.g. a client that missed
     // the original broadcast while out of range).
-    if (lora_isReady() && (sched_consumeChanged() || now - lastSchedBroadcast >= 3600000UL)) {
+    // Also resend (at most once a minute) when a client reports an outdated
+    // stored schedule in its ACK — e.g. it was off during the midnight switch.
+    bool clientStale = lora_scheduleStale() && now - lastSchedBroadcast >= 60000UL;
+    if (lora_isReady() && (sched_consumeChanged() || clientStale ||
+                           now - lastSchedBroadcast >= 3600000UL)) {
         int day = sched_getActiveDay();
         if (day >= 0) {
             SchedBin bin[SCHED_BIN_MAX];
