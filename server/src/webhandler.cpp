@@ -184,10 +184,18 @@ static void handleRoot() {
     if (!checkAuth()) return;
     if (LittleFS.exists("/index.html.gz")) {
         File f = LittleFS.open("/index.html.gz", "r");
-        // No explicit Content-Encoding here: streamFile() adds "gzip" itself
-        // for a *.gz file name (WebServer::_streamFileCore). Sending it twice
-        // made browsers render the compressed bytes as garbage.
-        server.streamFile(f, "text/html");
+        // Headers set explicitly, body written directly — NOT via
+        // streamFile(), whose own "*.gz → Content-Encoding: gzip" guess
+        // combined with ours sent the header twice, and browsers (iOS Safari)
+        // rendered the compressed bytes as garbage. Exactly one header now,
+        // whatever the framework version does.
+        // no-cache: a browser that cached a broken response must not keep
+        // showing it after a firmware fix.
+        server.sendHeader("Content-Encoding", "gzip");
+        server.sendHeader("Cache-Control", "no-cache");
+        server.setContentLength(f.size());
+        server.send(200, "text/html", "");
+        server.client().write(f);
         f.close();
     } else if (LittleFS.exists("/index.html")) {
         File f = LittleFS.open("/index.html", "r");
