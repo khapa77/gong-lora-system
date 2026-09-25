@@ -184,7 +184,9 @@ static void handleRoot() {
     if (!checkAuth()) return;
     if (LittleFS.exists("/index.html.gz")) {
         File f = LittleFS.open("/index.html.gz", "r");
-        server.sendHeader("Content-Encoding", "gzip");
+        // No explicit Content-Encoding here: streamFile() adds "gzip" itself
+        // for a *.gz file name (WebServer::_streamFileCore). Sending it twice
+        // made browsers render the compressed bytes as garbage.
         server.streamFile(f, "text/html");
         f.close();
     } else if (LittleFS.exists("/index.html")) {
