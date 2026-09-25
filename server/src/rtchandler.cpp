@@ -48,7 +48,7 @@ void rtc_setup() {
     rtcPresent = true;
 
     if (!loadFromRTC()) {
-        logPrintf("[RTC] DS3231 found but lost power — time not valid, set via NTP or manually\n");
+        logPrintf("[RTC] DS3231 found but lost power — time not valid, set it in the web UI (Clock tab)\n");
     }
 }
 
