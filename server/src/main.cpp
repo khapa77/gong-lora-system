@@ -102,9 +102,18 @@ void loop() {
     // On failure, retry in 2s instead of waiting a full HEARTBEAT_INTERVAL_MS
     // — during which the CLIENT-side registry would otherwise time this
     // server out of every client's view for nothing.
+    //
+    // A heartbeat opens an ACK window in which every client transmits once;
+    // a client busy transmitting its ACK can't hear anything (half-duplex),
+    // so a GONG landing in that window was silently missed by it. The
+    // schedule is known in advance — don't start a heartbeat cycle that would
+    // still be running when the next scheduled gong fires.
     if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
-        if (lora_sendHeartbeat()) lastHeartbeat = now;
-        else                      lastHeartbeat = now - HEARTBEAT_INTERVAL_MS + 2000;
+        int32_t nextFireS = sched_secondsToNextFire();
+        int32_t cycleS    = (int32_t)(lora_hbCycleMs() / 1000) + 20;
+        bool gongSoon     = nextFireS >= 0 && nextFireS <= cycleS;
+        if (!gongSoon && lora_sendHeartbeat()) lastHeartbeat = now;
+        else                                   lastHeartbeat = now - HEARTBEAT_INTERVAL_MS + 2000;
     }
 
     // H-5: broadcast the active day's schedule promptly after it changes,

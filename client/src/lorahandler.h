@@ -14,5 +14,5 @@ const char* lora_clientId();   // resolved in lora_setup(): CLIENT_ID_OVERRIDE o
 void lora_autonomousTick();
 
 // H-11: status for the LED state machine in main.cpp.
-bool     lora_heartbeatLost();     // true once HEARTBEAT_LOST_MS has elapsed since the last one
+bool     lora_heartbeatLost();     // true once HEARTBEAT_LOST_MS has elapsed since the last valid server frame
 uint32_t lora_msSinceHeartbeat();

@@ -231,20 +231,28 @@ void sched_check() {
                     // elapsed, not always +1 — a device left off for 3 days
                     // must not make the course drift by 2.
                     int diff = daysBetween(stored, today);
-                    if (diff <= 0) diff = 1;
                     int nextDay = activeDay + diff;
                     if (nextDay >= DAY_COUNT) nextDay = DAY_COUNT - 1;
                     char path[16];
                     snprintf(path, sizeof(path), "/day%02d.conf", nextDay);
-                    if (LittleFS.exists(path)) {
+                    if (diff <= 0) {
+                        // Clock moved BACKWARDS (operator corrected a wrong
+                        // date) or the stored date is unparsable — that is
+                        // not a day passing. Re-stamp, don't advance: the old
+                        // `diff = 1` fallback moved the course a day FORWARD
+                        // on a backward correction.
+                        logPrintf("[SCHED] Date changed (%s -> %s) but not forward — "
+                                  "staying on day %02d\n", stored.c_str(), today.c_str(), activeDay);
+                        writeActiveDayFile((uint8_t)activeDay, today);
+                    } else if (nextDay != activeDay && LittleFS.exists(path)) {
                         if (diff > 1)
                             logPrintf("[SCHED] %d calendar day(s) elapsed while off\n", diff);
                         logPrintf("[SCHED] Date changed (%s -> %s): day %02d -> %02d\n",
                                       stored.c_str(), today.c_str(), activeDay, nextDay);
                         sched_activateDay((uint8_t)nextDay);
                     } else {
-                        logPrintf("[SCHED] Date changed (%s -> %s) but day %02d has no next "
-                                      "day file — course ended, staying on day %02d\n",
+                        logPrintf("[SCHED] Date changed (%s -> %s) but day %02d is the last "
+                                      "day (or next day file missing) — course ended, staying on day %02d\n",
                                       stored.c_str(), today.c_str(), activeDay, activeDay);
                         writeActiveDayFile((uint8_t)activeDay, today);
                     }
@@ -518,6 +526,22 @@ uint8_t sched_activeBinSnapshot(SchedBin* out, uint8_t maxCount) {
         n++;
     }
     return n;
+}
+
+int32_t sched_secondsToNextFire() {
+    struct tm ti;
+    if (!localNow(ti) || ti.tm_year < 124) return -1;
+    int32_t nowS = ti.tm_hour * 3600 + ti.tm_min * 60 + ti.tm_sec;
+    int32_t best = -1;
+    for (uint8_t i = 0; i < count; i++) {
+        if (!entries[i].enabled) continue;
+        int32_t fireS = entries[i].hour * 3600 + entries[i].minute * 60;
+        int32_t d = fireS - nowS;
+        if (d < -59) d += 86400;          // already past this minute → tomorrow
+        else if (d < 0) d = 0;            // firing this very minute
+        if (best < 0 || d < best) best = d;
+    }
+    return best;
 }
 
 bool sched_consumeChanged() {

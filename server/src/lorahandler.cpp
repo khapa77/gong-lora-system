@@ -29,7 +29,13 @@ struct TxReq {
 };
 struct LocalPlay { uint8_t track, vol, loop; };
 
-static QueueHandle_t     txQueue        = nullptr;
+// Two TX queues: GONG/STOP go through prioQueue and are always sent first,
+// never waiting behind a HEARTBEAT/SCHEDULE parked in txQueue until the ACK
+// window closes. Previously one FIFO + a peek at its head meant a GONG queued
+// behind a waiting heartbeat sat there for up to the whole ACK window (~3 min
+// at SF12/BW31.25) — and so did the server's own local playback.
+static QueueHandle_t     prioQueue      = nullptr;   // GONG / STOP
+static QueueHandle_t     txQueue        = nullptr;   // HEARTBEAT / SCHEDULE
 static QueueHandle_t     localPlayQueue = nullptr;   // Core 0 → Core 1 (H-1)
 static volatile bool     loraReady      = false;     // true once radio is initialised and loraTask can TX/RX
 
@@ -64,7 +70,19 @@ static uint32_t clientTimeoutMs = CLIENT_TIMEOUT_MS;
 // no "hb" field and never touch this figure.
 static volatile uint32_t hbSeq        = 0;   // seq of the last heartbeat sent
 static volatile uint32_t hbTxDoneMs   = 0;   // millis() at that heartbeat's TX-done
-static volatile uint32_t ackWindowUntil = 0; // C-3: server stays silent (except GONG/STOP) while clients' ACK slots play out
+// C-3: server stays silent (except GONG/STOP) while clients' ACK slots play
+// out. Start + flag instead of a "until" timestamp: `millis() < until` breaks
+// at the ~49.7-day millis() wrap and could then block heartbeats for weeks.
+static volatile bool     ackWindowActive = false;
+static volatile uint32_t ackWindowStart  = 0;
+static uint32_t          hbAirtimeMs     = 0;   // airtime of a typical heartbeat frame
+
+static bool inAckWindow() {
+    if (!ackWindowActive) return false;
+    if (millis() - ackWindowStart < ackWindowMs) return true;
+    ackWindowActive = false;
+    return false;
+}
 
 // ── code_review.md C2: sub-second replay tie-breaker ────────────────────────
 // nowTs() (below) is monotonic across reboots but only 1-second resolution.
@@ -173,7 +191,8 @@ static bool loraSendRaw(uint8_t type, const uint8_t* payload, size_t plen,
     req.vol       = vol;
     req.loop      = loop;
 
-    if (!loraReady || xQueueSend(txQueue, &req, pdMS_TO_TICKS(200)) != pdTRUE) {
+    QueueHandle_t q = (type == MSG_GONG || type == MSG_STOP) ? prioQueue : txQueue;
+    if (!loraReady || xQueueSend(q, &req, pdMS_TO_TICKS(200)) != pdTRUE) {
         logPrintf("[LORA] TX not sent (not ready or queue full) type=0x%02X\n", type);
         return false;
     }
@@ -210,14 +229,16 @@ static bool radioInit() {
     // wedged TX, not clock drift between two radios.
     uint32_t ackToaMs = (uint32_t)(radio.getTimeOnAir(ACK_FRAME_MAX_LEN) / 1000);
     uint32_t maxToaMs = (uint32_t)(radio.getTimeOnAir(LORA_PAYLOAD_MAX) / 1000);
+    hbAirtimeMs       = (uint32_t)(radio.getTimeOnAir(HB_FRAME_TYP_LEN) / 1000);
     ackSlotMs      = ackToaMs * 13 / 10 + 20;
     ackWindowMs    = ACK_GUARD_MS + ACK_SLOT_COUNT * ackSlotMs;
     txTimeoutMs    = maxToaMs * 13 / 10 + 500;
-    // A live client only gets to speak once per ACK window — must survive at
-    // least a couple of missed cycles before being dropped from the registry,
-    // or the client list would flicker every time the window (not the client)
-    // is just slow. Never go BELOW the config.h default (fine for fast SF).
-    clientTimeoutMs = ackWindowMs * 3;
+    // A live client only gets to speak once per heartbeat cycle, and its slot
+    // may collide with another client's on any given cycle (slots rotate per
+    // heartbeat, see client ackSlot()) — survive several missed cycles before
+    // dropping it, or the list would flicker. Never go BELOW the config.h
+    // default (fine for fast SF).
+    clientTimeoutMs = (ackWindowMs + hbAirtimeMs) * 4;
     if (clientTimeoutMs < CLIENT_TIMEOUT_MS) clientTimeoutMs = CLIENT_TIMEOUT_MS;
 
     logPrintf("[LORA] Server ready @ %.0f MHz  SF=%d BW=%.0fk  (Core 0)\n", freqMHz, LORA_SF, bwKHz);
@@ -266,8 +287,9 @@ static void loraTask(void*) {
                 else
                     logPrintf("[LORA] TX done type=0x%02X\n", txType);
                 if (st == RADIOLIB_ERR_NONE && txType == MSG_HEARTBEAT) {
-                    hbTxDoneMs     = millis();   // resp_ms reference point (see above)
-                    ackWindowUntil = millis() + ackWindowMs;
+                    hbTxDoneMs      = millis();   // resp_ms reference point (see above)
+                    ackWindowStart  = millis();
+                    ackWindowActive = true;
                 }
                 if (txType == MSG_GONG && txPlayLocal) {
                     LocalPlay lp = { txTrack, txVol, txLoop };
@@ -296,13 +318,19 @@ static void loraTask(void*) {
             continue;
         }
 
-        // ── C-3: stay off the air (except GONG/STOP) while clients' ACK
-        // slots are still playing out after the last heartbeat ────────────
-        TxReq req;
-        if (xQueuePeek(txQueue, &req, 0) == pdTRUE) {
-            bool mustWait = (millis() < ackWindowUntil) && req.type != MSG_GONG && req.type != MSG_STOP;
-            if (!mustWait) {
-                xQueueReceive(txQueue, &req, 0);
+        // ── RX first: a packet already sitting in the FIFO (usually a
+        // client ACK) must be read before we start transmitting over it.
+        // Previously RX was only reached when the TX queue was empty — and
+        // with a heartbeat parked in it for the whole ACK window, the server
+        // never read a single ACK in steady state.
+        if (!dioFlag) {
+            // ── TX: GONG/STOP always; HEARTBEAT/SCHEDULE only once the
+            // clients' ACK slots have played out (C-3) ────────────────────
+            TxReq req;
+            bool got = xQueueReceive(prioQueue, &req, 0) == pdTRUE;
+            if (!got && !inAckWindow())
+                got = xQueueReceive(txQueue, &req, 0) == pdTRUE;
+            if (got) {
                 dioFlag = false;  // clear any stale RX flag before TX
                 txType  = req.type;
                 int st  = radio.startTransmit(req.buf, req.len);
@@ -325,11 +353,7 @@ static void loraTask(void*) {
             continue;
         }
 
-        // ── RX: check for a received packet ────────────────────────────
-        if (!dioFlag) {
-            vTaskDelay(1);
-            continue;
-        }
+        // ── RX: a packet was received ─────────────────────────────────
         dioFlag = false;
 
         size_t len = radio.getPacketLength();
@@ -392,7 +416,8 @@ void lora_setup() {
     ts_setup();
 
     // RTOS primitives FIRST — must exist even if the radio isn't wired up.
-    txQueue        = xQueueCreate(8, sizeof(TxReq));
+    prioQueue      = xQueueCreate(4, sizeof(TxReq));
+    txQueue        = xQueueCreate(4, sizeof(TxReq));
     localPlayQueue = xQueueCreate(4, sizeof(LocalPlay));
     clientsMtx     = xSemaphoreCreateMutex();
 
@@ -404,6 +429,8 @@ void lora_setup() {
 }
 
 bool lora_isReady() { return loraReady; }
+
+uint32_t lora_hbCycleMs() { return hbAirtimeMs + ackWindowMs; }
 
 // H-7: the repo ships LORA_HMAC_KEY with a placeholder value so the project
 // builds out of the box — but if nobody changes it before deployment, anyone
@@ -453,7 +480,13 @@ void lora_sendStop() {
 // can retry soon instead of silently waiting a full HEARTBEAT_INTERVAL_MS —
 // during which the client-side registry can time a client out.
 bool lora_sendHeartbeat() {
-    if (uxQueueMessagesWaiting(txQueue) > 0) return false;  // higher-priority TX pending
+    // Only queue when it can go on the air right away: no other TX pending and
+    // the previous heartbeat's ACK window closed. A heartbeat queued earlier
+    // would sit for the whole window with a stale "time" in it — clients sync
+    // their autonomous-fallback clock from that field, and ended up ~3 min
+    // behind at SF12/BW31.25.
+    if (!loraReady || inAckWindow()) return false;
+    if (uxQueueMessagesWaiting(txQueue) > 0 || uxQueueMessagesWaiting(prioQueue) > 0) return false;
 
     DynamicJsonDocument doc(128);
     struct tm ti;

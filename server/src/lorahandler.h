@@ -12,7 +12,12 @@ bool     lora_usesDefaultKey();   // H-7: true if LORA_HMAC_KEY was never change
 // thread is never stalled waiting for airtime.
 void     lora_sendGong(uint8_t track, uint8_t vol, uint8_t loop = 1, bool playLocal = false);
 void     lora_sendStop();
-bool     lora_sendHeartbeat();   // M-7: false if it couldn't even be queued (caller should retry sooner)
+bool     lora_sendHeartbeat();   // M-7: false if it couldn't be queued now (caller should retry sooner)
+
+// Airtime of one heartbeat + the clients' ACK window after it — how long the
+// channel is busy with a heartbeat cycle. main.cpp skips a heartbeat that
+// would still be in its ACK window when the next scheduled gong fires.
+uint32_t lora_hbCycleMs();
 
 // H-5: broadcast the active day's schedule (binary, signed) so clients can
 // fall back to it if the server goes silent. `entries`/`count` come from

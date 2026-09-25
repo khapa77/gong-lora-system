@@ -50,5 +50,10 @@ uint8_t sched_activeBinSnapshot(SchedBin* out, uint8_t maxCount);
 // of only on the hourly timer.
 bool    sched_consumeChanged();
 
+// Seconds until the next enabled entry of the active day fires (0 if one is
+// due this very minute), or -1 if there is none / time isn't set. Lets
+// main.cpp keep the radio quiet ahead of a gong.
+int32_t sched_secondsToNextFire();
+
 // Callback: fired when a scheduled gong triggers
 extern void (*onScheduleTrigger)(uint8_t track, uint8_t loop, uint8_t vol);
