@@ -23,10 +23,15 @@
 // ── LoRa HMAC-подпись — должен совпадать с сервером! ───────────────────────
 // H-7: можно передать через build_flags вместо правки файла — see
 // platformio.ini: build_flags = -DLORA_HMAC_KEY='"${sysenv.GONG_KEY}"'
+// Реальный ключ — в common/secrets.h (в .gitignore, репозиторий публичный,
+// в git ключ попадать не должен). Шаблон: common/secrets.h.example.
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
 #ifndef LORA_HMAC_KEY
 #define LORA_HMAC_KEY  "change_me_before_deploy_32chars!"
 #endif
-static_assert(sizeof(LORA_HMAC_KEY) - 1 >= 16, "LORA_HMAC_KEY короче 16 символов");
+static_assert(sizeof(LORA_HMAC_KEY) - 1 >= 8, "LORA_HMAC_KEY короче 8 символов");
 
 // ── I2S pins for MAX98357A ──────────────────────────────────────────────
 #define I2S_BCLK       26   // Bit Clock

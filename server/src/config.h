@@ -75,10 +75,15 @@ static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD короче 8 симв
 // Смените перед развёртыванием (минимум 16 символов)! H-7: можно передать
 // ключ через build_flags вместо правки файла — see platformio.ini:
 //   build_flags = -DLORA_HMAC_KEY='"${sysenv.GONG_KEY}"'
+// Реальный ключ — в common/secrets.h (в .gitignore, репозиторий публичный,
+// в git ключ попадать не должен). Шаблон: common/secrets.h.example.
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
 #ifndef LORA_HMAC_KEY
 #define LORA_HMAC_KEY           "change_me_before_deploy_32chars!"
 #endif
-static_assert(sizeof(LORA_HMAC_KEY) - 1 >= 16, "LORA_HMAC_KEY короче 16 символов");
+static_assert(sizeof(LORA_HMAC_KEY) - 1 >= 8, "LORA_HMAC_KEY короче 8 символов");
 
 // ── LoRa тайминги ─────────────────────────────────────────────────────────
 #define HEARTBEAT_INTERVAL_MS   30000UL

@@ -12,3 +12,4 @@ Thumbs.db
 wifi.conf
 auth.conf
 secrets.ini
+common/secrets.h
