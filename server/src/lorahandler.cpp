@@ -101,6 +101,10 @@ static uint32_t txSeqCounter = 0;
 // with a different one since (see lora_scheduleStale()).
 static volatile uint16_t lastSchedHash = 0;
 static volatile bool     schedStale    = false;
+// A MSG_SCHEDULE is queued but not on the air yet — ACKs meanwhile still
+// (correctly) carry the old fingerprint and must not re-flag it as stale,
+// or every re-broadcast would trigger one redundant copy a minute later.
+static volatile bool     schedInFlight = false;
 static uint32_t nextN() { return ++txSeqCounter; }
 
 static void upsertClient(const String& id, int rssi, float snr, uint32_t respMs) {
@@ -300,10 +304,12 @@ static void loraTask(void*) {
                     LocalPlay lp = { txTrack, txVol, txLoop };
                     xQueueSend(localPlayQueue, &lp, 0);
                 }
+                if (txType == MSG_SCHEDULE) schedInFlight = false;
                 radio.startReceive();
             } else if (millis() - txStart > txTimeoutMs) {
                 logPrintf("[LORA] TX timeout (no DIO0) type=0x%02X — check DIO0 wiring! Recovering.\n", txType);
                 txBusy = false;
+                if (txType == MSG_SCHEDULE) schedInFlight = false;
                 if (txType == MSG_GONG && txPlayLocal) {
                     LocalPlay lp = { txTrack, txVol, txLoop };
                     xQueueSend(localPlayQueue, &lp, 0);
@@ -341,6 +347,7 @@ static void loraTask(void*) {
                 int st  = radio.startTransmit(req.buf, req.len);
                 if (st != RADIOLIB_ERR_NONE) {
                     logPrintf("[LORA] TX start error: %d\n", st);
+                    if (req.type == MSG_SCHEDULE) schedInFlight = false;
                     if (req.type == MSG_GONG && req.playLocal) {
                         LocalPlay lp = { req.track, req.vol, req.loop };
                         xQueueSend(localPlayQueue, &lp, 0);
@@ -401,7 +408,7 @@ static void loraTask(void*) {
                 uint32_t hb   = doc["hb"] | 0;
                 // Client's stored fallback schedule differs from the last one
                 // broadcast → ask main.cpp to resend (see lora_scheduleStale()).
-                if (doc.containsKey("sh") && lastSchedHash != 0 &&
+                if (doc.containsKey("sh") && lastSchedHash != 0 && !schedInFlight &&
                     (uint16_t)(doc["sh"] | 0) != lastSchedHash && !schedStale) {
                     schedStale = true;
                     logPrintf("[LORA] '%s' has an outdated schedule — will re-broadcast\n", id.c_str());
@@ -529,6 +536,7 @@ void lora_broadcastSchedule(uint8_t day, const SchedBin* entries, uint8_t count)
     if (count > SCHED_BIN_MAX) count = SCHED_BIN_MAX;
     lastSchedHash = schedbin_hash(day, entries, count);
     schedStale    = false;
+    schedInFlight = true;
     uint8_t payload[4 + 4 + sizeof(SchedBinHeader) + SCHED_BIN_MAX * sizeof(SchedBin)];
     size_t  off = 0;
     uint32_t ts = nowTs();
@@ -541,8 +549,10 @@ void lora_broadcastSchedule(uint8_t day, const SchedBin* entries, uint8_t count)
 
     if (loraSendRaw(MSG_SCHEDULE, payload, off, false, 0, 0, 0))
         logPrintf("[LORA] Schedule broadcast: day=%02d entries=%u\n", (int)day, (unsigned)count);
-    else
+    else {
+        schedInFlight = false;
         logPrintf("[LORA] Schedule broadcast failed (radio not ready or queue full)\n");
+    }
 }
 
 bool lora_scheduleStale() { return schedStale; }
