@@ -240,6 +240,11 @@ static void handleTimeSet() {
 
     struct tm cur;
     bool haveCur = localNow(cur) && cur.tm_year >= 124;
+    // No date in the request and no valid date on the device: refuse instead
+    // of silently inventing 2024-01-01 — the course's day auto-advance runs
+    // on the calendar date, and a stub date then turned into a ~1000-day
+    // "jump" once the real date was set.
+    if (!haveCur && !doc.containsKey("year")) { sendErr("date required"); return; }
     int y  = doc["year"]  | (haveCur ? cur.tm_year + 1900 : 2024);
     int mo = doc["month"] | (haveCur ? cur.tm_mon + 1     : 1);
     int d  = doc["day"]   | (haveCur ? cur.tm_mday        : 1);

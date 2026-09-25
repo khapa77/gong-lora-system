@@ -244,6 +244,15 @@ void sched_check() {
                         logPrintf("[SCHED] Date changed (%s -> %s) but not forward — "
                                   "staying on day %02d\n", stored.c_str(), today.c_str(), activeDay);
                         writeActiveDayFile((uint8_t)activeDay, today);
+                    } else if (diff > DAY_COUNT) {
+                        // More days than a whole course — that's a clock
+                        // correction (e.g. from a stub/wrong date), not days
+                        // passing. Advancing would jump straight to the last
+                        // day. Re-stamp and let the operator pick the day.
+                        logPrintf("[SCHED] Date jumped %d days (%s -> %s) — looks like a clock "
+                                  "correction, staying on day %02d (activate the right day in the UI)\n",
+                                  diff, stored.c_str(), today.c_str(), activeDay);
+                        writeActiveDayFile((uint8_t)activeDay, today);
                     } else if (nextDay != activeDay && LittleFS.exists(path)) {
                         if (diff > 1)
                             logPrintf("[SCHED] %d calendar day(s) elapsed while off\n", diff);
