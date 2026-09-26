@@ -40,6 +40,34 @@ static bool dioPending() {
 
 static volatile bool loraReady = false;
 
+// startReceive() verifies every register it writes and bails out BEFORE the
+// final switch to RX if one doesn't read back — the chip is then left in
+// STANDBY, deaf, with DIO0 LOW and nothing in the log. Bench symptom: first
+// frame after server power-on received, then no heartbeat for 30+ min.
+static void rxStart() {
+    int st = radio.startReceive();
+    if (st == RADIOLIB_ERR_NONE) return;
+    LORA_LOG("[LORA] startReceive failed: %d — radio NOT listening, retrying\n", st);
+    radio.standby();
+    st = radio.startReceive();
+    if (st != RADIOLIB_ERR_NONE)
+        LORA_LOG("[LORA] startReceive retry failed: %d\n", st);
+}
+
+// Diagnostic snapshot of the SX1278 straight from its registers, logged while
+// the air is quiet. OpMode 0x85 = LoRa RX continuous (0x81 = standby: deaf).
+// hdr/pkt count valid headers/packets since the last RX start — if they grow
+// while nothing reaches us, frames are arriving but failing CRC.
+static void radioStatus() {
+    uint8_t  op  = mod.SPIreadRegister(0x01);   // RegOpMode
+    uint8_t  irq = mod.SPIreadRegister(0x12);   // RegIrqFlags
+    uint16_t hdr = ((uint16_t)mod.SPIreadRegister(0x14) << 8) | mod.SPIreadRegister(0x15);
+    uint16_t pkt = ((uint16_t)mod.SPIreadRegister(0x16) << 8) | mod.SPIreadRegister(0x17);
+    LORA_LOG("[LORA] quiet: op=0x%02X irq=0x%02X hdr=%u pkt=%u DIO0=%d rssi=%.0f\n",
+             op, irq, hdr, pkt, digitalRead(LORA_DIO0), radio.getRSSI(false, true));
+}
+
+
 // code_review.md S1/note-on-SF12: airtime-derived, computed once in
 // radioInit() right after a successful radio.begin() — see server's
 // lorahandler.cpp radioInit() for the full reasoning. Default only matters
@@ -241,8 +269,20 @@ static uint8_t  autoLastFiredTrack = 0;   // 0 = nothing fired autonomously yet
 // its own would otherwise make it play the same gong a second time.
 static const uint32_t AUTO_DEDUP_MS = 5UL * 60UL * 1000UL;
 
+static bool autoMode = false;   // only for logging the SLAVE <-> AUTONOMOUS transitions
+
 void lora_autonomousTick() {
-    if (!lora_heartbeatLost()) return;               // server alive — stay slave, do nothing
+    bool lost = lora_heartbeatLost();
+    if (lost != autoMode) {
+        autoMode = lost;
+        if (lost)
+            Serial.printf("[LORA] -> AUTONOMOUS (server silent %lus, schedule day=%02d entries=%u, clock %s)\n",
+                          (unsigned long)(lora_msSinceHeartbeat() / 1000), (int)g_schedDay,
+                          (unsigned)g_schedCount, virtualSecOfDay() < 0 ? "NOT SET — gongs cannot fire" : "ok");
+        else
+            Serial.println("[LORA] -> SLAVE (server back)");
+    }
+    if (!lost) return;                                // server alive — stay slave, do nothing
     if (g_schedCount == 0 || g_schedDay == 0xFF) return;  // nothing to fall back to
     int32_t sec = virtualSecOfDay();
     if (sec < 0) return;                              // never got a valid time from the server
@@ -336,7 +376,7 @@ static void sendAck(int rxRssi, uint32_t hbSeq) {
         Serial.printf("[LORA] ACK TX start failed: %d\n", state);
     }
 
-    radio.startReceive();
+    rxStart();
 }
 
 // ── M-8: radio init / self-heal ───────────────────────────────────────────
@@ -354,7 +394,12 @@ static bool radioInit() {
         return false;
     }
     dioFlag = false;
-    radio.startReceive();
+    state = radio.startReceive();
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[LORA] Init: startReceive failed: %d\n", state);
+        loraReady = false;
+        return false;
+    }
     lastRadioOk = millis();
     loraReady   = true;
 
@@ -376,6 +421,7 @@ static const uint32_t RADIO_RETRY_MS   = 30000UL;   // M-8: retry a failed init 
 // ── Core 0: LoRa task — RX + ACK; audio dispatched to Core 1 via queue ───
 static void loraTask(void*) {
     uint32_t lastInitAttempt = 0;
+    uint32_t lastQuietLog    = 0;
 
     // Pending ACK to the last heartbeat. Waiting for our slot used to be a
     // plain vTaskDelay() of up to ~3 min at SF12 — a GONG/STOP arriving
@@ -404,6 +450,11 @@ static void loraTask(void*) {
             continue;
         }
 
+        if (millis() - lastRadioOk > 60000UL && millis() - lastQuietLog >= 60000UL) {
+            lastQuietLog = millis();
+            radioStatus();
+        }
+
         if (!dioPending()) {
             if (ackPending && millis() - ackStart >= ackDelay) {
                 ackPending = false;
@@ -421,13 +472,17 @@ static void loraTask(void*) {
 
         size_t len = radio.getPacketLength();
         if (len == 0 || len > LORA_PAYLOAD_MAX) {
-            radio.startReceive();
+            LORA_LOG("[LORA] RX dropped: bad length %u\n", (unsigned)len);
+            rxStart();
             continue;
         }
 
         uint8_t buf[LORA_PAYLOAD_MAX + 1];
-        if (radio.readData(buf, len) != RADIOLIB_ERR_NONE) {
-            radio.startReceive();
+        int rdState = radio.readData(buf, len);
+        if (rdState != RADIOLIB_ERR_NONE) {
+            LORA_LOG("[LORA] RX dropped: readData %d (len=%u RSSI=%.0f)\n",
+                     rdState, (unsigned)len, radio.getRSSI());
+            rxStart();
             continue;
         }
         lastRadioOk = millis();
@@ -437,23 +492,28 @@ static void loraTask(void*) {
 
         if (type == MSG_GONG || type == MSG_HEARTBEAT || type == MSG_STOP || type == MSG_SCHEDULE) {
             const uint8_t* payload; size_t plen;
-            if (!verifyFrame(type, buf, len, payload, plen)) { radio.startReceive(); continue; }
+            if (!verifyFrame(type, buf, len, payload, plen)) { rxStart(); continue; }
 
             if (type == MSG_SCHEDULE) {
-                if (plen < 8) { radio.startReceive(); continue; }
+                if (plen < 8) { rxStart(); continue; }
                 uint32_t ts, n; memcpy(&ts, payload, 4); memcpy(&n, payload + 4, 4);
-                if (!checkReplay(type, ts, n)) { radio.startReceive(); continue; }
+                if (!checkReplay(type, ts, n)) { rxStart(); continue; }
                 lastHeartbeatMs = millis();
                 handleScheduleFrame(payload + 8, plen - 8);
-                radio.startReceive();
+                rxStart();
                 continue;
             }
 
             DynamicJsonDocument doc(512);
-            if (deserializeJson(doc, payload, plen)) { radio.startReceive(); continue; }
+            DeserializationError jerr = deserializeJson(doc, payload, plen);
+            if (jerr) {
+                LORA_LOG("[LORA] RX dropped: JSON %s (type=0x%02X len=%u)\n", jerr.c_str(), type, (unsigned)len);
+                rxStart();
+                continue;
+            }
             uint32_t ts = doc["ts"] | 0;
             uint32_t n  = doc["n"]  | 0;
-            if (!checkReplay(type, ts, n)) { radio.startReceive(); continue; }
+            if (!checkReplay(type, ts, n)) { rxStart(); continue; }
             lastHeartbeatMs = millis();
 
             if (type == MSG_HEARTBEAT) {
@@ -465,7 +525,7 @@ static void loraTask(void*) {
                 ackStart   = millis();
                 ackDelay   = ACK_GUARD_MS + ackSlot(ackSeq) * ackSlotDelayMs;
                 ackPending = true;   // replaces any older one still waiting
-                radio.startReceive();
+                rxStart();
                 continue;
             }
 
@@ -480,7 +540,7 @@ static void loraTask(void*) {
                 // Core 1 starts the audio immediately, while Core 0 goes
                 // straight back to listening — no ACK, no delay (see above).
                 xQueueSend(rxQueue, &cmd, 0);
-                radio.startReceive();
+                rxStart();
                 continue;
             }
 
@@ -488,14 +548,14 @@ static void loraTask(void*) {
                 RxCmd cmd = {};
                 cmd.type = type;
                 cmd.rssi = rssi;
-                radio.startReceive();
+                rxStart();
                 xQueueSend(rxQueue, &cmd, 0);
                 continue;
             }
         }
 
         Serial.printf("[LORA] Unknown type 0x%02X\n", type);
-        radio.startReceive();
+        rxStart();
     }
 }
 
