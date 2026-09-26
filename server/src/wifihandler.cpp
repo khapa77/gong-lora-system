@@ -11,6 +11,7 @@ static bool     connecting     = false;
 static bool     wasConnected   = false;
 static uint32_t attemptStart   = 0;
 static uint32_t lastAttemptEnd = 0;
+static uint32_t scanStartedAt  = 0;
 
 static void saveConfig() {
     File f = LittleFS.open(WIFI_CONFIG_FILE, "w");
@@ -48,12 +49,15 @@ void wifi_setup() {
     WiFi.persistent(false);
     WiFi.setAutoReconnect(false);   // повторные попытки — только в wifi_loop()
     WiFi.setHostname(MDNS_NAME);
-    WiFi.mode(WIFI_AP_STA);
+    loadConfig();
+    // Pure AP unless a network is saved — exactly what the LoRa branches run.
+    // An idle-but-enabled STA interface still costs the AP airtime, and a
+    // page transfer stalled mid-way is what showed up as "иероглифы".
+    WiFi.mode(staSsid.length() ? WIFI_AP_STA : WIFI_AP);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
     logPrintf("[WIFI] AP '%s' started — IP: %s\n",
               AP_SSID, WiFi.softAPIP().toString().c_str());
 
-    loadConfig();
     if (staSsid.length()) beginConnect();
     else                  logPrintf("[WIFI] STA not configured — AP only\n");
 
@@ -67,7 +71,14 @@ void wifi_setup() {
 }
 
 void wifi_loop() {
-    if (staSsid.isEmpty()) return;
+    if (staSsid.isEmpty()) {
+        // STA was only enabled for a scan — drop back to pure AP once the
+        // UI has had time to fetch the results.
+        if (WiFi.getMode() == WIFI_AP_STA && WiFi.scanComplete() != WIFI_SCAN_RUNNING &&
+            millis() - scanStartedAt >= 60000UL)
+            WiFi.mode(WIFI_AP);
+        return;
+    }
     uint32_t now = millis();
     bool up = WiFi.status() == WL_CONNECTED;
 
@@ -110,6 +121,7 @@ bool wifi_setCredentials(const String& ssid, const String& pass) {
     staSsid = ssid;
     staPass = pass;
     saveConfig();
+    WiFi.mode(WIFI_AP_STA);
     WiFi.disconnect(false);
     wasConnected = false;
     beginConnect();
@@ -123,6 +135,7 @@ void wifi_forget() {
     connecting   = false;
     wasConnected = false;
     LittleFS.remove(WIFI_CONFIG_FILE);
+    WiFi.mode(WIFI_AP);
     logPrintf("[WIFI] STA credentials forgotten — AP only\n");
 }
 
@@ -130,6 +143,8 @@ bool wifi_startScan() {
     if (WiFi.scanComplete() == WIFI_SCAN_RUNNING) return true;
     // Скан во время попытки подключения драйвер отклоняет — сначала её прерываем.
     if (connecting) { WiFi.disconnect(false); connecting = false; lastAttemptEnd = millis(); }
+    if (WiFi.getMode() != WIFI_AP_STA) WiFi.mode(WIFI_AP_STA);   // scanning needs the STA interface
+    scanStartedAt = millis();
     return WiFi.scanNetworks(/*async=*/true) == WIFI_SCAN_RUNNING;
 }
 

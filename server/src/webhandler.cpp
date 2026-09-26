@@ -176,35 +176,25 @@ static void sendErr(const char* msg) {
 }
 
 // -------------------------------------------------------
-// Static files — M-20: serve the pre-gzipped UI when present (41KB -> ~9KB,
-// matters a lot over the AP's own link). /index.html.gz is built via
-// `gzip -9` alongside data/index.html (see README "Обновление веб-интерфейса").
+// Static files — the UI is served UNCOMPRESSED. The pre-gzipped variant
+// (M-20) kept coming back as "иероглифы" on phones: any response where the
+// browser doesn't end up applying Content-Encoding: gzip (header lost,
+// duplicated, cached, or the transfer cut short while the STA side scans
+// channels) shows raw compressed bytes. ~50 KB of plain HTML costs a
+// fraction of a second more over the AP and has nothing to mis-decode;
+// charset is explicit so Cyrillic never depends on the <meta> tag either.
 // -------------------------------------------------------
 static void handleRoot() {
     if (!checkAuth()) return;
-    if (LittleFS.exists("/index.html.gz")) {
-        File f = LittleFS.open("/index.html.gz", "r");
-        // Headers set explicitly, body written directly — NOT via
-        // streamFile(), whose own "*.gz → Content-Encoding: gzip" guess
-        // combined with ours sent the header twice, and browsers (iOS Safari)
-        // rendered the compressed bytes as garbage. Exactly one header now,
-        // whatever the framework version does.
-        // no-cache: a browser that cached a broken response must not keep
-        // showing it after a firmware fix.
-        server.sendHeader("Content-Encoding", "gzip");
+    File f = LittleFS.open("/index.html", "r");
+    if (f) {
         server.sendHeader("Cache-Control", "no-cache");
-        server.setContentLength(f.size());
-        server.send(200, "text/html", "");
-        server.client().write(f);
-        f.close();
-    } else if (LittleFS.exists("/index.html")) {
-        File f = LittleFS.open("/index.html", "r");
-        server.streamFile(f, "text/html");
+        server.streamFile(f, "text/html; charset=utf-8");
         f.close();
     } else {
-        server.send(200, "text/html",
+        server.send(200, "text/html; charset=utf-8",
             "<h1>Gong Server</h1>"
-            "<p>Upload filesystem data to get the full web interface.</p>");
+            "<p>Upload filesystem data (pio run -t uploadfs) to get the full web interface.</p>");
     }
 }
 
