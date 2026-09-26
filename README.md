@@ -1,4 +1,11 @@
-# Gong System — версия «Одиночка» (ветка `standalone`, FW 6.0-solo)
+# Gong System — версия «Одиночка» (ветка `standalone`, FW 6.2-solo)
+
+**Документы этой ветки:**
+[Instruction.md](Instruction.md) — полная инструкция (подключение, прошивка, настройка, эксплуатация, API) ·
+[Testing_table.md](Testing_table.md) — таблица проверок на стенде ·
+[Audit_6.2.md](Audit_6.2.md) — аудит и исправления ·
+[CHANGELOG.md](CHANGELOG.md) ·
+[docs/platformio-setup.md](docs/platformio-setup.md) — PlatformIO с нуля
 
 > **Эта ветка — одиночный гонг без LoRa.** Одно устройство: расписание,
 > веб-интерфейс, MAX98357A, DS3231 — всё как в основной версии, но без радио и
@@ -93,12 +100,13 @@
 |---|---|---|
 | POST | `/api/play` | `{track,vol,loop}` — гонг (через реле) |
 | POST | `/api/stop` | остановить |
-| GET/POST | `/api/relay` | состояние; `{"mode":"auto"}` (`on`, `off`), `{"pre":ms,"hold":ms}` |
+| GET/POST | `/api/relay` | состояние; `{"mode":"auto"}` (`on`, `off`), `{"pre":ms,"hold":ms}` (≤ 5000 / ≤ 20000) |
 | GET/POST | `/api/wifi` | статус STA; `{"ssid","pass"}` — сохранить и подключиться |
 | POST | `/api/wifi/forget` | забыть сеть |
 | POST/GET | `/api/wifi/scan` | запустить скан / получить результат |
 
-Удалены: `/api/play/lora`, `/api/play/all`, `/api/clients`.
+Удалены: `/api/play/lora`, `/api/play/all`, `/api/clients`, `/api/time/source`
+(источник времени выбирается автоматически). Полный список — [Instruction.md §14](Instruction.md#14-api).
 
 ---
 
@@ -528,6 +536,17 @@ footprint/      схема (EasyEDA JSON), netlist, черновая расст�
 images/         скриншоты веб-интерфейса, пиноут MAX98357A
 01_AUDIT_REPORT.md   аудит проекта — блокеры/риски/находки
 02_FIXES.md          конкретные патчи по каждому пункту аудита
+```
+
+В ветке `standalone` каталогов `client/` и `common/` нет. Дополнительно:
+
+```
+server/web/index.html   веб-интерфейс (вшивается в прошивку)
+server/data/            LittleFS: MP3 и шаблоны дней
+Instruction.md          полная инструкция
+Testing_table.md        таблица проверок на стенде
+Audit_6.2.md            аудит standalone (сентябрь 2026) и исправления
+CHANGELOG.md            история версий standalone
 ```
 
 ---
