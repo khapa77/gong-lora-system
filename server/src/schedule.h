@@ -42,18 +42,5 @@ bool   sched_editInDay(uint8_t day, uint32_t id, uint8_t h, uint8_t m,
                        const String& desc, uint8_t track, uint8_t loop, bool enabled, uint8_t vol = DEFAULT_VOLUME);
 bool   sched_delFromDay(uint8_t day, uint32_t id);
 
-// H-5: binary snapshot of the ACTIVE day's enabled entries (capped at
-// SCHED_BIN_MAX) for LoRa broadcast — see lora_broadcastSchedule().
-uint8_t sched_activeBinSnapshot(SchedBin* out, uint8_t maxCount);
-// True once (and only once) since the last call, if the active schedule
-// changed (add/edit/del/activate) — lets main.cpp broadcast promptly instead
-// of only on the hourly timer.
-bool    sched_consumeChanged();
-
-// Seconds until the next enabled entry of the active day fires (0 if one is
-// due this very minute), or -1 if there is none / time isn't set. Lets
-// main.cpp keep the radio quiet ahead of a gong.
-int32_t sched_secondsToNextFire();
-
 // Callback: fired when a scheduled gong triggers
 extern void (*onScheduleTrigger)(uint8_t track, uint8_t loop, uint8_t vol);

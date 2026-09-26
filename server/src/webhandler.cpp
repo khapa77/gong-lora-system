@@ -3,10 +3,10 @@
 #include "schedule.h"
 #include "mp3handler.h"
 #include "rtchandler.h"
-#include "lorahandler.h"
+#include "relayhandler.h"
+#include "wifihandler.h"
 #include <LittleFS.h>
 #include <WiFi.h>
-#include <ESPmDNS.h>
 #include <ArduinoJson.h>
 #include "mbedtls/md.h"
 #include "mbedtls/pkcs5.h"
@@ -287,13 +287,14 @@ static void handleTimeSource() {
 
 // -------------------------------------------------------
 // /api/status  — see also /api/state (M-10), which bundles this with
-// schedule/days/clients/auth into one response for the UI's poll loop.
+// schedule/days/relay/wifi/auth into one response for the UI's poll loop.
 // -------------------------------------------------------
 static String statusJSON() {
     DynamicJsonDocument doc(512);
-    doc["mode"]   = "AP";
-    doc["ip"]     = WiFi.softAPIP().toString();
+    doc["mode"]   = WiFi.status() == WL_CONNECTED ? "AP+STA" : "AP";
+    doc["ip"]     = wifi_apIP();
     doc["ssid"]   = AP_SSID;
+    if (WiFi.status() == WL_CONNECTED) doc["sta_ip"] = WiFi.localIP().toString();
     doc["heap"]   = (int)ESP.getFreeHeap();
     doc["uptime"] = (uint32_t)(millis() / 1000);
     doc["fw"]     = FW_VERSION;   // Low: lets an operator confirm every device runs the same build
@@ -312,9 +313,7 @@ static String statusJSON() {
     doc["time_source"] = (timeSrc == TimeSrc::MANUAL) ? "manual" : "rtc";
     doc["active_day"]  = sched_getActiveDay();
     doc["day_count"]   = DAY_COUNT;
-    doc["lora_ready"]  = lora_isReady();
-    doc["clients"]     = lora_clientCount();
-    doc["default_key"] = lora_usesDefaultKey();
+    doc["relay_on"]    = relay_isOn();
 
     String s;
     serializeJson(doc, s);
@@ -453,7 +452,8 @@ static void handleDayEntryDELETE() {
 }
 
 // -------------------------------------------------------
-// /api/play*  /api/stop  /api/clients — manual + LoRa control
+// /api/play  /api/stop — manual control. Playback goes through the relay
+// module so the external amplifier is powered before the first sample.
 // -------------------------------------------------------
 static bool parsePlayArgs(uint8_t& track, uint8_t& vol, uint8_t& loop) {
     DynamicJsonDocument doc(128);
@@ -464,43 +464,80 @@ static bool parsePlayArgs(uint8_t& track, uint8_t& vol, uint8_t& loop) {
     return true;
 }
 
-static void handlePlayLocal() {
+static void handlePlay() {
     if (!checkAuth() || !checkOrigin()) return;
     uint8_t track, vol, loop;
     if (!parsePlayArgs(track, vol, loop)) { sendErr("bad json"); return; }
-    mp3_setVolume(vol);
-    mp3_play(track, loop);
-    sendOK();
-}
-
-static void handlePlayLoRa() {
-    if (!checkAuth() || !checkOrigin()) return;
-    uint8_t track, vol, loop;
-    if (!parsePlayArgs(track, vol, loop)) { sendErr("bad json"); return; }
-    lora_sendGong(track, vol, loop, /*playLocal=*/false);
-    sendOK();
-}
-
-static void handlePlayAll() {
-    if (!checkAuth() || !checkOrigin()) return;
-    uint8_t track, vol, loop;
-    if (!parsePlayArgs(track, vol, loop)) { sendErr("bad json"); return; }
-    // H-1: non-blocking — local playback starts from loop()'s
-    // lora_pollLocalPlay() once the broadcast's TX actually completes.
-    lora_sendGong(track, vol, loop, /*playLocal=*/true);
+    relay_play(track, vol, loop);
     sendOK();
 }
 
 static void handleStop() {
     if (!checkAuth() || !checkOrigin()) return;
-    mp3_stop();
-    lora_sendStop();
+    relay_stop();
     sendOK();
 }
 
-static void handleClients() {
+// -------------------------------------------------------
+// /api/relay — GET state; POST {"mode":"auto|on|off"} and/or {"pre":ms,"hold":ms}
+// -------------------------------------------------------
+static void handleRelayGET() {
     if (!checkAuth()) return;
-    sendJSON(200, lora_clientsJSON());
+    sendJSON(200, relay_toJSON());
+}
+
+static void handleRelayPOST() {
+    if (!checkAuth() || !checkOrigin()) return;
+    DynamicJsonDocument doc(128);
+    if (deserializeJson(doc, server.arg("plain"))) { sendErr("bad json"); return; }
+    if (doc.containsKey("pre") || doc.containsKey("hold")) {
+        uint32_t pre  = doc["pre"]  | relay_preMs();
+        uint32_t hold = doc["hold"] | relay_holdMs();
+        if (!relay_setTiming(pre, hold)) { sendErr("pre 0-10000 ms, hold 0-600000 ms"); return; }
+    }
+    if (doc.containsKey("mode")) {
+        RelayMode m;
+        if (!relay_parseMode(String((const char*)(doc["mode"] | "")), m)) { sendErr("mode: auto|on|off"); return; }
+        relay_setMode(m);
+    }
+    sendJSON(200, relay_toJSON());
+}
+
+// -------------------------------------------------------
+// /api/wifi — STA (connect to an existing network). The password is
+// write-only: it is never sent back by any endpoint.
+// -------------------------------------------------------
+static void handleWifiGET() {
+    if (!checkAuth()) return;
+    sendJSON(200, wifi_statusJSON());
+}
+
+static void handleWifiPOST() {
+    if (!checkAuth() || !checkOrigin()) return;
+    DynamicJsonDocument doc(256);
+    if (deserializeJson(doc, server.arg("plain"))) { sendErr("bad json"); return; }
+    String ssid = doc["ssid"] | "";
+    String pass = doc["pass"] | "";
+    ssid.trim();
+    if (!wifi_setCredentials(ssid, pass)) { sendErr("SSID 1-32 chars, password empty (open) or 8-63 chars"); return; }
+    sendOK();
+}
+
+static void handleWifiForget() {
+    if (!checkAuth() || !checkOrigin()) return;
+    wifi_forget();
+    sendOK();
+}
+
+static void handleWifiScanPOST() {
+    if (!checkAuth() || !checkOrigin()) return;
+    if (wifi_startScan()) sendOK();
+    else sendErr("scan failed to start");
+}
+
+static void handleWifiScanGET() {
+    if (!checkAuth()) return;
+    sendJSON(200, wifi_scanJSON());
 }
 
 static void handleFavicon() {
@@ -533,7 +570,8 @@ static void handleState() {
     s += "\"status\":";   s += statusJSON();
     s += ",\"schedule\":"; s += schedule;
     s += ",\"days\":";     s += daysJSON();
-    s += ",\"clients\":";  s += lora_clientsJSON();
+    s += ",\"relay\":";    s += relay_toJSON();
+    s += ",\"wifi\":";     s += wifi_statusJSON();
     s += ",\"auth\":";     s += authJSON();
     s += "}";
     sendJSON(200, s);
@@ -544,28 +582,9 @@ static void handleNotFound() {
 }
 
 // -------------------------------------------------------
-// WiFi — standalone AP only, never joins another network
-// -------------------------------------------------------
-static void wifi_startAP() {
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(AP_SSID, AP_PASSWORD);
-    logPrintf("[WIFI] AP '%s' started — IP: %s\n",
-                  AP_SSID, WiFi.softAPIP().toString().c_str());
-    MDNS.begin(MDNS_NAME);
-    // M11: without an advertised service, some resolvers (notably Windows
-    // without Bonjour, and some Android NSD-based clients) never resolve the
-    // plain hostname — only the fact that the device offers an "http"
-    // service actually gets it into their mDNS cache.
-    MDNS.addService("http", "tcp", 80);
-    logPrintf("[MDNS] http://%s.local\n", MDNS_NAME);
-}
-
-// -------------------------------------------------------
 // Public setup / loop
 // -------------------------------------------------------
 void web_setup() {
-    wifi_startAP();
-
     loadAuth();
 
     // Authorization is always header index 0 once collectHeaders() has been
@@ -599,11 +618,17 @@ void web_setup() {
     server.on("/api/day/entry",      HTTP_DELETE, handleDayEntryDELETE);
     server.on("/api/tracks",         HTTP_GET,  handleTracksGet);
 
-    server.on("/api/play",        HTTP_POST, handlePlayLocal);
-    server.on("/api/play/lora",   HTTP_POST, handlePlayLoRa);
-    server.on("/api/play/all",    HTTP_POST, handlePlayAll);
+    server.on("/api/play",        HTTP_POST, handlePlay);
     server.on("/api/stop",        HTTP_POST, handleStop);
-    server.on("/api/clients",     HTTP_GET,  handleClients);
+
+    server.on("/api/relay",       HTTP_GET,  handleRelayGET);
+    server.on("/api/relay",       HTTP_POST, handleRelayPOST);
+
+    server.on("/api/wifi",        HTTP_GET,  handleWifiGET);
+    server.on("/api/wifi",        HTTP_POST, handleWifiPOST);
+    server.on("/api/wifi/forget", HTTP_POST, handleWifiForget);
+    server.on("/api/wifi/scan",   HTTP_POST, handleWifiScanPOST);
+    server.on("/api/wifi/scan",   HTTP_GET,  handleWifiScanGET);
 
     server.onNotFound(handleNotFound);
     server.begin();

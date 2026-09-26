@@ -32,11 +32,6 @@ static unsigned long lastTimeLog     = 0;
 // stamped in /activeday.conf. Cheap check, no need to run every second.
 static unsigned long lastDateCheckMs = 0;
 
-// H-5: set whenever the active schedule changes (add/edit/del/activate) so
-// main.cpp can broadcast the new binary schedule promptly instead of only on
-// the hourly timer.
-static volatile bool scheduleChangedFlag = true;   // force one broadcast after boot
-
 // M-16: don't write to SPIFFS while a track is playing — a write landing
 // exactly then competes with the audio task for the same flash and causes
 // audible stutter. The in-memory `entries[]` is already correct by the time
@@ -385,7 +380,6 @@ static void sched_saveNow() {
         if (df) { df.print(json); df.close(); }
     }
 
-    scheduleChangedFlag = true;   // H-5
     logPrintf("[SCHED] Saved %d entries\n", count);
 }
 
@@ -502,7 +496,6 @@ bool sched_activateDay(uint8_t day) {
     // day changes even across a missed midnight tick — see sched_check()).
     writeActiveDayFile(day, currentDateStr());
 
-    scheduleChangedFlag = true;   // H-5
     logPrintf("[SCHED] Activated day %02d (%d entries)\n", (int)day, count);
     return true;
 }
@@ -520,43 +513,6 @@ int sched_getActiveDay() {
 bool sched_courseEnded() {
     int day = sched_getActiveDay();
     return day >= 0 && day == DAY_COUNT - 1;
-}
-
-// H-5: enabled entries of the active (in-memory) day, packed for LoRa.
-uint8_t sched_activeBinSnapshot(SchedBin* out, uint8_t maxCount) {
-    uint8_t n = 0;
-    for (uint8_t i = 0; i < count && n < maxCount; i++) {
-        if (!entries[i].enabled) continue;
-        out[n].hour   = entries[i].hour;
-        out[n].minute = entries[i].minute;
-        out[n].track  = entries[i].track;
-        out[n].vol    = entries[i].vol;
-        out[n].loopEn = schedbin_pack(entries[i].loop, true);
-        n++;
-    }
-    return n;
-}
-
-int32_t sched_secondsToNextFire() {
-    struct tm ti;
-    if (!localNow(ti) || ti.tm_year < 124) return -1;
-    int32_t nowS = ti.tm_hour * 3600 + ti.tm_min * 60 + ti.tm_sec;
-    int32_t best = -1;
-    for (uint8_t i = 0; i < count; i++) {
-        if (!entries[i].enabled) continue;
-        int32_t fireS = entries[i].hour * 3600 + entries[i].minute * 60;
-        int32_t d = fireS - nowS;
-        if (d < -59) d += 86400;          // already past this minute → tomorrow
-        else if (d < 0) d = 0;            // firing this very minute
-        if (best < 0 || d < best) best = d;
-    }
-    return best;
-}
-
-bool sched_consumeChanged() {
-    if (!scheduleChangedFlag) return false;
-    scheduleChangedFlag = false;
-    return true;
 }
 
 // -------------------------------------------------------

@@ -13,8 +13,8 @@ static struct {
     int  wrapped;   // how many total lines written (for display count)
 } ring;
 
-// logPrintf is called concurrently from loraTask (Core 0) and loopTask /
-// audioFeederTask (Core 1). Without a lock, two writers can race on
+// logPrintf is called concurrently from WiFi event callbacks (Core 0) and
+// loopTask / audioFeederTask (Core 1). Without a lock, two writers can race on
 // ring.head and clobber each other's slot (garbled log lines; no crash,
 // indices stay bounded — but logs are exactly what you need intact when
 // debugging). Serial output is serialised under the same lock so interleaved
@@ -30,7 +30,7 @@ void logbuffer_init() {
 
 // M-3: the ring buffer stores lines truncated to LOG_LINE_LEN (bounded RAM,
 // fine for the on-screen debug log), but Serial used to get that SAME
-// truncated copy — a ~150-char LoRa init error got cut off exactly where the
+// truncated copy — a ~150-char init error got cut off exactly where the
 // useful part started. SERIAL_LINE_LEN is generous headroom for Serial only;
 // the ring buffer's per-line budget is unchanged.
 #define SERIAL_LINE_LEN 256
