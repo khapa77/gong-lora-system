@@ -1,9 +1,11 @@
 #include "wifihandler.h"
 #include "config.h"
+#include "timesync.h"
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 
 static String   staSsid;
 static String   staPass;
@@ -13,25 +15,42 @@ static uint32_t attemptStart   = 0;
 static uint32_t lastAttemptEnd = 0;
 static uint32_t scanStartedAt  = 0;
 
+// Credentials live in NVS (were /wifi.conf): uploadfs rewrites the whole
+// LittleFS partition and used to forget the network along with it.
 static void saveConfig() {
-    File f = LittleFS.open(WIFI_CONFIG_FILE, "w");
-    if (!f) { logPrintf("[WIFI] Failed to save %s\n", WIFI_CONFIG_FILE); return; }
-    StaticJsonDocument<256> doc;
-    doc["ssid"] = staSsid;
-    doc["pass"] = staPass;
-    serializeJson(doc, f);
-    f.close();
+    Preferences p;
+    p.begin("wifi", false);
+    p.putString("ssid", staSsid);
+    p.putString("pass", staPass);
+    p.end();
 }
 
 static void loadConfig() {
+    Preferences p;
+    p.begin("wifi", true);
+    bool have = p.isKey("ssid");
+    if (have) {
+        staSsid = p.getString("ssid", "");
+        staPass = p.getString("pass", "");
+    }
+    p.end();
+    if (have) return;
+
+    // One-time import of the pre-6.2 /wifi.conf.
     File f = LittleFS.open(WIFI_CONFIG_FILE, "r");
     if (!f) return;
     StaticJsonDocument<256> doc;
     bool ok = !deserializeJson(doc, f);
     f.close();
-    if (!ok) { logPrintf("[WIFI] %s is corrupt — ignoring\n", WIFI_CONFIG_FILE); return; }
-    staSsid = String((const char*)(doc["ssid"] | ""));
-    staPass = String((const char*)(doc["pass"] | ""));
+    if (ok) {
+        staSsid = String((const char*)(doc["ssid"] | ""));
+        staPass = String((const char*)(doc["pass"] | ""));
+        saveConfig();
+        logPrintf("[WIFI] Imported %s into NVS\n", WIFI_CONFIG_FILE);
+    } else {
+        logPrintf("[WIFI] %s is corrupt — ignoring\n", WIFI_CONFIG_FILE);
+    }
+    LittleFS.remove(WIFI_CONFIG_FILE);
 }
 
 static void beginConnect() {
@@ -91,6 +110,7 @@ void wifi_loop() {
             logPrintf("[WIFI] STA connected to '%s' — IP: %s, RSSI %d dBm, ch %d\n",
                       staSsid.c_str(), WiFi.localIP().toString().c_str(),
                       (int)WiFi.RSSI(), (int)WiFi.channel());
+            time_startNtp();   // есть ли интернет, покажет сама синхронизация
         }
         return;
     }
@@ -134,6 +154,10 @@ void wifi_forget() {
     staPass = "";
     connecting   = false;
     wasConnected = false;
+    Preferences p;
+    p.begin("wifi", false);
+    p.clear();
+    p.end();
     LittleFS.remove(WIFI_CONFIG_FILE);
     WiFi.mode(WIFI_AP);
     logPrintf("[WIFI] STA credentials forgotten — AP only\n");

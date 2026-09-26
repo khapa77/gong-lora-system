@@ -3,6 +3,7 @@
 #include "mp3handler.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 
 static RelayMode mode    = RelayMode::AUTO;
 static uint32_t  preMs   = RELAY_DEFAULT_PRE_MS;
@@ -38,28 +39,60 @@ static void drive(bool on) {
     logPrintf("[RELAY] %s\n", on ? "ON" : "OFF");
 }
 
+static bool timingValid(uint32_t pre, uint32_t hold) {
+    return pre <= RELAY_MAX_PRE_MS && hold <= RELAY_MAX_HOLD_MS;
+}
+
+// Settings live in NVS (were /relay.conf): uploadfs rewrites the whole
+// LittleFS partition and used to reset them along with everything else.
 static void saveConfig() {
-    File f = LittleFS.open(RELAY_CONFIG_FILE, "w");
-    if (!f) { logPrintf("[RELAY] Failed to save %s\n", RELAY_CONFIG_FILE); return; }
-    StaticJsonDocument<96> doc;
-    doc["mode"] = modeName(mode);
-    doc["pre"]  = preMs;
-    doc["hold"] = holdMs;
-    serializeJson(doc, f);
-    f.close();
+    Preferences p;
+    p.begin("relay", false);
+    p.putUChar("mode", (uint8_t)mode);
+    p.putUInt("pre",  preMs);
+    p.putUInt("hold", holdMs);
+    p.end();
+}
+
+// Same limits as relay_setTiming(): values saved by an older firmware (which
+// allowed 10 s / 10 min) or a damaged store must not bring back e.g. a
+// 10-minute hold. Out of range → clamped to the new maximum.
+static void applyTiming(uint32_t pre, uint32_t hold, const char* from) {
+    if (!timingValid(pre, hold))
+        logPrintf("[RELAY] %s: pre=%u hold=%u out of range — clamped to %u/%u ms\n", from,
+                  (unsigned)pre, (unsigned)hold, (unsigned)RELAY_MAX_PRE_MS, (unsigned)RELAY_MAX_HOLD_MS);
+    preMs  = min(pre,  (uint32_t)RELAY_MAX_PRE_MS);
+    holdMs = min(hold, (uint32_t)RELAY_MAX_HOLD_MS);
 }
 
 static void loadConfig() {
+    Preferences p;
+    p.begin("relay", true);
+    bool have = p.isKey("mode");
+    if (have) {
+        uint8_t m = p.getUChar("mode", (uint8_t)RelayMode::AUTO);
+        if (m <= (uint8_t)RelayMode::OFF) mode = (RelayMode)m;
+        applyTiming(p.getUInt("pre", RELAY_DEFAULT_PRE_MS), p.getUInt("hold", RELAY_DEFAULT_HOLD_MS), "NVS");
+    }
+    p.end();
+    if (have) return;
+
+    // One-time import of the pre-6.2 /relay.conf.
     File f = LittleFS.open(RELAY_CONFIG_FILE, "r");
     if (!f) return;
     StaticJsonDocument<96> doc;
     bool ok = !deserializeJson(doc, f);
     f.close();
-    if (!ok) { logPrintf("[RELAY] %s is corrupt — using defaults\n", RELAY_CONFIG_FILE); return; }
-    RelayMode m;
-    if (relay_parseMode(String((const char*)(doc["mode"] | "auto")), m)) mode = m;
-    preMs  = doc["pre"]  | RELAY_DEFAULT_PRE_MS;
-    holdMs = doc["hold"] | RELAY_DEFAULT_HOLD_MS;
+    if (ok) {
+        RelayMode m;
+        if (relay_parseMode(String((const char*)(doc["mode"] | "auto")), m)) mode = m;
+        applyTiming(doc["pre"] | RELAY_DEFAULT_PRE_MS, doc["hold"] | RELAY_DEFAULT_HOLD_MS, RELAY_CONFIG_FILE);
+        saveConfig();
+        logPrintf("[RELAY] Imported %s into NVS\n", RELAY_CONFIG_FILE);
+    } else {
+        logPrintf("[RELAY] %s is corrupt — using defaults\n", RELAY_CONFIG_FILE);
+    }
+    LittleFS.remove(RELAY_CONFIG_FILE);
 }
 
 void relay_setup() {
@@ -151,7 +184,7 @@ bool relay_setMode(RelayMode m) {
 }
 
 bool relay_setTiming(uint32_t pre, uint32_t hold) {
-    if (pre > 10000 || hold > 600000) return false;
+    if (!timingValid(pre, hold)) return false;
     preMs  = pre;
     holdMs = hold;
     saveConfig();

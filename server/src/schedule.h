@@ -26,11 +26,13 @@ String sched_toJSON();
 void   sched_save();
 void   sched_load();
 
-// Multi-day support
+// Multi-day support. The active day lives in NVS; its /dayNN.conf is the
+// live schedule's only on-disk copy.
 String sched_dayJSON(uint8_t day);      // read /dayNN.conf → JSON (no memory change)
 bool   sched_activateDay(uint8_t day);  // load /dayNN.conf as active schedule
 int    sched_getActiveDay();            // -1 if not set
 bool   sched_courseEnded();             // true if active day is the last day (DAY_COUNT-1)
+bool   sched_hasError();                // active day's file failed to load at boot — no gongs
 
 // Template editing — modifies /dayNN.conf directly on disk WITHOUT activating
 // it or touching the live in-memory schedule. If `day` happens to already be

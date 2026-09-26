@@ -4,7 +4,7 @@
 
 // Low: exposed in /api/status so an operator can confirm every client and
 // the server were flashed from the same build (no version info existed at all before).
-#define FW_VERSION "6.0-solo"
+#define FW_VERSION "6.2-solo"
 
 // ── Время: неблокирующая замена getLocalTime() ─────────────────────────────
 // Штатный getLocalTime(tm*, ms=5000) крутит delay(10) до 5 СЕКУНД, если время
@@ -24,6 +24,20 @@ static inline bool localNow(struct tm& out) {
     localtime_r(&t, &out);
     return true;
 }
+
+// ── Часовой пояс и NTP (см. timesync.h) ──────────────────────────────────
+// Системные часы и DS3231 хранят UTC, локальное время — через POSIX TZ.
+// "MSK-3" = UTC+3 без перехода на летнее время. Другой пояс — например
+// "<+05>-5" (Екатеринбург) или "EET-2EEST,M3.5.0/3,M10.5.0/4" (Киев).
+#ifndef TIME_TZ
+#define TIME_TZ                "MSK-3"
+#endif
+#define NTP_SERVER1            "ru.pool.ntp.org"
+#define NTP_SERVER2            "pool.ntp.org"
+#define NTP_SERVER3            "time.google.com"
+#define NTP_SYNC_INTERVAL_MS   3600000UL       // опрос NTP раз в час, пока есть STA
+#define NTP_STALE_MS           (2 * NTP_SYNC_INTERVAL_MS)  // дольше без NTP — "интернета нет"
+#define RTC_RELOAD_MS          3600000UL       // тогда раз в час подтягиваем DS3231
 
 // ── WiFi ──────────────────────────────────────────────────────────────────
 // Своя точка доступа поднимается ВСЕГДА — это аварийный вход в админку, даже
@@ -51,17 +65,28 @@ static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD короче 8 симв
 
 // ── Расписание ────────────────────────────────────────────────────────────
 #define MAX_SCHEDULES     32
-#define SCHEDULE_FILE     "/gong.conf"
+#define SCHEDULE_FILE     "/gong.conf"   // только первый запуск: засев Дня 00 (дальше — dayNN.conf)
+#define LOOP_MAX          7              // повторов трека за одно срабатывание
+// Описание записи ограничено в байтах UTF-8 (кириллица — 2 байта/символ, т.е.
+// ~48 букв). Без лимита 32 длинных описания переполняли JSON-пул: API отвечал
+// "ok", а сохранение молча отменялось. 32 × 96 Б укладываются в пул с запасом.
+#define DESC_MAX_BYTES    96
 
 // ── Многодневный курс ──────────────────────────────────────────────────────
 #define DAY_COUNT         12   // day00.conf .. day11.conf
 
 // ── Аутентификация веб-админки ────────────────────────────────────────────
-#define AUTH_CONFIG_FILE  "/auth.conf"
+#define AUTH_CONFIG_FILE  "/auth.conf"   // устаревшее: с 6.2 — в NVS, файл импортируется один раз
 #define AUTH_REALM        "Gong Server"
+#define AUTH_MIN_PASSWORD 8
+// Сброс пароля админки без перепрошивки: держать кнопку гонга (BUTTON_PIN)
+// нажатой при включении питания AUTH_RESET_HOLD_MS — светодиод горит, пока
+// держите; после сброса вход снова открыт. Нужен, потому что пока пароль не
+// задан, его может задать любой подключившийся к AP и запереть владельца.
+#define AUTH_RESET_HOLD_MS 10000UL
 
 // ── WiFi STA (подключение к существующей сети) ─────────────────────────────
-#define WIFI_CONFIG_FILE        "/wifi.conf"
+#define WIFI_CONFIG_FILE        "/wifi.conf"   // устаревшее: с 6.2 — в NVS
 // Пока STA не подключён, ESP32 сканирует каналы — это рвёт связь с клиентами
 // собственной AP. Поэтому никакого непрерывного auto-reconnect: одна попытка
 // раз в WIFI_RETRY_MS, между попытками AP работает спокойно.
@@ -81,11 +106,13 @@ static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD короче 8 симв
 #ifndef RELAY_ACTIVE_LOW
 #define RELAY_ACTIVE_LOW        0
 #endif
-#define RELAY_CONFIG_FILE       "/relay.conf"
+#define RELAY_CONFIG_FILE       "/relay.conf"  // устаревшее: с 6.2 — в NVS
 // Авто-режим: реле включается ДО звука (усилителю нужно время выйти на режим,
 // иначе начало удара гонга срезается) и держится после окончания трека.
 #define RELAY_DEFAULT_PRE_MS    800UL
 #define RELAY_DEFAULT_HOLD_MS   3000UL
+#define RELAY_MAX_PRE_MS        5000UL    // прогрев усилителя до гонга
+#define RELAY_MAX_HOLD_MS       20000UL   // удержание ПОСЛЕ окончания гонга
 
 // ── Физическая кнопка (запуск гонга мимо веб-интерфейса) ─────────────────
 // Кнопка между BUTTON_PIN и GND, внутренняя подтяжка к 3.3V включена.
@@ -106,6 +133,17 @@ static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD короче 8 симв
 #define BUTTON_TRACK            DEFAULT_TRACK
 #define BUTTON_VOL              DEFAULT_VOLUME
 #define BUTTON_LOOP             1
+
+// ── Светодиод состояния (statusled.h) ───────────────────────────────────────
+// GPIO2 — встроенный синий светодиод DevKit. Это strapping-пин, но уровень
+// читается только в момент сброса — выход после загрузки прошивке не мешает.
+// На печатной плате GPIO2 не разведён (NC). -1 — отключить.
+#ifndef STATUS_LED_PIN
+#define STATUS_LED_PIN          2
+#endif
+#ifndef STATUS_LED_ACTIVE_LOW
+#define STATUS_LED_ACTIVE_LOW   0
+#endif
 
 // ── M-14: догоняющее срабатывание после перезагрузки ────────────────────────
 // Если сервер перезагрузился в узком окне вокруг времени гонга, тот гонг не

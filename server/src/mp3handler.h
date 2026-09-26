@@ -13,6 +13,7 @@ void    mp3_startAudioTask();
 void    mp3_play(uint8_t track, uint8_t loops = 1);  // loops=1 → play once
 
 void    mp3_stop();
+bool    mp3_trackExists(uint8_t track);   // /NNNN.mp3 present on LittleFS
 void    mp3_setVolume(uint8_t vol);   // 0–30 (внутри маппится на 0–21)
 uint8_t mp3_getVolume();
 bool    mp3_isPlaying();

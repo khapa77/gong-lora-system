@@ -34,18 +34,42 @@ static void applyVolume() {
     audio.setVolume(v);
 }
 
+static void trackPath(uint8_t track, char (&path)[16]) {
+    snprintf(path, sizeof(path), "/%04d.mp3", track);
+}
+
+bool mp3_trackExists(uint8_t track) {
+    char path[16];
+    trackPath(track, path);
+    return LittleFS.exists(path);
+}
+
 // Caller must hold audioMtx.
 static void _startPlay(uint8_t track) {
     if (audio.isRunning()) audio.stopSong();
     ramping = false;
 
     char path[16];
-    snprintf(path, sizeof(path), "/%04d.mp3", track);
+    trackPath(track, path);
 
     if (!LittleFS.exists(path)) {
-        logPrintf("[MP3] File not found: %s\n", path);
-        loopRemain = 0;
-        return;
+        // A scheduled gong whose file vanished (e.g. uploadfs with a different
+        // data/ set) used to be silence plus one log line. A different gong
+        // sound beats no gong at 04:00.
+        if (track != DEFAULT_TRACK) {
+            char fb[16];
+            trackPath(DEFAULT_TRACK, fb);
+            if (LittleFS.exists(fb)) {
+                logPrintf("[MP3] File not found: %s — playing %s instead\n", path, fb);
+                loopTrack = DEFAULT_TRACK;
+                memcpy(path, fb, sizeof(path));
+            }
+        }
+        if (!LittleFS.exists(path)) {
+            logPrintf("[MP3] File not found: %s\n", path);
+            loopRemain = 0;
+            return;
+        }
     }
 
     audio.setVolume(0);

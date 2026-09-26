@@ -14,12 +14,12 @@
 //   ON   — всегда включено (ручное управление из веб-интерфейса)
 //   OFF  — всегда выключено; гонг звучит только в локальном динамике MAX98357A
 //
-// Вызывается только из loopTask (loop(), веб-обработчики, sched_check()) —
-// блокировок не нужно.
+// Вызывается из controlTask и веб-обработчиков — всегда под sys_lock()
+// (sysstate.h), своих блокировок не нужно.
 
 enum class RelayMode : uint8_t { AUTO, ON, OFF };
 
-void   relay_setup();    // до первого relay_play(); читает RELAY_CONFIG_FILE
+void   relay_setup();    // до первого relay_play(); настройки из NVS
 void   relay_loop();     // каждый проход loop()
 
 void   relay_play(uint8_t track, uint8_t vol, uint8_t loop);

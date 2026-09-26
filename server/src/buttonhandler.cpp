@@ -1,6 +1,7 @@
 #include "buttonhandler.h"
 #include "config.h"
 #include "relayhandler.h"
+#include "statusled.h"
 
 static bool     stableLevel = HIGH;   // HIGH = отпущена (pull-up)
 static bool     lastRaw     = HIGH;
@@ -54,4 +55,31 @@ void button_loop() {
                   (unsigned)(need / 1000), BUTTON_TRACK, BUTTON_VOL, BUTTON_LOOP);
         relay_play(BUTTON_TRACK, BUTTON_VOL, BUTTON_LOOP);
     }
+}
+
+// Сброс пароля (config.h, AUTH_RESET_HOLD_MS): кнопка зажата с самого
+// включения и держится всё это время. Светодиод горит, пока держите, и
+// гаснет при отпускании. Отпустили раньше — ничего не происходит.
+bool button_resetHeldAtBoot(uint32_t holdMs) {
+    if (digitalRead(BUTTON_PIN) != LOW) return false;
+    logPrintf("[BTN] Held at boot — keep holding %us to reset the admin password\n",
+              (unsigned)(holdMs / 1000));
+    uint32_t start = millis();
+    uint32_t lastHigh = 0;
+    led_set(true);
+    while (millis() - start < holdMs) {
+        if (digitalRead(BUTTON_PIN) != LOW) {
+            if (!lastHigh) lastHigh = millis();
+            if (millis() - lastHigh >= BUTTON_DEBOUNCE_MS) {
+                led_set(false);
+                logPrintf("[BTN] Released — password NOT reset\n");
+                return false;
+            }
+        } else {
+            lastHigh = 0;
+        }
+        delay(10);
+    }
+    led_set(false);
+    return true;
 }

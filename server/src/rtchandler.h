@@ -1,21 +1,17 @@
 #pragma once
 #include <Arduino.h>
+#include <time.h>
 
 // DS3231 RTC — I2C, SDA=GPIO21, SCL=GPIO22 (ESP32 defaults, no extra config needed)
-// Provides battery-backed timekeeping independent of WiFi/NTP.
+// Хранит UTC. Какое время попадает в системные часы, решает timesync.cpp.
 //
-// Source (NTP / RTC / Manual) is chosen explicitly by the user in the web UI —
-// there is no automatic priority between them.
-//
-// Usage:
-//   rtc_setup()          — call in setup() before web_setup(); reads RTC → system clock
-//   rtc_isPresent()      — true if DS3231 was found on I2C bus
-//   rtc_hasValidTime()   — true if DS3231 has not lost power since last set
-//   rtc_syncFromSystem() — write current system time to DS3231 (call after NTP sync or manual set)
-//   rtc_loadToSystem()   — re-read DS3231 → system clock on demand (call when user selects RTC source)
+//   rtc_setup()          — probe DS3231 (+ однократная миграция local → UTC)
+//   rtc_read(t)          — прочитать UTC; false если модуля нет, батарейка садилась
+//                          или чтение выглядит как мусор
+//   rtc_syncFromSystem() — записать системное время в DS3231 (после NTP / ручной установки)
 
 void rtc_setup();
+bool rtc_read(time_t& out);
 bool rtc_isPresent();
 bool rtc_hasValidTime();
 void rtc_syncFromSystem();
-bool rtc_loadToSystem();

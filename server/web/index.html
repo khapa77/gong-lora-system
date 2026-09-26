@@ -191,6 +191,8 @@ tr:hover td { background: rgba(79,158,248,.04); }
 
 <div class="main">
 
+  <div id="alerts" style="display:none;background:rgba(248,95,95,.12);border:1px solid var(--red);color:var(--red);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:.88rem;line-height:1.5"></div>
+
   <!-- ── Schedule ── -->
   <div class="card" id="sectionSchedule">
     <div class="card-title">
@@ -244,16 +246,9 @@ tr:hover td { background: rgba(79,158,248,.04); }
       </div>
     </div>
     <div class="card-body">
-      <div style="display:flex;gap:6px;margin-bottom:14px">
-        <button id="tabRtc"    class="btn btn-sm" onclick="setTimeSource('rtc')">&#128267; RTC</button>
-        <button id="tabManual" class="btn btn-sm" onclick="setTimeSource('manual')">&#9998; Manual</button>
-      </div>
-      <div id="panelRtc" style="display:none">
-        <p style="color:#f8c34f;font-size:.9rem;margin:0">&#128267; DS3231 RTC.</p>
-        <p style="color:#aaa;font-size:.82rem;margin:6px 0 0">Время берётся из RTC-модуля (батарейка CR2032) и остаётся источником, пока вы явно не переключитесь на Manual.</p>
-      </div>
-      <div id="panelManual" style="display:none">
-        <p style="color:#aaa;font-size:.82rem;margin-bottom:12px">Установите дату и время вручную (UTC+3). Дата важна не только для расписания дня, но и для перехода расписания на следующий день курса — проверьте её при первой настройке.</p>
+      <p style="color:#aaa;font-size:.82rem;margin:0 0 12px">Источник выбирается сам: &#127760; <b>NTP</b>, если устройство подключено к сети с интернетом (вкладка WiFi), иначе &#128267; <b>DS3231</b> (батарейка CR2032). Каждая синхронизация по интернету сразу записывается в DS3231. <span id="ntpInfo"></span></p>
+      <div id="panelManual">
+        <p style="color:#aaa;font-size:.82rem;margin-bottom:12px">Ручная установка (UTC+3) — только если нет ни интернета, ни DS3231 с верным временем; при появлении интернета NTP её перезапишет. Дата важна не только для расписания дня, но и для перехода расписания на следующий день курса — проверьте её при первой настройке.</p>
         <div class="row">
           <div class="col" style="max-width:160px">
             <label>Date</label>
@@ -290,7 +285,7 @@ tr:hover td { background: rgba(79,158,248,.04); }
       </div>
       <div class="row">
         <div class="col form-group">
-          <label>New password <span style="color:var(--muted)">(min 4 chars)</span></label>
+          <label>New password <span style="color:var(--muted)">(min 8 chars)</span></label>
           <div class="pwd-wrap">
             <input type="password" id="authPass" placeholder="Enter new password">
             <button type="button" class="pwd-btn" onclick="togglePass('authPass',this)">👁</button>
@@ -309,7 +304,7 @@ tr:hover td { background: rgba(79,158,248,.04); }
         <button class="btn btn-red btn-sm" id="authDisableBtn" onclick="disableAuth()" style="display:none">Disable Auth</button>
       </div>
       <p style="color:var(--muted);font-size:.78rem;margin-top:10px">
-        Login: <b>admin</b> / your password. Stored on device, cleared only with "Disable Auth".
+        Login: <b>admin</b> / your password. Stored on device, cleared with "Disable Auth" — or, if the password is forgotten, by holding the gong button for 10 s while powering on.
       </p>
     </div>
   </div>
@@ -350,12 +345,12 @@ tr:hover td { background: rgba(79,158,248,.04); }
       </div>
       <div class="row" style="align-items:flex-end">
         <div class="col" style="max-width:150px">
-          <label>Warm-up, ms</label>
-          <input type="number" id="relayPre" min="0" max="10000" step="100">
+          <label>Warm-up, ms (≤ 5000)</label>
+          <input type="number" id="relayPre" min="0" max="5000" step="100">
         </div>
         <div class="col" style="max-width:150px">
-          <label>Hold after, ms</label>
-          <input type="number" id="relayHold" min="0" max="600000" step="500">
+          <label>Hold after, ms (≤ 20000)</label>
+          <input type="number" id="relayHold" min="0" max="20000" step="500">
         </div>
         <div class="col" style="display:flex;align-items:flex-end">
           <button class="btn btn-primary btn-sm" onclick="saveRelayTiming()">Save</button>
@@ -434,7 +429,7 @@ tr:hover td { background: rgba(79,158,248,.04); }
     </div>
     <div class="form-group">
       <label>Description</label>
-      <input type="text" id="mDesc" placeholder="e.g. Morning bell">
+      <input type="text" id="mDesc" maxlength="48" placeholder="e.g. Morning bell">
     </div>
     <div class="form-group" id="mEnRow" style="display:none">
       <label>
@@ -470,7 +465,6 @@ let availableTracks = [];
 // ─────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   initCards();
-  switchClockTab('manual');
   loadTracks();
   refreshAll();
   setInterval(refreshAll, 5000);
@@ -552,9 +546,9 @@ async function refreshAll() {
     const r = await fetch('/api/state');
     if (!r.ok) { document.getElementById('wifiStat').innerHTML = '<span class="dot dot-red"></span>Server error ' + r.status; return; }
     const d = await r.json();
+    applyAuth(d.auth);      // before applyStatus: the alert banner reads authOpen
     applyStatus(d.status);
     applySchedule(d.schedule);
-    applyAuth(d.auth);
     await applyDays(d.days);
     applyRelay(d.relay);
     applyWifi(d.wifi);
@@ -568,19 +562,21 @@ async function refreshAll() {
 // ─────────────────────────────────────────────
 // Status
 // ─────────────────────────────────────────────
-async function setTimeSource(src) {
-  await fetch('/api/time/source?s=' + src, { method: 'POST', headers: { 'X-Gong-Request': '1' } });
-  switchClockTab(src);
-  await loadStatus();
-}
-
-function switchClockTab(tab) {
-  ['rtc','manual'].forEach(t => {
-    document.getElementById('panel' + t.charAt(0).toUpperCase() + t.slice(1)).style.display = (t === tab) ? '' : 'none';
-    const btn = document.getElementById('tab' + t.charAt(0).toUpperCase() + t.slice(1));
-    btn.classList.toggle('btn-primary', t === tab);
-    btn.classList.toggle('btn-ghost',   t !== tab);
-  });
+// Anything that means the gong will NOT ring (or the device is exposed) is
+// shown in a red banner at the top — the same conditions blink the LED.
+let authOpen = false;
+function applyAlerts(d) {
+  const a = [];
+  if (d.fs_ok === false) a.push('❌ Файловая система не смонтирована — нет звука и расписания. Залейте данные: <code>pio run -t uploadfs</code>.');
+  if (d.sched_error) a.push('❌ Файл активного дня не читается — расписание пустое. Активируйте день заново.');
+  if (!d.time) a.push('❌ Время не установлено — гонги не звучат. Подключите WiFi с интернетом, проверьте батарейку DS3231 или установите время вручную.');
+  if (d.crash_count > 0 && d.reset_reason && !/power-on|software|external/.test(d.reset_reason))
+    a.push('⚠️ Последний перезапуск: ' + esc(d.reset_reason) + ' (сбоев всего: ' + d.crash_count + ').');
+  if (d.ap_default_pw) a.push('⚠️ Пароль точки доступа стандартный — задайте свой (<code>AP_PASSWORD</code> в platformio.ini).');
+  if (authOpen) a.push('⚠️ Пароль админки не задан — любой подключившийся может управлять гонгом (вкладка Security).');
+  const el = document.getElementById('alerts');
+  el.innerHTML = a.join('<br>');
+  el.style.display = a.length ? '' : 'none';
 }
 
 async function loadStatus() {
@@ -608,23 +604,27 @@ function applyStatus(d) {
       // Don't clobber the field while the operator is actively editing it.
       if (dateInput && document.activeElement !== dateInput) dateInput.value = d.date;
     }
+    applyAlerts(d);
+    const ntpInfo = document.getElementById('ntpInfo');
+    if (ntpInfo) {
+      const age = d.ntp_age ?? -1;
+      ntpInfo.textContent = age < 0 ? 'NTP ещё не синхронизировался.'
+        : 'Последняя синхронизация NTP: ' + (age < 120 ? age + ' с' : Math.round(age / 60) + ' мин') + ' назад.';
+    }
     const badge = document.getElementById('clockSourceBadge');
     if (!badge) return;
-    if (d.time_source === 'rtc') {
-      badge.textContent = '🔋 RTC';
+    if (d.time_source === 'ntp' || d.time_source === 'rtc') {
+      badge.textContent = d.time_source === 'ntp' ? '🌐 NTP' : '🔋 RTC';
       badge.style.background = 'rgba(52,201,126,.15)';
       badge.style.color = 'var(--green)';
-      switchClockTab('rtc');
     } else if (d.time_source === 'manual') {
       badge.textContent = '✏️ Manual';
       badge.style.background = 'rgba(248,195,79,.12)';
       badge.style.color = 'var(--yellow)';
-      switchClockTab('manual');
     } else {
       badge.textContent = '⚠️ Not set';
       badge.style.background = 'rgba(248,95,95,.12)';
       badge.style.color = 'var(--red)';
-      switchClockTab('manual');
     }
   } catch(e) {
     document.getElementById('wifiStat').innerHTML = '<span class="dot dot-red"></span>Offline';
@@ -732,6 +732,7 @@ async function loadAuthStatus() {
 
 function applyAuth(d) {
   if (!d) return;
+  authOpen = !d.enabled;
   const badge = document.getElementById('authBadge');
   const disBtn = document.getElementById('authDisableBtn');
   const disInfo = document.getElementById('authDisabledInfo');
@@ -754,7 +755,7 @@ async function saveAuth() {
   const p1 = document.getElementById('authPass').value;
   const p2 = document.getElementById('authPass2').value;
   if (!p1) { toast('Enter a password', 'err'); return; }
-  if (p1.length < 4) { toast('Min 4 characters', 'err'); return; }
+  if (p1.length < 8) { toast('Min 8 characters', 'err'); return; }
   if (p1 !== p2) { toast('Passwords do not match', 'err'); return; }
   const r = await postJSON('/api/auth/save', { password: p1 });
   if (r && r.ok) {

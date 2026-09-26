@@ -13,9 +13,10 @@
 // entries already consume ~3 KB. At MAX_SCHEDULES = 32 the old 4096-byte pool
 // overflowed: deserializeJson returned NoMemory (whole day silently loaded as
 // EMPTY) and createNestedObject started returning null (entries silently
-// DROPPED on save → data loss). 8192 covers 32 entries with ~25 % headroom;
-// overflow is additionally checked at every save point below.
-#define SCHED_JSON_CAPACITY 8192
+// DROPPED on save → data loss). With desc capped at DESC_MAX_BYTES, 32
+// entries need ~7.5 KB worst case; 12 KB leaves real headroom. Overflow is
+// additionally checked at every save point below.
+#define SCHED_JSON_CAPACITY 12288
 
 void (*onScheduleTrigger)(uint8_t track, uint8_t loop, uint8_t vol) = nullptr;
 
@@ -28,9 +29,16 @@ static int           lastFiredKey    = -1;
 static unsigned long lastFiredMillis = 0;
 static unsigned long lastTimeLog     = 0;
 
-// Date-based auto-advance: how often we compare "today" against the date
-// stamped in /activeday.conf. Cheap check, no need to run every second.
-static unsigned long lastDateCheckMs = 0;
+// Active course day + the calendar date it was stamped with. Lives in NVS
+// (was /activeday.conf): NVS writes are atomic, and uploadfs — which rewrites
+// the whole LittleFS partition — no longer resets the course to Day 00.
+// Cached in RAM, so the per-second date check costs no flash reads.
+static int    activeDay  = -1;
+static String activeDate = "";
+
+// Active day's file missing/unreadable at boot — schedule is empty and no
+// gong will ring. Surfaced in /api/status and on the status LED.
+static bool   schedError = false;
 
 // M-16: don't write to SPIFFS while a track is playing — a write landing
 // exactly then competes with the audio task for the same flash and causes
@@ -79,22 +87,102 @@ static int daysBetween(const String& from, const String& to) {
     return (int)((tb - ta) / 86400);
 }
 
-// Rewrite /activeday.conf with the given day + date (does not touch entries).
-static void writeActiveDayFile(uint8_t day, const String& date) {
-    File af = LittleFS.open("/activeday.conf", "w");
-    if (!af) return;
-    af.printf("{\"day\":%d,\"date\":\"%s\"}", (int)day, date.c_str());
-    af.close();
+static bool sched_parseFromPath(const char* path);
+static void sched_saveNow();
+
+static void dayPath(int day, char (&path)[16]) {
+    snprintf(path, sizeof(path), "/day%02d.conf", day);
 }
 
-static String sched_getActiveDate() {
-    if (!LittleFS.exists("/activeday.conf")) return "";
+// Set active day + date stamp (does not touch entries).
+static void setActiveDay(int day, const String& date) {
+    activeDay  = day;
+    activeDate = date;
+    firePrefs.putInt("aday", day);
+    firePrefs.putString("adate", date);
+}
+
+static void loadActiveDay() {
+    if (firePrefs.isKey("aday")) {
+        activeDay  = firePrefs.getInt("aday", -1);
+        activeDate = firePrefs.getString("adate", "");
+        if (activeDay >= DAY_COUNT) activeDay = -1;
+        return;
+    }
+    // One-time import of the pre-6.2 /activeday.conf.
     File f = LittleFS.open("/activeday.conf", "r");
-    if (!f) return "";
+    if (!f) return;
     DynamicJsonDocument doc(96);
-    if (deserializeJson(doc, f)) { f.close(); return ""; }
+    bool ok = !deserializeJson(doc, f);
     f.close();
-    return String((const char*)(doc["date"] | ""));
+    int day = ok ? (int)(doc["day"] | -1) : -1;
+    if (day < 0 || day >= DAY_COUNT) {
+        logPrintf("[SCHED] /activeday.conf unreadable — not imported\n");
+        return;
+    }
+    setActiveDay(day, String((const char*)(doc["date"] | "")));
+    LittleFS.remove("/activeday.conf");
+    logPrintf("[SCHED] Imported active day %02d from /activeday.conf into NVS\n", day);
+}
+
+// -------------------------------------------------------
+// Auto-advance the active day when the calendar date changes. Compares dates
+// (not a live "hour==0 && min==0" tick) so it still fires correctly even if
+// the device was powered off/rebooting exactly at midnight, or if valid time
+// only became available after midnight had already passed.
+// -------------------------------------------------------
+static void checkDateAdvance() {
+    if (activeDay < 0) return;
+    String today = currentDateStr();
+    if (!today.length()) return;
+    if (!activeDate.length()) {
+        // No date stamp yet (legacy / activated before time was set) — just
+        // stamp today, don't advance (avoids a spurious jump).
+        setActiveDay(activeDay, today);
+        return;
+    }
+    if (today == activeDate) return;
+
+    // M-16: a day-switch writes flash — if a gong is playing, wait for it to
+    // finish instead of competing with audio for flash.
+    static bool deferLogged = false;
+    if (mp3_isPlaying()) {
+        if (!deferLogged) logPrintf("[SCHED] Day switch deferred — audio is playing\n");
+        deferLogged = true;
+        return;
+    }
+    deferLogged = false;
+
+    // M-15: advance by the ACTUAL number of calendar days elapsed, not always
+    // +1 — a device left off for 3 days must not make the course drift by 2.
+    int diff    = daysBetween(activeDate, today);
+    int nextDay = activeDay + diff;
+    if (nextDay >= DAY_COUNT) nextDay = DAY_COUNT - 1;
+    char path[16];
+    dayPath(nextDay, path);
+    if (diff <= 0) {
+        // Clock moved BACKWARDS (operator corrected a wrong date) or the
+        // stored date is unparsable — that is not a day passing. Re-stamp.
+        logPrintf("[SCHED] Date changed (%s -> %s) but not forward — staying on day %02d\n",
+                  activeDate.c_str(), today.c_str(), activeDay);
+        setActiveDay(activeDay, today);
+    } else if (diff > DAY_COUNT) {
+        // More days than a whole course — a clock correction, not days passing.
+        logPrintf("[SCHED] Date jumped %d days (%s -> %s) — looks like a clock correction, "
+                  "staying on day %02d (activate the right day in the UI)\n",
+                  diff, activeDate.c_str(), today.c_str(), activeDay);
+        setActiveDay(activeDay, today);
+    } else if (nextDay != activeDay && LittleFS.exists(path)) {
+        if (diff > 1) logPrintf("[SCHED] %d calendar day(s) elapsed while off\n", diff);
+        logPrintf("[SCHED] Date changed (%s -> %s): day %02d -> %02d\n",
+                  activeDate.c_str(), today.c_str(), activeDay, nextDay);
+        sched_activateDay((uint8_t)nextDay);
+    } else {
+        logPrintf("[SCHED] Date changed (%s -> %s) but day %02d is the last day (or next day "
+                  "file missing) — course ended, staying on day %02d\n",
+                  activeDate.c_str(), today.c_str(), activeDay, activeDay);
+        setActiveDay(activeDay, today);
+    }
 }
 
 // -------------------------------------------------------
@@ -119,11 +207,14 @@ static void doFire(const ScheduleEntry& e, const char* why) {
 // already ran before the reboot. Only looks at TODAY's entries, and only
 // within CATCHUP_WINDOW_S of "now" (a stale multi-hour-old miss is reported,
 // not silently replayed).
+// There used to be a `gap > 3600` bail-out here: catch-up only worked if the
+// PREVIOUS gong was less than an hour before the reboot — a blip at 06:30:10
+// after a 04:20 gong lost the 06:30 one. `fireT > lastFireTs` alone already
+// rules out a double fire, and CATCHUP_WINDOW_S bounds how stale a replay can be.
 static void sched_catchup() {
     if (!timeIsSet() || lastFireTs == 0) return;
     time_t now = time(nullptr);
-    uint32_t gap = (uint32_t)now - lastFireTs;
-    if (gap == 0 || gap > 3600UL) return;   // too long ago, or clock moved backwards — don't guess
+    if ((uint32_t)now <= lastFireTs) return;   // clock behind the watermark — don't guess
 
     struct tm tiNow;
     localtime_r(&now, &tiNow);
@@ -146,26 +237,39 @@ void sched_setup() {
     firePrefs.begin("gong", false);
     lastFireTs = firePrefs.getUInt("lastfire", 0);
 
-    sched_load();
-    logPrintf("[SCHED] Loaded %d entries.\n", count);
+    loadActiveDay();
 
-    // First-ever boot (no /activeday.conf): auto-activate Day 00 so the
-    // multi-day course machinery (and its midnight advance) is live from the
-    // start, instead of silently sitting on whatever /gong.conf happened to
-    // contain until someone opens the web UI and clicks a day.
-    if (sched_getActiveDay() < 0) {
+    if (activeDay >= 0) {
+        // The active day's file is the single source of truth (/gong.conf used
+        // to be a second copy, and a power cut between the two writes of a day
+        // switch could make the next edit overwrite the wrong day's template).
+        char path[16];
+        dayPath(activeDay, path);
+        if (!sched_parseFromPath(path)) {
+            schedError = true;
+            logPrintf("[SCHED] ERROR: %s missing or unreadable — schedule EMPTY, no gongs "
+                      "until a day is activated in the web UI\n", path);
+        }
+    } else {
+        // First-ever boot: auto-activate Day 00 (seeded from /gong.conf if
+        // day00.conf doesn't exist yet) so the course machinery and its
+        // midnight advance are live without anyone opening the web UI.
+        sched_load();
         logPrintf("[SCHED] No active day set — auto-activating Day 00\n");
         sched_activateDay(0);
     }
+    logPrintf("[SCHED] Day %02d, %d entries.\n", activeDay, count);
 
+    // Date first: after a reboot across midnight, catch-up must look at
+    // TODAY's schedule, not yesterday's.
+    if (timeIsSet()) checkDateAdvance();
     sched_catchup();
 }
 
 // -------------------------------------------------------
 // Called every second from main loop.
-// Time comes from DS3231 (RTC) or manual entry via the web UI — this device
-// is a standalone WiFi access point with no internet access, so there is no
-// NTP source.
+// Time comes from NTP when STA has internet, else DS3231, else a manual set
+// in the web UI — see timesync.h.
 // -------------------------------------------------------
 void sched_check() {
     // M-16: flush a save that was deferred while a gong was playing.
@@ -205,69 +309,9 @@ void sched_check() {
         lastTimeLog = millis();
     }
 
-    // Auto-advance the active day when the calendar date changes. Compares
-    // dates (not a live "hour==0 && min==0" tick) so it still fires correctly
-    // even if the device was powered off/rebooting exactly at midnight, or if
-    // valid time only became available after midnight had already passed.
-    if (millis() - lastDateCheckMs >= 30000UL) {
-        lastDateCheckMs = millis();
-        int activeDay = sched_getActiveDay();
-        if (activeDay >= 0) {
-            String today  = currentDateStr();
-            String stored = sched_getActiveDate();
-            if (today.length() && stored.length() && today != stored) {
-                // M-16: a day-switch does several SPIFFS writes — if a gong
-                // happens to be playing exactly at this 30s check, wait for
-                // the next one instead of competing with audio for flash.
-                if (mp3_isPlaying()) {
-                    logPrintf("[SCHED] Day switch deferred — audio is playing\n");
-                } else {
-                    // M-15: advance by the ACTUAL number of calendar days
-                    // elapsed, not always +1 — a device left off for 3 days
-                    // must not make the course drift by 2.
-                    int diff = daysBetween(stored, today);
-                    int nextDay = activeDay + diff;
-                    if (nextDay >= DAY_COUNT) nextDay = DAY_COUNT - 1;
-                    char path[16];
-                    snprintf(path, sizeof(path), "/day%02d.conf", nextDay);
-                    if (diff <= 0) {
-                        // Clock moved BACKWARDS (operator corrected a wrong
-                        // date) or the stored date is unparsable — that is
-                        // not a day passing. Re-stamp, don't advance: the old
-                        // `diff = 1` fallback moved the course a day FORWARD
-                        // on a backward correction.
-                        logPrintf("[SCHED] Date changed (%s -> %s) but not forward — "
-                                  "staying on day %02d\n", stored.c_str(), today.c_str(), activeDay);
-                        writeActiveDayFile((uint8_t)activeDay, today);
-                    } else if (diff > DAY_COUNT) {
-                        // More days than a whole course — that's a clock
-                        // correction (e.g. from a stub/wrong date), not days
-                        // passing. Advancing would jump straight to the last
-                        // day. Re-stamp and let the operator pick the day.
-                        logPrintf("[SCHED] Date jumped %d days (%s -> %s) — looks like a clock "
-                                  "correction, staying on day %02d (activate the right day in the UI)\n",
-                                  diff, stored.c_str(), today.c_str(), activeDay);
-                        writeActiveDayFile((uint8_t)activeDay, today);
-                    } else if (nextDay != activeDay && LittleFS.exists(path)) {
-                        if (diff > 1)
-                            logPrintf("[SCHED] %d calendar day(s) elapsed while off\n", diff);
-                        logPrintf("[SCHED] Date changed (%s -> %s): day %02d -> %02d\n",
-                                      stored.c_str(), today.c_str(), activeDay, nextDay);
-                        sched_activateDay((uint8_t)nextDay);
-                    } else {
-                        logPrintf("[SCHED] Date changed (%s -> %s) but day %02d is the last "
-                                      "day (or next day file missing) — course ended, staying on day %02d\n",
-                                      stored.c_str(), today.c_str(), activeDay, activeDay);
-                        writeActiveDayFile((uint8_t)activeDay, today);
-                    }
-                }
-            } else if (!stored.length() && today.length()) {
-                // Legacy/first-run /activeday.conf without a date stamp — just
-                // stamp today, don't advance (avoids a spurious jump on upgrade).
-                writeActiveDayFile((uint8_t)activeDay, today);
-            }
-        }
-    }
+    // Every second: a RAM-only compare now (was a 30 s poll reading
+    // /activeday.conf), so a gong at 00:00 already uses the new day's schedule.
+    checkDateAdvance();
 
     // Guard: prevent re-triggering within the same minute.
     // Use 65 s window (5 s margin) to handle NTP clock jitter.
@@ -330,8 +374,15 @@ bool sched_del(uint32_t id) {
 // Use heap for large JSON to avoid stack overflow on ESP32 (was 4KB on stack)
 // -------------------------------------------------------
 String sched_toJSON() {
+    // Out of memory used to return "[]" — a NON-empty string, so
+    // sched_saveNow() happily wrote an empty schedule over gong.conf AND the
+    // active day's file. Every caller treats String() as "error, don't persist".
     DynamicJsonDocument *doc = new (std::nothrow) DynamicJsonDocument(SCHED_JSON_CAPACITY);
-    if (!doc) return "[]";
+    if (!doc || doc->capacity() == 0) {
+        delete doc;
+        logPrintf("[SCHED] ERROR: out of memory in sched_toJSON\n");
+        return String();
+    }
     JsonArray arr = doc->to<JsonArray>();
     for (uint8_t i = 0; i < count; i++) {
         JsonObject o = arr.createNestedObject();
@@ -366,21 +417,18 @@ static void sched_saveNow() {
         return;
     }
 
-    File f = LittleFS.open(SCHEDULE_FILE, "w");
-    if (!f) { logPrintf("[SCHED] Save failed\n"); return; }
+    // The active day's file is the only copy (/gong.conf is just the
+    // first-boot seed now). LittleFS commits a file atomically on close().
+    char path[16];
+    if (activeDay >= 0) dayPath(activeDay, path);
+    else                snprintf(path, sizeof(path), "%s", SCHEDULE_FILE);
+    File f = LittleFS.open(path, "w");
+    if (!f) { logPrintf("[SCHED] Save failed (%s)\n", path); return; }
     f.print(json);
     f.close();
+    schedError = false;   // an explicit edit replaced the unreadable file
 
-    // Mirror every edit back into the active day file so changes survive day switches
-    int day = sched_getActiveDay();
-    if (day >= 0) {
-        char path[16];
-        snprintf(path, sizeof(path), "/day%02d.conf", day);
-        File df = LittleFS.open(path, "w");
-        if (df) { df.print(json); df.close(); }
-    }
-
-    logPrintf("[SCHED] Saved %d entries\n", count);
+    logPrintf("[SCHED] Saved %d entries to %s\n", count, path);
 }
 
 void sched_save() {
@@ -400,7 +448,7 @@ static bool sched_parseFromPath(const char* path) {
     File f = LittleFS.open(path, "r");
     if (!f) return false;
     DynamicJsonDocument *doc = new (std::nothrow) DynamicJsonDocument(SCHED_JSON_CAPACITY);
-    if (!doc) { f.close(); return false; }
+    if (!doc || doc->capacity() == 0) { delete doc; f.close(); return false; }
     if (deserializeJson(*doc, f)) {
         f.close(); delete doc; return false;
     }
@@ -446,7 +494,7 @@ void sched_load() {
 // -------------------------------------------------------
 String sched_dayJSON(uint8_t day) {
     char path[16];
-    snprintf(path, sizeof(path), "/day%02d.conf", (int)day);
+    dayPath(day, path);
     if (!LittleFS.exists(path)) return "[]";
     File f = LittleFS.open(path, "r");
     if (!f) return "[]";
@@ -456,14 +504,15 @@ String sched_dayJSON(uint8_t day) {
 }
 
 bool sched_activateDay(uint8_t day) {
+    if (day >= DAY_COUNT) return false;
     char path[16];
-    snprintf(path, sizeof(path), "/day%02d.conf", (int)day);
+    dayPath(day, path);
     if (!LittleFS.exists(path)) {
         File nf = LittleFS.open(path, "w");
         if (!nf) { logPrintf("[SCHED] Day %02d: create failed\n", (int)day); return false; }
-        // First-ever activation (no activeday.conf): seed with current schedule so
+        // First-ever activation (no active day yet): seed with current schedule so
         // existing entries are not lost. Subsequent new days start empty.
-        bool firstActivation = (sched_getActiveDay() < 0);
+        bool firstActivation = (activeDay < 0);
         String seed = firstActivation ? sched_toJSON() : String("[]");
         if (seed.length() == 0) seed = "[]";   // overflow marker — never write ""
         nf.print(seed);
@@ -472,47 +521,36 @@ bool sched_activateDay(uint8_t day) {
                       firstActivation ? "seeded from current" : "empty");
     }
 
-    // Flush current schedule to its day file before switching (activeday.conf
+    // Flush current schedule to its day file before switching (activeDay
     // still points to the old day here). Always synchronous, unlike the
     // public sched_save() — deferring THIS specific write risks the flush
     // landing after entries[] has already been overwritten with the new
-    // day's content below.
-    sched_saveNow();
+    // day's content below. Skipped while the old day's file failed to load:
+    // entries[] is empty then, and flushing would wipe that file for good.
+    if (activeDay >= 0 && !schedError) sched_saveNow();
+    schedPendingSave = false;
 
-    // Load new day into memory
-    if (!sched_parseFromPath(path)) return false;
+    // Load new day into memory; on failure entries[] and activeDay are untouched.
+    if (!sched_parseFromPath(path)) {
+        logPrintf("[SCHED] Day %02d: %s unreadable — not activated\n", (int)day, path);
+        return false;
+    }
 
-    // Write new day to /gong.conf directly — do NOT call sched_save() here,
-    // because activeday.conf still holds the old day number and would
-    // overwrite the old day's file with the new day's content.
-    String json = sched_toJSON();
-    if (json.length() == 0) return false;   // overflow marker — don't persist
-    File gf = LittleFS.open(SCHEDULE_FILE, "w");
-    if (!gf) return false;
-    gf.print(json);
-    gf.close();
-
-    // Now update active day tracker (date-stamped so sched_check() can detect
-    // day changes even across a missed midnight tick — see sched_check()).
-    writeActiveDayFile(day, currentDateStr());
+    // Only now switch the tracker (date-stamped so sched_check() can detect
+    // day changes even across a missed midnight tick). A power cut before
+    // this line simply leaves the old day active — consistent either way.
+    setActiveDay(day, currentDateStr());
+    schedError = false;
 
     logPrintf("[SCHED] Activated day %02d (%d entries)\n", (int)day, count);
     return true;
 }
 
-int sched_getActiveDay() {
-    if (!LittleFS.exists("/activeday.conf")) return -1;
-    File f = LittleFS.open("/activeday.conf", "r");
-    if (!f) return -1;
-    DynamicJsonDocument doc(96);
-    if (deserializeJson(doc, f)) { f.close(); return -1; }
-    f.close();
-    return doc["day"] | -1;
-}
+int  sched_getActiveDay() { return activeDay; }
+bool sched_hasError()     { return schedError; }
 
 bool sched_courseEnded() {
-    int day = sched_getActiveDay();
-    return day >= 0 && day == DAY_COUNT - 1;
+    return activeDay >= 0 && activeDay == DAY_COUNT - 1;
 }
 
 // -------------------------------------------------------
@@ -530,27 +568,29 @@ static bool dayTimeTaken(JsonArray arr, uint8_t h, uint8_t m, uint32_t excludeId
 }
 
 static bool isActiveDay(uint8_t day) {
-    int active = sched_getActiveDay();
-    return active >= 0 && day == (uint8_t)active;
+    return activeDay >= 0 && day == (uint8_t)activeDay;
 }
 
-// Loads /dayNN.conf into `doc` and returns its root as a JsonArray (creating
-// an empty array in `doc` if the file doesn't exist yet or fails to parse).
-static JsonArray loadDayArray(uint8_t day, DynamicJsonDocument& doc) {
+// Loads /dayNN.conf into `doc` and hands back its root array. A file that
+// doesn't exist yet is an empty day; a file that EXISTS but doesn't parse is
+// an error — it used to be treated as empty too, and the next add/edit then
+// overwrote whatever was left of that day with a single entry.
+static bool loadDayArray(uint8_t day, DynamicJsonDocument& doc, JsonArray& out) {
+    if (doc.capacity() == 0) return false;   // allocation failed
     char path[16];
-    snprintf(path, sizeof(path), "/day%02d.conf", (int)day);
-    if (LittleFS.exists(path)) {
-        File f = LittleFS.open(path, "r");
-        if (f) {
-            bool ok = !deserializeJson(doc, f);
-            f.close();
-            if (ok) {
-                JsonArray arr = doc.as<JsonArray>();
-                if (!arr.isNull()) return arr;
-            }
-        }
+    dayPath(day, path);
+    if (!LittleFS.exists(path)) { out = doc.to<JsonArray>(); return true; }
+    File f = LittleFS.open(path, "r");
+    if (!f) return false;
+    DeserializationError err = deserializeJson(doc, f);
+    f.close();
+    out = doc.as<JsonArray>();
+    if (err || out.isNull()) {
+        logPrintf("[SCHED] Day %02d: %s unreadable (%s) — edit refused\n",
+                  (int)day, path, err ? err.c_str() : "not an array");
+        return false;
     }
-    return doc.to<JsonArray>();
+    return true;
 }
 
 static bool saveDayArray(uint8_t day, DynamicJsonDocument& doc) {
@@ -559,7 +599,7 @@ static bool saveDayArray(uint8_t day, DynamicJsonDocument& doc) {
         return false;
     }
     char path[16];
-    snprintf(path, sizeof(path), "/day%02d.conf", (int)day);
+    dayPath(day, path);
     File wf = LittleFS.open(path, "w");
     if (!wf) return false;
     serializeJson(doc, wf);
@@ -576,7 +616,8 @@ bool sched_addToDay(uint8_t day, uint8_t h, uint8_t m,
     if (vol > 30) vol = 30;
 
     DynamicJsonDocument doc(SCHED_JSON_CAPACITY);
-    JsonArray arr = loadDayArray(day, doc);
+    JsonArray arr;
+    if (!loadDayArray(day, doc, arr)) return false;
     if ((int)arr.size() >= MAX_SCHEDULES) return false;
     if (dayTimeTaken(arr, h, m, 0)) return false;
 
@@ -608,7 +649,8 @@ bool sched_editInDay(uint8_t day, uint32_t id, uint8_t h, uint8_t m,
     if (vol > 30) vol = 30;
 
     DynamicJsonDocument doc(SCHED_JSON_CAPACITY);
-    JsonArray arr = loadDayArray(day, doc);
+    JsonArray arr;
+    if (!loadDayArray(day, doc, arr)) return false;
     if (dayTimeTaken(arr, h, m, id)) return false;
 
     bool found = false;
@@ -636,7 +678,8 @@ bool sched_delFromDay(uint8_t day, uint32_t id) {
     if (isActiveDay(day)) return sched_del(id);
 
     DynamicJsonDocument doc(SCHED_JSON_CAPACITY);
-    JsonArray arr = loadDayArray(day, doc);
+    JsonArray arr;
+    if (!loadDayArray(day, doc, arr)) return false;
 
     int idx = -1, i = 0;
     for (JsonObject o : arr) {
