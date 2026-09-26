@@ -160,6 +160,7 @@ bool relay_setTiming(uint32_t pre, uint32_t hold) {
 }
 
 bool     relay_isOn()   { return relayOn; }
+bool     relay_isBusy() { return pending || mp3_isPlaying(); }
 uint32_t relay_preMs()  { return preMs; }
 uint32_t relay_holdMs() { return holdMs; }
 

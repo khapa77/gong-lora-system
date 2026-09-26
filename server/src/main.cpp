@@ -11,6 +11,7 @@
 #include "rtchandler.h"
 #include "relayhandler.h"
 #include "wifihandler.h"
+#include "buttonhandler.h"
 
 static unsigned long lastSchedCheck = 0;
 
@@ -59,6 +60,7 @@ void setup() {
     mp3_setup();
     mp3_startAudioTask();
     relay_setup();   // before sched_setup(): a catch-up gong may fire from it
+    button_setup();
     sched_setup();
     wifi_setup();    // own AP always + STA if a network is saved
     web_setup();     // HTTP server
@@ -79,6 +81,7 @@ void loop() {
     // Аудио — в отдельном таске (Core 1, приоритет 10)
 
     wifi_loop();
+    button_loop();
     relay_loop();
 
     unsigned long now = millis();

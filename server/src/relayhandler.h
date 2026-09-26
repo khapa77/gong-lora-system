@@ -30,6 +30,7 @@ bool   relay_setTiming(uint32_t preMs, uint32_t holdMs);
 bool   relay_parseMode(const String& s, RelayMode& out);
 
 bool     relay_isOn();
+bool     relay_isBusy();   // звук играет или ждёт окончания прогрева реле
 uint32_t relay_preMs();
 uint32_t relay_holdMs();
 String   relay_toJSON();
