@@ -14,8 +14,30 @@ static Module mod(LORA_SS, LORA_DIO0, LORA_RST, RADIOLIB_NC);
 static SX1278 radio(&mod);
 
 // ── DIO0 interrupt — fires on both TX-done and RX-done (RISING) ──────────
+#define LORA_LOG(...) logPrintf(__VA_ARGS__)
 static volatile bool dioFlag = false;
 static void IRAM_ATTR onDio0() { dioFlag = true; }
+
+// DIO0 is edge-triggered (RISING). If one edge is ever missed, DIO0 stays
+// HIGH (RxDone/TxDone latched in the chip) and no further edge can come —
+// the radio then looked alive but silently received nothing until the next
+// 10-minute re-init. Checking the pin LEVEL as well makes a missed edge
+// harmless. Returns true if a pending event is signalled either way.
+static uint32_t missedEdges = 0;
+static bool dioPending() {
+    if (dioFlag) return true;
+    if (digitalRead(LORA_DIO0) == HIGH) {
+        missedEdges++;
+        // Rate-limited: a DIO0 line stuck HIGH by a hardware fault must not
+        // flood the log once per loop iteration.
+        if (missedEdges <= 5 || missedEdges % 100 == 0)
+            LORA_LOG("[LORA] DIO0 HIGH without interrupt edge — recovered (missed edges: %lu)\n",
+                 (unsigned long)missedEdges);
+        dioFlag = true;
+        return true;
+    }
+    return false;
+}
 
 // ── TX queue (Core 1 → Core 0) ────────────────────────────────────────────
 // H-1: playLocal/track/vol/loop let the TX-done handler queue a local play
@@ -286,7 +308,7 @@ static void loraTask(void*) {
 
         // ── TX in flight: wait for DIO0 (TX-done), or time out ──────────
         if (txBusy) {
-            if (dioFlag) {
+            if (dioPending()) {
                 dioFlag = false;
                 lastRadioOk = millis();   // DIO0 fired — chip is alive regardless of finishTransmit's result
                 int st = radio.finishTransmit();
@@ -334,7 +356,7 @@ static void loraTask(void*) {
         // Previously RX was only reached when the TX queue was empty — and
         // with a heartbeat parked in it for the whole ACK window, the server
         // never read a single ACK in steady state.
-        if (!dioFlag) {
+        if (!dioPending()) {
             // ── TX: GONG/STOP always; HEARTBEAT/SCHEDULE only once the
             // clients' ACK slots have played out (C-3) ────────────────────
             TxReq req;

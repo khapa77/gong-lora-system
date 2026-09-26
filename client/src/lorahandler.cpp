@@ -13,8 +13,30 @@
 static Module mod(LORA_SS, LORA_DIO0, LORA_RST, RADIOLIB_NC);
 static SX1278 radio(&mod);
 
+#define LORA_LOG(...) Serial.printf(__VA_ARGS__)
 static volatile bool dioFlag = false;
 static void IRAM_ATTR onDio0() { dioFlag = true; }
+
+// DIO0 is edge-triggered (RISING). If one edge is ever missed, DIO0 stays
+// HIGH (RxDone/TxDone latched in the chip) and no further edge can come —
+// the radio then looked alive but silently received nothing until the next
+// 10-minute re-init. Checking the pin LEVEL as well makes a missed edge
+// harmless. Returns true if a pending event is signalled either way.
+static uint32_t missedEdges = 0;
+static bool dioPending() {
+    if (dioFlag) return true;
+    if (digitalRead(LORA_DIO0) == HIGH) {
+        missedEdges++;
+        // Rate-limited: a DIO0 line stuck HIGH by a hardware fault must not
+        // flood the log once per loop iteration.
+        if (missedEdges <= 5 || missedEdges % 100 == 0)
+            LORA_LOG("[LORA] DIO0 HIGH without interrupt edge — recovered (missed edges: %lu)\n",
+                 (unsigned long)missedEdges);
+        dioFlag = true;
+        return true;
+    }
+    return false;
+}
 
 static volatile bool loraReady = false;
 
@@ -296,7 +318,7 @@ static void sendAck(int rxRssi, uint32_t hbSeq) {
         // A fixed 5000ms here would false-positive on every single ACK once
         // SF/BW push real airtime past that (SF12 already does).
         uint32_t txWaitTimeoutMs = (uint32_t)(radio.getTimeOnAir(1 + LORA_TAG_LEN + plen) / 1000) * 13 / 10 + 500;
-        while (!dioFlag && millis() - waitStart < txWaitTimeoutMs) {
+        while (!dioPending() && millis() - waitStart < txWaitTimeoutMs) {
             vTaskDelay(pdMS_TO_TICKS(5));
         }
         if (dioFlag) {
@@ -304,6 +326,8 @@ static void sendAck(int rxRssi, uint32_t hbSeq) {
             state = radio.finishTransmit();
             if (state != RADIOLIB_ERR_NONE)
                 Serial.printf("[LORA] ACK TX failed: %d\n", state);
+            else
+                Serial.printf("[LORA] ACK sent (hb=%u)\n", (unsigned)hbSeq);
         } else {
             Serial.println("[LORA] ACK TX timed out");
             radio.finishTransmit();
@@ -372,14 +396,15 @@ static void loraTask(void*) {
         }
 
         if (millis() - lastRadioOk > RADIO_SILENCE_MS) {
-            Serial.println("[LORA] No activity 10 min — reinitialising radio");
+            Serial.printf("[LORA] No activity 10 min — reinitialising radio (DIO0=%d, missed edges so far: %lu)\n",
+                          digitalRead(LORA_DIO0), (unsigned long)missedEdges);
             ackPending = false;
             radio.reset();
             radioInit();
             continue;
         }
 
-        if (!dioFlag) {
+        if (!dioPending()) {
             if (ackPending && millis() - ackStart >= ackDelay) {
                 ackPending = false;
                 // Too late (we were busy with another packet) — would land in
@@ -433,6 +458,8 @@ static void loraTask(void*) {
 
             if (type == MSG_HEARTBEAT) {
                 syncVirtualClock(doc["time"] | "", (uint32_t)(radio.getTimeOnAir(len) / 1000));
+                Serial.printf("[LORA] Heartbeat seq=%u time=%s RSSI=%d\n",
+                              (unsigned)(doc["seq"] | 0), (const char*)(doc["time"] | "?"), rssi);
                 ackSeq     = doc["seq"] | 0;
                 ackRssi    = rssi;
                 ackStart   = millis();
