@@ -95,7 +95,8 @@ static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD короче 8 симв
 
 // ── Реле (питание внешнего усилителя / трансляционной линии) ───────────────
 // GPIO27: не strapping-пин, не input-only, при загрузке не дёргается.
-// Освободившиеся после LoRa пины (14, 18, 19, 23; GPIO4 занят кнопкой) тоже
+// Освободившиеся после LoRa пины (4, 14, 18, 19, 23; на печатной плате они
+// разведены на разъём Ra-02 и свободны, только пока модуль не вставлен) тоже
 // подойдут; GPIO5 — нет, он strapping. Большинство китайских модулей реле с оптроном
 // включаются НИЗКИМ уровнем — тогда соберите с -DRELAY_ACTIVE_LOW=1.
 // До первого digitalWrite() пин висит в воздухе: на плате нужна подтяжка к
@@ -121,11 +122,12 @@ static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD короче 8 симв
 //   в тишине          — держать BUTTON_PLAY_HOLD_MS → гонг (BUTTON_TRACK/VOL/LOOP)
 //   во время звучания — держать BUTTON_STOP_HOLD_MS → стоп
 // Срабатывает один раз за нажатие, ещё пока кнопка зажата; дальше ждёт отпускания.
-// GPIO4: не strapping, есть внутренний pull-up (у GPIO34–39 его нет).
+// GPIO32: не strapping, есть внутренний pull-up (у GPIO34–39 его нет).
+// Раньше была GPIO4 — на печатной плате она занята LoRa DIO0.
 // При проводе к кнопке длиннее ~30 см добавьте внешний 10 кОм к 3.3V и
 // 100 нФ к GND у пина — наводки от сети/усилителя дают ложные срабатывания.
 #ifndef BUTTON_PIN
-#define BUTTON_PIN              4
+#define BUTTON_PIN              32
 #endif
 #define BUTTON_DEBOUNCE_MS      50UL
 #define BUTTON_PLAY_HOLD_MS     3000UL
@@ -135,11 +137,13 @@ static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD короче 8 симв
 #define BUTTON_LOOP             1
 
 // ── Светодиод состояния (statusled.h) ───────────────────────────────────────
-// GPIO2 — встроенный синий светодиод DevKit. Это strapping-пин, но уровень
+// GPIO13 — LED2 на печатной плате (как STATUS_LED у клиента). Раньше был
+// GPIO2 (встроенный синий DevKit) — это strapping-пин, на плате он NC.
+// Для макета без платы: -DSTATUS_LED_PIN=2 — уровень GPIO2
 // читается только в момент сброса — выход после загрузки прошивке не мешает.
-// На печатной плате GPIO2 не разведён (NC). -1 — отключить.
+// -1 — отключить.
 #ifndef STATUS_LED_PIN
-#define STATUS_LED_PIN          2
+#define STATUS_LED_PIN          13
 #endif
 #ifndef STATUS_LED_ACTIVE_LOW
 #define STATUS_LED_ACTIVE_LOW   0

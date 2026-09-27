@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Генератор EasyEDA Standard JSON схемы для Gong LoRa Server."""
+"""Генератор EasyEDA Standard JSON схемы — универсальная плата узла Gong LoRa v1.
+
+Источник истины — PCB_SPEC_PROMPT.md; сети совпадают с schematic_netlist.md.
+Связи сделаны сетевыми метками (net labels): одинаковое имя = одна цепь.
+"""
 import json
 
 counter = [0]
@@ -31,281 +35,173 @@ def nc_mark(x, y):
     wire(x-5, y-5, x+5, y+5)
     wire(x-5, y+5, x+5, y-5)
 
-def passive(x, y, ref, value, net_top, net_bot, fill='#fff8e8'):
-    rect(x, y, 30, 50, fill=fill)
+STUB = 30   # длина вывода
+
+def passive(x, y, ref, value, net_top, net_bot, fill='#fff8e8', dnp=False):
+    """Двухвыводной элемент вертикально: верхний вывод net_top, нижний net_bot."""
+    rect(x, y, 30, 50, fill='#eeeeee' if dnp else fill)
     text(x+15, y+25, ref, size='7pt', bold='bold')
     text(x+35, y+20, value, anchor='left', size='7pt', color='#333333')
-    # top pin
+    if dnp:
+        text(x+35, y+34, 'DNP', anchor='left', size='7pt', color='#cc0000', bold='bold')
     wire(x+15, y-15, x+15, y)
-    netlabel(x+15, y-15, net_top, rot=270)  # вверх
-    # bottom pin
+    netlabel(x+15, y-15, net_top, rot=270)
     wire(x+15, y+50, x+15, y+65)
-    netlabel(x+15, y+65, net_bot, rot=90)   # вниз
+    netlabel(x+15, y+65, net_bot, rot=90)
 
-# ─────────────────────────────────────────
-# Компонент в корпусе SOT-223 (AMS1117, 3 пина)
-# ─────────────────────────────────────────
-def sot223(x, y, ref, name, pin1_name, pin1_net, pin2_name, pin2_net, pin3_name, pin3_net, w=100, h=130):
-    """
-    SOT-223 pinout (LD1117V33, pin-compatible с AMS1117-3.3):
-    Pin 1 (left)  = GND / ADJ  → для фиксированного 3.3V это GND
-    Pin 2 (tab)   = VOUT       — большая пластина, подключена к pin2
-    Pin 3 (right) = VIN
-    """
-    rect(x, y, w, h, fill='#eef0ff')
+def block(x, y, w, ref, name, left=(), right=(), sub='', fill='#eef0ff', pitch=20):
+    """Прямоугольный модуль. left/right — списки (имя вывода, сеть | None=NC)."""
+    rows = max(len(left), len(right))
+    top = 50 if sub else 40
+    h = top + rows * pitch
+    rect(x, y, w, h, fill=fill)
     text(x+w//2, y+14, ref, bold='bold', size='11pt')
     text(x+w//2, y+28, name, size='8pt')
-    # Pin 1 - left
-    py1 = y + 50
-    wire(x-30, py1, x, py1)
-    text(x+5, py1, pin1_name, anchor='left', size='7pt', color='#444444')
-    netlabel(x-30, py1, pin1_net, rot=180)
-    # Pin 2 - bottom (tab/VOUT) — выводим снизу
-    py2 = y + h
-    wire(x+w//2, y+h, x+w//2, py2)
-    text(x+w//2+5, y+h+10, pin2_name, anchor='left', size='7pt', color='#444444')
-    netlabel(x+w//2, py2, pin2_net, rot=90)
-    # Pin 3 - right
-    py3 = y + 80
-    wire(x+w, py3, x+w+30, py3)
-    text(x+w-5, py3, pin3_name, anchor='right', size='7pt', color='#444444')
-    netlabel(x+w+30, py3, pin3_net, rot=0)
+    if sub:
+        text(x+w//2, y+42, sub, size='7pt', color='#666666')
+    for i, (pn, net) in enumerate(left):
+        py = y + top + i * pitch
+        wire(x-STUB, py, x, py)
+        text(x+5, py, pn, anchor='left', size='7pt', color='#444444')
+        if net:
+            netlabel(x-STUB, py, net, rot=180)
+        else:
+            nc_mark(x-STUB, py)
+    for i, (pn, net) in enumerate(right):
+        py = y + top + i * pitch
+        wire(x+w, py, x+w+STUB, py)
+        text(x+w-5, py, pn, anchor='right', size='7pt', color='#444444')
+        if net:
+            netlabel(x+w+STUB, py, net, rot=0)
+        else:
+            nc_mark(x+w+STUB, py)
 
 # ─────────────────────────────────────────
 # TITLE
 # ─────────────────────────────────────────
-text(430, 22, 'Gong LoRa Server — Schematic v1.2 (Ra-02, LD1117V33, audio decoupling)',
+text(560, 22, 'GONG LoRa NODE v1.0 — universal board (server + client), see PCB_SPEC_PROMPT.md',
      anchor='center', size='13pt', bold='bold', color='#222222')
 
 # ─────────────────────────────────────────
-# U1 — ESP32 DevKitC v4
+# U1 — ESP32-DevKitC-V4
+# Порядок — официальный Espressif Getting Started Guide: пин 1 со стороны
+# антенны, пин 19 со стороны USB. 5V — последний пин ЛЕВОГО ряда, GND —
+# первый пин ПРАВОГО. 3V3 DevKit — NC: два LDO параллельно соединять нельзя.
 # ─────────────────────────────────────────
-BX, BY, BW, BH = 310, 60, 160, 440   # body rect
-rect(BX, BY, BW, BH)
-text(BX+BW//2, BY+14, 'U1', bold='bold', size='11pt')
-text(BX+BW//2, BY+30, 'ESP32-DevKitC-V4', size='8pt')
-
-STUB = 30   # длина вывода
-PIN_PITCH = 20
-PIN_START = BY + 40
-
-# Left pins (top→bottom)
-left_pins = [
-    'GND', '3V3', 'EN', 'GPIO36', 'GPIO39',
-    'GPIO34', 'GPIO35', 'GPIO32',
-    'GPIO33',   # I2S_DIN
-    'GPIO25',   # I2S_LRC
-    'GPIO26',   # I2S_BCLK
-    'GPIO27',
-    'GPIO14',   # LORA_RST
-    'GPIO12', 'GND', 'GPIO13',
-    'GPIO9', 'GPIO10', 'GPIO11',
-]
-left_nets = {
-    'GND':    'GND',
-    '3V3':    '+3V3',
-    'GPIO33': 'I2S_DIN',
-    'GPIO25': 'I2S_LRC',
-    'GPIO26': 'I2S_BCLK',
-    'GPIO14': 'LORA_RST',
-}
-seen_gnd_left = 0
-for i, pname in enumerate(left_pins):
-    py = PIN_START + i * PIN_PITCH
-    wx = BX - STUB
-    wire(wx, py, BX, py)
-    text(BX + 6, py, pname, anchor='left', size='7pt', color='#444444')
-    if pname == 'GND':
-        seen_gnd_left += 1
-        netlabel(wx, py, 'GND', rot=180)
-    elif pname in left_nets:
-        netlabel(wx, py, left_nets[pname], rot=180)
-    else:
-        nc_mark(wx, py)
-
-# Right pins (top→bottom)
-right_pins = [
-    'VIN',      # +5V
-    'GND',
-    'GPIO23',   # LORA_MOSI
-    'GPIO22',   # I2C_SCL
-    'GPIO1', 'GPIO3',
-    'GPIO21',   # I2C_SDA
-    'GND',
-    'GPIO19',   # LORA_MISO
-    'GPIO18',   # LORA_SCK
-    'GPIO5',    # LORA_NSS
-    'GPIO17', 'GPIO16',
-    'GPIO4',    # LORA_DIO0 (interrupt on Core 0)
-    'GPIO0',
-    'GPIO2',    # strapping pin, was used for DIO0 before the move to GPIO4 — NC, do not reconnect
-    'GPIO15', 'GPIO8', 'GPIO7',
-]
-right_nets = {
-    'VIN':    '+5V',
-    'GND':    'GND',
-    'GPIO23': 'LORA_MOSI',
-    'GPIO22': 'I2C_SCL',
-    'GPIO21': 'I2C_SDA',
-    'GPIO19': 'LORA_MISO',
-    'GPIO18': 'LORA_SCK',
-    'GPIO5':  'LORA_NSS',
-    'GPIO4':  'LORA_DIO0',
-}
-for i, pname in enumerate(right_pins):
-    py = PIN_START + i * PIN_PITCH
-    ex = BX + BW + STUB
-    wire(BX + BW, py, ex, py)
-    text(BX + BW - 6, py, pname, anchor='right', size='7pt', color='#444444')
-    if pname in right_nets:
-        netlabel(ex, py, right_nets[pname], rot=0)
-    else:
-        nc_mark(ex, py)
-
-# ─────────────────────────────────────────
-# U2 — Ra-02 LoRa (SMA-антенна)  (2×4, справа)
-# ─────────────────────────────────────────
-R2X, R2Y = 590, 60
-rect(R2X, R2Y, 130, 110)
-text(R2X+65, R2Y+14, 'U2', bold='bold', size='11pt')
-text(R2X+65, R2Y+28, 'Ra-02  SX1278', size='8pt')
-
-# Left col: pin1 MISO, pin3 SCK, pin5 NSS, pin7 RST
-ra_left = [('MISO','LORA_MISO'), ('SCK','LORA_SCK'),
-           ('NSS','LORA_NSS'),   ('RST','LORA_RST')]
-for i,(pn,net) in enumerate(ra_left):
-    py = R2Y + 42 + i*20
-    wire(R2X-STUB, py, R2X, py)
-    text(R2X+5, py, pn, anchor='left', size='7pt', color='#444444')
-    netlabel(R2X-STUB, py, net, rot=180)
-
-# Right col: pin2 VCC, pin4 MOSI, pin6 DIO0, pin8 GND
-ra_right = [('VCC','+3V3'), ('MOSI','LORA_MOSI'),
-            ('DIO0','LORA_DIO0'), ('GND','GND')]
-for i,(pn,net) in enumerate(ra_right):
-    py = R2Y + 42 + i*20
-    ex = R2X + 130 + STUB
-    wire(R2X+130, py, ex, py)
-    text(R2X+125, py, pn, anchor='right', size='7pt', color='#444444')
-    netlabel(ex, py, net, rot=0)
-
-# ─────────────────────────────────────────
-# U3 — MAX98357A (1×7, справа)
-# ─────────────────────────────────────────
-U3X, U3Y = 590, 230
-rect(U3X, U3Y, 130, 170)
-text(U3X+65, U3Y+14, 'U3', bold='bold', size='11pt')
-text(U3X+65, U3Y+28, 'MAX98357A', size='8pt')
-text(U3X+65, U3Y+42, 'I2S Amp', size='7pt', color='#666666')
-
-u3_pins = [
-    ('LRC',  'I2S_LRC'),
-    ('BCLK', 'I2S_BCLK'),
-    ('DIN',  'I2S_DIN'),
-    ('GAIN', None),        # NC
-    ('SD',   'MAX_SD'),
-    ('GND',  'GND'),
-    ('VIN',  '+5V_AUDIO'),  # через FB1, не напрямую с PWR_5V
-]
-for i,(pn,net) in enumerate(u3_pins):
-    py = U3Y + 52 + i*20
-    wire(U3X-STUB, py, U3X, py)
-    text(U3X+5, py, pn, anchor='left', size='7pt', color='#444444')
-    if net:
-        netlabel(U3X-STUB, py, net, rot=180)
-    else:
-        text(U3X-STUB-8, py, 'NC', anchor='right', size='7pt', color='#999999')
-
-# ─────────────────────────────────────────
-# U4 — DS3231 RTC ZS-042 (1×4, справа)
-# ─────────────────────────────────────────
-U4X, U4Y = 590, 460
-rect(U4X, U4Y, 130, 100)
-text(U4X+65, U4Y+14, 'U4', bold='bold', size='11pt')
-text(U4X+65, U4Y+28, 'DS3231 ZS-042', size='8pt')
-text(U4X+65, U4Y+42, 'RTC  I2C', size='7pt', color='#666666')
-
-u4_pins = [
+u1_left = [
+    ('3V3', None), ('EN', None), ('GPIO36', None), ('GPIO39', None),
+    ('GPIO34', 'IO34'), ('GPIO35', 'IO35'),
+    ('GPIO32', 'BUTTON'),
+    ('GPIO33', 'I2S_DIN'), ('GPIO25', 'I2S_LRC'), ('GPIO26', 'I2S_BCLK'),
+    ('GPIO27', 'RELAY_IN'),
+    ('GPIO14', 'LORA_RST'),
+    ('GPIO12', None),          # strapping
     ('GND', 'GND'),
-    ('VCC', '+3V3'),
-    ('SDA', 'I2C_SDA'),
-    ('SCL', 'I2C_SCL'),
+    ('GPIO13', 'STATUS_LED_IO'),
+    ('GPIO9', None), ('GPIO10', None), ('GPIO11', None),   # flash
+    ('5V', '+5V'),
 ]
-for i,(pn,net) in enumerate(u4_pins):
-    py = U4Y + 52 + i*20
-    wire(U4X-STUB, py, U4X, py)
-    text(U4X+5, py, pn, anchor='left', size='7pt', color='#444444')
-    netlabel(U4X-STUB, py, net, rot=180)
+u1_right = [
+    ('GND', 'GND'),
+    ('GPIO23', 'LORA_MOSI'), ('GPIO22', 'I2C_SCL'),
+    ('GPIO1', None), ('GPIO3', None),
+    ('GPIO21', 'I2C_SDA'),
+    ('GND', 'GND'),
+    ('GPIO19', 'LORA_MISO'), ('GPIO18', 'LORA_SCK'), ('GPIO5', 'LORA_NSS'),
+    ('GPIO17', 'IO17'), ('GPIO16', 'IO16'),
+    ('GPIO4', 'LORA_DIO0'),
+    ('GPIO0', None), ('GPIO2', None), ('GPIO15', None),   # strapping
+    ('GPIO8', None), ('GPIO7', None), ('GPIO6', None),    # flash
+]
+block(330, 60, 160, 'U1', 'ESP32-DevKitC-V4', u1_left, u1_right)
 
 # ─────────────────────────────────────────
-# PS1 — HLK-10M05
+# Питание: J1 → F1 → (RV1) → PS1 → D1 → +5V → U5 → +3V3
 # ─────────────────────────────────────────
-PSX, PSY = 60, 80
-rect(PSX, PSY, 160, 110)
-text(PSX+80, PSY+14, 'PS1', bold='bold', size='11pt')
-text(PSX+80, PSY+28, 'HLK-10M05', size='8pt')
-text(PSX+80, PSY+42, 'AC-DC 5V / 2A', size='7pt', color='#666666')
-text(PSX+80, PSY+58, '!!! FUSE 1A on L !!!', size='7pt', color='#cc0000', bold='bold')
+block(60, 60, 110, 'J1', 'AC IN 220V', right=[('L', 'AC_L_IN'), ('N', 'AC_N')],
+      sub='5.08mm 250V', fill='#ffeeee')
+passive(200, 70, 'F1', 'T1A 250V', 'AC_L_IN', 'AC_L', fill='#ffeeee')
+passive(250, 70, 'RV1', '10D561K', 'AC_L', 'AC_N', fill='#ffeeee')
+block(60, 180, 130, 'PS1', 'HLK-10M05', left=[('AC-L', 'AC_L'), ('AC-N', 'AC_N')],
+      right=[('+Vo', '+5V_HLK'), ('-Vo', 'GND')], sub='AC-DC 5V / 2A', fill='#ffeeee')
+passive(40, 300, 'D1', 'SS34 (A top)', '+5V_HLK', '+5V')
+passive(110, 300, 'JP1', '0R 1206', '+5V_HLK', '+5V', dnp=True)
+passive(180, 300, 'C1', '470uF/10V', '+5V', 'GND')
+passive(250, 300, 'C2', '100nF', '+5V', 'GND')
 
-# AC in (left)
-for i,(pn,net) in enumerate([('L','AC_L'), ('N','AC_N')]):
-    py = PSY + 72 + i*20
-    wire(PSX-STUB, py, PSX, py)
-    text(PSX+5, py, pn, anchor='left', size='7pt', color='#444444')
-    netlabel(PSX-STUB, py, net, rot=180)
-
-# DC out (right)
-for i,(pn,net) in enumerate([('+Vo','+5V'), ('-Vo','GND')]):
-    py = PSY + 72 + i*20
-    ex = PSX + 160 + STUB
-    wire(PSX+160, py, ex, py)
-    text(PSX+154, py, pn, anchor='right', size='7pt', color='#444444')
-    netlabel(ex, py, net, rot=0)
-
-# ─────────────────────────────────────────
-# U5 — AMS1117-3.3 (SOT-223)  5V → 3.3V для LoRa/RTC/I2C
-# ─────────────────────────────────────────
-# Размещаем между HLK и ESP32, чуть ниже
-U5X, U5Y = 80, 260
-sot223(U5X, U5Y, 'U5', 'AMS1117-3.3',
-       'GND',   'GND',       # Pin 1 (left) — GND
-       'VOUT',  '+3V3',      # Pin 2 (tab)  — VOUT → +3V3 rail
-       'VIN',   '+5V')       # Pin 3 (right) — VIN from HLK +5V
-
-# Входные конденсаторы AMS1117 (близко к VIN)
-passive(U5X - 60, U5Y - 30, 'C4', '10uF/10V', '+5V',  'GND')
-passive(U5X - 10, U5Y - 30, 'C5', '100nF',     '+5V',  'GND')
-
-# Выходные конденсаторы AMS1117 (близко к VOUT)
-passive(U5X + 110, U5Y - 30, 'C6', '10uF/6.3V', '+3V3', 'GND')
-passive(U5X + 160, U5Y - 30, 'C7', '100nF',     '+3V3', 'GND')
+block(60, 420, 120, 'U5', 'LD1117V33', left=[('VIN', '+5V')],
+      right=[('VOUT/tab', '+3V3'), ('GND', 'GND')], sub='SOT-223')
+passive(40, 540, 'C4', '10uF', '+5V', 'GND')
+passive(100, 540, 'C5', '100nF', '+5V', 'GND')
+passive(160, 540, 'C6', '10uF', '+3V3', 'GND')
+passive(220, 540, 'C7', '100nF', '+3V3', 'GND')
+passive(280, 540, 'C3', '22uF', '+3V3', 'GND')
+passive(40, 650, 'R9', '2.2k', '+3V3', 'LED1_A')
+passive(100, 650, 'LED1', 'green (A top)', 'LED1_A', 'GND')
 
 # ─────────────────────────────────────────
-# Пассивные компоненты (старая группа — оставляем для обратной совместимости, но C3 теперь дублирует C6/C7)
+# U2 — Ra-02 (2×4) + R6/R7/C9/C11
 # ─────────────────────────────────────────
-passive(70,  310, 'C1', '100uF/10V', '+5V',  'GND')
-passive(120, 310, 'C2', '100nF',     '+5V',  'GND')
-# C3 оставляем как bulk на 3V3 шине (дополнительно к C6/C7 у регулятора)
-passive(70,  420, 'C3', '100nF',     '+3V3', 'GND')
-passive(70,  530, 'R1', '4.7k',      '+3V3', 'I2C_SDA', fill='#fff0f0')
-passive(120, 530, 'R2', '4.7k',      '+3V3', 'I2C_SCL', fill='#fff0f0')
-passive(70,  640, 'R3', '1M',        '+5V_AUDIO',  'MAX_SD',  fill='#fff0f0')
+block(620, 60, 130, 'U2', 'Ra-02  SX1278',
+      left=[('1 MISO', 'LORA_MISO'), ('3 SCK', 'LORA_SCK'), ('5 NSS', 'LORA_NSS'), ('7 RST', 'LORA_RST')],
+      right=[('2 VCC', '+3V3'), ('4 MOSI', 'LORA_MOSI'), ('6 DIO0', 'LORA_DIO0'), ('8 GND', 'GND')])
+passive(860, 60, 'R6', '10k', '+3V3', 'LORA_NSS')
+passive(920, 60, 'R7', '10k', '+3V3', 'LORA_RST')
+passive(980, 60, 'C9', '100nF', 'LORA_RST', 'GND')
+passive(1040, 60, 'C11', '100nF', '+3V3', 'GND')
 
 # ─────────────────────────────────────────
-# FB1 — ферритовая бусина в разрыв +5V перед аудио-секцией (MAX98357A)
-# развязывает импульсные токи class-D усилителя от PWR_5V (ESP32/RTC)
+# U3 — MAX98357A (1×7) + FB1/C8/C10/R3
 # ─────────────────────────────────────────
-FB1X, FB1Y = 780, 180
-rect(FB1X, FB1Y, 60, 26, fill='#e8f4ff')
-text(FB1X+30, FB1Y+13, 'FB1', bold='bold', size='7pt')
-wire(FB1X-20, FB1Y+13, FB1X, FB1Y+13)
-text(FB1X-24, FB1Y+13, '', anchor='right')
-netlabel(FB1X-20, FB1Y+13, '+5V', rot=180)
-wire(FB1X+60, FB1Y+13, FB1X+80, FB1Y+13)
-netlabel(FB1X+80, FB1Y+13, '+5V_AUDIO', rot=0)
+block(620, 200, 130, 'U3', 'MAX98357A', sub='I2S Amp (pin order: CHECK module)',
+      left=[('LRC', 'I2S_LRC'), ('BCLK', 'I2S_BCLK'), ('DIN', 'I2S_DIN'), ('GAIN', None),
+            ('SD', 'MAX_SD'), ('GND', 'GND'), ('VIN', '+5V_AUDIO')])
+passive(860, 200, 'FB1', '600R@100MHz', '+5V', '+5V_AUDIO')
+passive(920, 200, 'C8', '220uF/10V', '+5V_AUDIO', 'GND')
+passive(980, 200, 'C10', '100nF', '+5V_AUDIO', 'GND')
+passive(1040, 200, 'R3', '1M', '+5V_AUDIO', 'MAX_SD', dnp=True)
 
-# C8 — локальный bulk-конденсатор у VIN/GND MAX98357A (гасит импульсы class-D на месте)
-passive(U3X - 90, U3Y + 130, 'C8', '220uF/10V', '+5V_AUDIO', 'GND')
+# ─────────────────────────────────────────
+# U4 — DS3231 ZS-042 (1×4) + R1/R2 (DNP: подтяжки уже на модуле)
+# ─────────────────────────────────────────
+block(620, 420, 130, 'U4', 'DS3231 ZS-042', sub='RTC  I2C',
+      left=[('GND', 'GND'), ('VCC', '+3V3'), ('SDA', 'I2C_SDA'), ('SCL', 'I2C_SCL')])
+passive(860, 420, 'R1', '4.7k', '+3V3', 'I2C_SDA', dnp=True)
+passive(920, 420, 'R2', '4.7k', '+3V3', 'I2C_SCL', dnp=True)
+
+# ─────────────────────────────────────────
+# Реле — J3 + R10/R11/R12 (GPIO27). Запаивается R11 ИЛИ R12.
+# ─────────────────────────────────────────
+block(620, 560, 130, 'J3', 'RELAY module', sub='JST-XH 3',
+      left=[('1 +5V', '+5V'), ('2 GND', 'GND'), ('3 IN', 'RELAY_OUT')])
+passive(860, 560, 'R10', '100R', 'RELAY_IN', 'RELAY_OUT')
+passive(920, 560, 'R11', '10k act.HIGH', 'RELAY_IN', 'GND')
+passive(1040, 560, 'R12', '10k act.LOW', '+3V3', 'RELAY_IN', dnp=True)
+
+# ─────────────────────────────────────────
+# Кнопка — SW1 + J4 + R13/R14/C12 (GPIO32)
+# ─────────────────────────────────────────
+block(330, 560, 130, 'J4', 'EXT BUTTON', sub='JST-XH 2',
+      left=[('1 BTN', 'BTN'), ('2 GND', 'GND')])
+passive(330, 700, 'SW1', 'tact 6x6', 'BTN', 'GND')
+passive(390, 700, 'R13', '10k', '+3V3', 'BTN')
+passive(450, 700, 'R14', '470R', 'BTN', 'BUTTON')
+passive(510, 700, 'C12', '100nF', 'BUTTON', 'GND')
+
+# ─────────────────────────────────────────
+# LED статуса — R15 + LED2 + J5 (GPIO13)
+# ─────────────────────────────────────────
+passive(620, 700, 'R15', '1k', 'STATUS_LED_IO', 'STATUS_LED')
+passive(680, 700, 'LED2', 'blue/yel (A top)', 'STATUS_LED', 'GND')
+block(920, 690, 130, 'J5', 'EXT LED (opt.)', sub='JST-XH 2',
+      left=[('1 LED+', 'STATUS_LED'), ('2 GND', 'GND')])
+
+# ─────────────────────────────────────────
+# J6 — резерв 1×6
+# ─────────────────────────────────────────
+block(1110, 690, 110, 'J6', 'SPARE 1x6', sub='2.54',
+      left=[('1', '+3V3'), ('2', 'GND'), ('3 IO16', 'IO16'), ('4 IO17', 'IO17'),
+            ('5 IO34', 'IO34'), ('6 IO35', 'IO35')])
 
 # ─────────────────────────────────────────
 # BUILD JSON
@@ -314,8 +210,8 @@ CANVAS = "CA~1000~1000~#ffffff~yes~#cccccc~10~1200~900~line~10~pixel~5~0~0"
 schematic = {
     "head": {
         "type": "schematic",
-        "title": "Gong LoRa Server",
-        "description": "ESP32-DevKitC-V4 + Ra-02 LoRa (SMA) + MAX98357A + DS3231 + HLK-10M05",
+        "title": "Gong LoRa Node v1",
+        "description": "ESP32-DevKitC-V4 + Ra-02 + MAX98357A + DS3231 + HLK-10M05 + relay/button/LED (PCB_SPEC_PROMPT.md)",
         "canvas": CANVAS,
         "version": "6.5.38",
         "encryptedDataCompliant": False
