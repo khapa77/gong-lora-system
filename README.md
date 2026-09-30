@@ -5,7 +5,8 @@
 [Testing_table.md](Testing_table.md) — таблица проверок на стенде ·
 [Audit_6.2.md](Audit_6.2.md) — аудит и исправления ·
 [CHANGELOG.md](CHANGELOG.md) ·
-[docs/platformio-setup.md](docs/platformio-setup.md) — PlatformIO с нуля
+[docs/platformio-setup.md](docs/platformio-setup.md) — PlatformIO с нуля ·
+[docs/wiring-standalone.html](docs/wiring-standalone.html) — схема подключения (ESP32, PCM5102A, DS3231)
 
 > **Эта ветка — одиночный гонг без LoRa.** Одно устройство: расписание,
 > веб-интерфейс, DS3231 — всё как в основной версии, но без радио и

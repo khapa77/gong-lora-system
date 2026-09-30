@@ -44,6 +44,8 @@ PlatformIO с нуля.
 
 ### Распиновка
 
+Схема с номерами пинов DevKit — [docs/wiring-standalone.html](docs/wiring-standalone.html) (открыть в браузере).
+
 | Сигнал | GPIO ESP32 | Куда | Примечание |
 |---|---|---|---|
 | I2S BCLK | 26 | PCM5102A BCK | |

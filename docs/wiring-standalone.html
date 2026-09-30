@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gong standalone — распиновка</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1d2330; --muted: #6a7285; --line: #d9dde6; --card: #f5f6f9;
+    --board: #1f5f3f; --board-fg: #e8f3ec; --pin: #d9b44a;
+    --c-5v: #d6453d; --c-3v3: #e08a1e; --c-gnd: #4a5163; --c-i2s: #2f6fd0; --c-i2c: #23935a; --c-ctl: #8a5cd1;
+    --warn-bg: #fff4dc; --warn-fg: #6b4a00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171d; --fg: #e4e7ee; --muted: #9aa2b4; --line: #2c313c; --card: #1c2029;
+      --board: #1e4d36; --board-fg: #dcefe3; --pin: #d9b44a;
+      --c-5v: #ff6b61; --c-3v3: #ffab45; --c-gnd: #9aa2b4; --c-i2s: #6aa4ff; --c-i2c: #4fd08d; --c-ctl: #b48cff;
+      --warn-bg: #3a2f14; --warn-fg: #ffd98a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14171d; --fg: #e4e7ee; --muted: #9aa2b4; --line: #2c313c; --card: #1c2029;
+    --board: #1e4d36; --board-fg: #dcefe3; --pin: #d9b44a;
+    --c-5v: #ff6b61; --c-3v3: #ffab45; --c-gnd: #9aa2b4; --c-i2s: #6aa4ff; --c-i2c: #4fd08d; --c-ctl: #b48cff;
+    --warn-bg: #3a2f14; --warn-fg: #ffd98a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1000px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 32px 0 8px; }
+  p.sub { color: var(--muted); margin: 0 0 20px; }
+  .diagram { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px; }
+  .diagram svg { display: block; width: 100%; height: auto; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 10px 4px 0; font-size: 13px; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 18px; height: 3px; border-radius: 2px;
+                         vertical-align: middle; margin-right: 6px; background: var(--c); }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; }
+  td b { font-weight: 650; }
+  code { font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .warn { background: var(--warn-bg); color: var(--warn-fg); border-radius: 8px; padding: 10px 14px; margin: 16px 0; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: baseline; }
+
+  /* SVG */
+  .w { fill: none; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+  .w5v { stroke: var(--c-5v); } .w3v3 { stroke: var(--c-3v3); } .wgnd { stroke: var(--c-gnd); }
+  .wi2s { stroke: var(--c-i2s); } .wi2c { stroke: var(--c-i2c); } .wctl { stroke: var(--c-ctl); }
+  .jn { stroke: none; }
+  .j5v { fill: var(--c-5v); } .jgnd { fill: var(--c-gnd); }
+  .brd { fill: var(--board); }
+  .brd-t { fill: var(--board-fg); font: 11px ui-monospace, Menlo, Consolas, monospace; }
+  .brd-t.used { font-weight: 700; }
+  .brd-n { fill: var(--board-fg); opacity: .6; font: 9px ui-monospace, Menlo, Consolas, monospace; }
+  .pin { fill: var(--pin); }
+  .pin.nc { opacity: .35; }
+  .mod { fill: var(--bg); stroke: var(--fg); stroke-width: 1.5; }
+  .mod-h { fill: var(--fg); font: 700 14px system-ui, sans-serif; }
+  .mod-s { fill: var(--muted); font: 11px system-ui, sans-serif; }
+  .mod-p { fill: var(--fg); font: 600 12px ui-monospace, Menlo, Consolas, monospace; }
+  .tag { fill: var(--bg); stroke: var(--c-ctl); stroke-width: 1.5; }
+  .tag-t { fill: var(--fg); font: 12px system-ui, sans-serif; }
+  .note { fill: var(--muted); font: 12px system-ui, sans-serif; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Gong standalone — распиновка</h1>
+  <p class="sub">Сборка на макете: ESP32-DevKitC-V4 (38 pin) + ЦАП PCM5102A + часы DS3231 (ZS-042), ветка <code>standalone</code>, FW 6.2-solo.
+    ESP32 нарисован сверху: антенна вверху, USB внизу. Пин 1 — у антенны, пин 19 — у USB.</p>
+
+  <div class="diagram">
+  <svg viewBox="0 0 980 770" role="img" aria-label="Схема соединений ESP32 с PCM5102A, DS3231, кнопкой, реле и светодиодом">
+    <!-- ── ESP32 DevKitC-V4 ── -->
+    <rect class="brd" x="460" y="92" width="220" height="600" rx="10"/>
+    <rect x="530" y="98" width="80" height="44" rx="4" fill="none" stroke="var(--board-fg)" stroke-opacity=".4" stroke-dasharray="4 3"/>
+    <text class="brd-n" x="570" y="124" text-anchor="middle">антенна</text>
+    <rect x="545" y="676" width="50" height="24" rx="3" fill="var(--board-fg)" opacity=".35"/>
+    <text class="brd-n" x="570" y="716" text-anchor="middle" style="fill:var(--muted);opacity:1">USB</text>
+    <text class="brd-t" x="570" y="400" text-anchor="middle" transform="rotate(-90 570 400)" style="font-size:13px;opacity:.8">ESP32-DevKitC-V4</text>
+
+    <!-- left row J2 -->
+    <g>
+      <circle class="pin" cx="472" cy="120" r="5"/><text class="brd-t used" x="484" y="124">3V3</text><text class="brd-n" x="452" y="116" text-anchor="end" style="fill:var(--muted);opacity:1">1</text>
+      <circle class="pin nc" cx="472" cy="150" r="5"/><text class="brd-t" x="484" y="154" opacity=".55">EN</text>
+      <circle class="pin nc" cx="472" cy="180" r="5"/><text class="brd-t" x="484" y="184" opacity=".55">36/VP</text>
+      <circle class="pin nc" cx="472" cy="210" r="5"/><text class="brd-t" x="484" y="214" opacity=".55">39/VN</text>
+      <circle class="pin nc" cx="472" cy="240" r="5"/><text class="brd-t" x="484" y="244" opacity=".55">34</text>
+      <circle class="pin nc" cx="472" cy="270" r="5"/><text class="brd-t" x="484" y="274" opacity=".55">35</text>
+      <circle class="pin" cx="472" cy="300" r="5"/><text class="brd-t used" x="484" y="304">32</text><text class="brd-n" x="452" y="296" text-anchor="end" style="fill:var(--muted);opacity:1">7</text>
+      <circle class="pin" cx="472" cy="330" r="5"/><text class="brd-t used" x="484" y="334">33</text><text class="brd-n" x="452" y="326" text-anchor="end" style="fill:var(--muted);opacity:1">8</text>
+      <circle class="pin" cx="472" cy="360" r="5"/><text class="brd-t used" x="484" y="364">25</text><text class="brd-n" x="452" y="356" text-anchor="end" style="fill:var(--muted);opacity:1">9</text>
+      <circle class="pin" cx="472" cy="390" r="5"/><text class="brd-t used" x="484" y="394">26</text><text class="brd-n" x="452" y="386" text-anchor="end" style="fill:var(--muted);opacity:1">10</text>
+      <circle class="pin" cx="472" cy="420" r="5"/><text class="brd-t used" x="484" y="424">27</text><text class="brd-n" x="452" y="416" text-anchor="end" style="fill:var(--muted);opacity:1">11</text>
+      <circle class="pin nc" cx="472" cy="450" r="5"/><text class="brd-t" x="484" y="454" opacity=".55">14</text>
+      <circle class="pin nc" cx="472" cy="480" r="5"/><text class="brd-t" x="484" y="484" opacity=".55">12 ⚠</text>
+      <circle class="pin" cx="472" cy="510" r="5"/><text class="brd-t used" x="484" y="514">GND</text><text class="brd-n" x="452" y="506" text-anchor="end" style="fill:var(--muted);opacity:1">14</text>
+      <circle class="pin" cx="472" cy="540" r="5"/><text class="brd-t used" x="484" y="544">13</text><text class="brd-n" x="452" y="536" text-anchor="end" style="fill:var(--muted);opacity:1">15</text>
+      <circle class="pin nc" cx="472" cy="570" r="5"/><text class="brd-t" x="484" y="574" opacity=".55">SD2</text>
+      <circle class="pin nc" cx="472" cy="600" r="5"/><text class="brd-t" x="484" y="604" opacity=".55">SD3</text>
+      <circle class="pin nc" cx="472" cy="630" r="5"/><text class="brd-t" x="484" y="634" opacity=".55">CMD</text>
+      <circle class="pin" cx="472" cy="660" r="5"/><text class="brd-t used" x="484" y="664">5V</text><text class="brd-n" x="452" y="656" text-anchor="end" style="fill:var(--muted);opacity:1">19</text>
+    </g>
+    <!-- right row J3 -->
+    <g text-anchor="end">
+      <circle class="pin" cx="668" cy="120" r="5"/><text class="brd-t used" x="656" y="124">GND</text><text class="brd-n" x="688" y="116" text-anchor="start" style="fill:var(--muted);opacity:1">1</text>
+      <circle class="pin nc" cx="668" cy="150" r="5"/><text class="brd-t" x="656" y="154" opacity=".55">23</text>
+      <circle class="pin" cx="668" cy="180" r="5"/><text class="brd-t used" x="656" y="184">22</text><text class="brd-n" x="688" y="176" text-anchor="start" style="fill:var(--muted);opacity:1">3</text>
+      <circle class="pin nc" cx="668" cy="210" r="5"/><text class="brd-t" x="656" y="214" opacity=".55">TX0</text>
+      <circle class="pin nc" cx="668" cy="240" r="5"/><text class="brd-t" x="656" y="244" opacity=".55">RX0</text>
+      <circle class="pin" cx="668" cy="270" r="5"/><text class="brd-t used" x="656" y="274">21</text><text class="brd-n" x="688" y="266" text-anchor="start" style="fill:var(--muted);opacity:1">6</text>
+      <circle class="pin nc" cx="668" cy="300" r="5"/><text class="brd-t" x="656" y="304" opacity=".55">GND</text>
+      <circle class="pin nc" cx="668" cy="330" r="5"/><text class="brd-t" x="656" y="334" opacity=".55">19</text>
+      <circle class="pin nc" cx="668" cy="360" r="5"/><text class="brd-t" x="656" y="364" opacity=".55">18</text>
+      <circle class="pin nc" cx="668" cy="390" r="5"/><text class="brd-t" x="656" y="394" opacity=".55">5</text>
+      <circle class="pin nc" cx="668" cy="420" r="5"/><text class="brd-t" x="656" y="424" opacity=".55">17</text>
+      <circle class="pin nc" cx="668" cy="450" r="5"/><text class="brd-t" x="656" y="454" opacity=".55">16</text>
+      <circle class="pin nc" cx="668" cy="480" r="5"/><text class="brd-t" x="656" y="484" opacity=".55">4</text>
+      <circle class="pin nc" cx="668" cy="510" r="5"/><text class="brd-t" x="656" y="514" opacity=".55">0 ⚠</text>
+      <circle class="pin nc" cx="668" cy="540" r="5"/><text class="brd-t" x="656" y="544" opacity=".55">2 ⚠</text>
+      <circle class="pin nc" cx="668" cy="570" r="5"/><text class="brd-t" x="656" y="574" opacity=".55">15 ⚠</text>
+      <circle class="pin nc" cx="668" cy="600" r="5"/><text class="brd-t" x="656" y="604" opacity=".55">SD1</text>
+      <circle class="pin nc" cx="668" cy="630" r="5"/><text class="brd-t" x="656" y="634" opacity=".55">SD0</text>
+      <circle class="pin nc" cx="668" cy="660" r="5"/><text class="brd-t" x="656" y="664" opacity=".55">CLK</text>
+    </g>
+
+    <!-- ── PCM5102A ── -->
+    <rect class="mod" x="110" y="310" width="160" height="380" rx="8"/>
+    <text class="mod-h" x="120" y="300">PCM5102A</text>
+    <text class="mod-s" x="120" y="700" dy="16">I2S-ЦАП, линейный выход</text>
+    <g text-anchor="end">
+      <text class="mod-p" x="262" y="334">DIN</text>
+      <text class="mod-p" x="262" y="364">LCK</text>
+      <text class="mod-p" x="262" y="394">BCK</text>
+      <text class="mod-p" x="262" y="484">SCK</text>
+      <text class="mod-p" x="262" y="514">GND</text>
+      <text class="mod-p" x="262" y="664">VIN</text>
+    </g>
+    <text class="mod-s" x="120" y="420">перемычки:</text>
+    <text class="mod-p" x="120" y="438">XSMT = H</text>
+    <text class="mod-p" x="120" y="456">FMT  = L</text>
+    <text class="mod-s" x="120" y="474">FLT, DEMP = L</text>
+    <text class="mod-p" x="120" y="584">LOUT</text>
+    <text class="mod-p" x="120" y="614">AGND</text>
+    <text class="mod-p" x="120" y="644">ROUT</text>
+    <path class="w wgnd" d="M110 580 H40 M110 610 H40 M110 640 H40" stroke-dasharray="5 4"/>
+    <text class="note" x="20" y="540">→ AUX/LINE</text>
+    <text class="note" x="20" y="556">колонок или</text>
+    <text class="note" x="20" y="572" dy="-2">усилителя</text>
+
+    <!-- PCM wires -->
+    <path class="w wi2s" d="M270 330 H472"/>
+    <path class="w wi2s" d="M270 360 H472"/>
+    <path class="w wi2s" d="M270 390 H472"/>
+    <path class="w wgnd" d="M270 510 H472"/>
+    <path class="w wgnd" d="M270 480 H300 V510"/>
+    <circle class="jn jgnd" cx="300" cy="510" r="4"/>
+    <path class="w w5v" d="M270 660 H472"/>
+    <text class="note" x="310" y="476">SCK → GND</text>
+
+    <!-- ── control: button / relay / LED ── -->
+    <path class="w wctl" d="M440 300 H472"/>
+    <rect class="tag" x="300" y="288" width="140" height="24" rx="5"/>
+    <text class="tag-t" x="310" y="305">Кнопка → GND</text>
+    <path class="w wctl" d="M440 420 H472"/>
+    <rect class="tag" x="300" y="408" width="140" height="24" rx="5"/>
+    <text class="tag-t" x="310" y="425">Реле IN</text>
+    <path class="w wctl" d="M440 540 H472"/>
+    <rect class="tag" x="300" y="528" width="140" height="24" rx="5"/>
+    <text class="tag-t" x="310" y="545">1 кОм → LED → GND</text>
+
+    <!-- ── DS3231 ── -->
+    <rect class="mod" x="780" y="50" width="160" height="250" rx="8"/>
+    <text class="mod-h" x="792" y="40">DS3231 (ZS-042)</text>
+    <g>
+      <text class="mod-p" x="792" y="74">VCC</text>
+      <text class="mod-p" x="792" y="124">GND</text>
+      <text class="mod-p" x="792" y="184">SCL</text>
+      <text class="mod-p" x="792" y="274">SDA</text>
+    </g>
+    <text class="mod-s" x="792" y="222">32K, SQW — NC</text>
+    <text class="mod-s" x="792" y="238">подтяжки I2C</text>
+    <text class="mod-s" x="792" y="252">уже на модуле</text>
+    <path class="w w3v3" d="M472 120 H445 V70 H780"/>
+    <path class="w wgnd" d="M668 120 H780"/>
+    <path class="w wi2c" d="M668 180 H780"/>
+    <path class="w wi2c" d="M668 270 H780"/>
+    <text class="note" x="700" y="64">3V3</text>
+  </svg>
+  <div class="legend">
+    <span style="--c:var(--c-5v)">+5 В</span>
+    <span style="--c:var(--c-3v3)">+3.3 В</span>
+    <span style="--c:var(--c-gnd)">GND</span>
+    <span style="--c:var(--c-i2s)">I2S</span>
+    <span style="--c:var(--c-i2c)">I2C</span>
+    <span style="--c:var(--c-ctl)">кнопка / реле / LED</span>
+  </div>
+  </div>
+
+  <div class="warn">Порядок выводов на модулях PCM5102A и DS3231 у разных продавцов разный — на схеме выводы
+    расставлены по смыслу, а подключать нужно <b>по надписям на своём модуле</b>. Перед подачей питания проверьте
+    на DevKit: 3V3 — левый пин 1, 5V — левый пин 19.</div>
+
+  <h2><span class="dot" style="background:var(--c-i2s)"></span>ESP32 → PCM5102A</h2>
+  <div class="scroll"><table>
+    <tr><th>Сигнал</th><th>ESP32 GPIO</th><th>ESP32 пин</th><th>PCM5102A</th></tr>
+    <tr><td>I2S BCLK</td><td>GPIO26</td><td>левый 10</td><td><b>BCK</b></td></tr>
+    <tr><td>I2S LRC (WS)</td><td>GPIO25</td><td>левый 9</td><td><b>LCK</b></td></tr>
+    <tr><td>I2S DATA</td><td>GPIO33</td><td>левый 8</td><td><b>DIN</b></td></tr>
+    <tr><td>Питание</td><td>5V</td><td>левый 19</td><td><b>VIN</b> (3.3–5 В)</td></tr>
+    <tr><td>Земля</td><td>GND</td><td>левый 14</td><td><b>GND</b></td></tr>
+    <tr><td>Тактирование</td><td>—</td><td>—</td><td><b>SCK → GND</b> (обязательно, PLL от BCK)</td></tr>
+  </table></div>
+
+  <h2>Перемычки PCM5102A</h2>
+  <p class="sub" style="margin:0 0 8px">Площадки H1L–H4L на обороте модуля.</p>
+  <div class="scroll"><table>
+    <tr><th>Вывод</th><th>Уровень</th><th>Зачем</th></tr>
+    <tr><td>FLT</td><td>L</td><td>обычный фильтр</td></tr>
+    <tr><td>DEMP</td><td>L</td><td>без де-эмфазиса</td></tr>
+    <tr><td><b>XSMT</b></td><td><b>H</b></td><td>снять mute — не замкнуто → тишина</td></tr>
+    <tr><td>FMT</td><td>L</td><td>формат I2S</td></tr>
+  </table></div>
+  <p>Выход — гнездо 3.5 мм или <b>LOUT / ROUT / AGND</b>, линейный уровень (~2 В RMS) на вход AUX/LINE.
+    Прошивка отдаёт моно (<code>forceMono</code>) — в L и R одинаковый сигнал, для моно-усилителя хватит одного канала.
+    Динамик напрямую не подключать.</p>
+
+  <h2><span class="dot" style="background:var(--c-i2c)"></span>ESP32 → DS3231 (ZS-042)</h2>
+  <div class="scroll"><table>
+    <tr><th>Сигнал</th><th>ESP32 GPIO</th><th>ESP32 пин</th><th>DS3231</th></tr>
+    <tr><td>I2C SDA</td><td>GPIO21</td><td>правый 6</td><td><b>SDA</b></td></tr>
+    <tr><td>I2C SCL</td><td>GPIO22</td><td>правый 3</td><td><b>SCL</b></td></tr>
+    <tr><td>Питание</td><td>3V3</td><td>левый 1</td><td><b>VCC</b></td></tr>
+    <tr><td>Земля</td><td>GND</td><td>правый 1</td><td><b>GND</b></td></tr>
+    <tr><td>—</td><td>—</td><td>—</td><td>32K, SQW не подключать</td></tr>
+  </table></div>
+  <p>Подтяжки 4.7 кОм на SDA/SCL уже стоят на модуле. С батарейкой CR2032 выпаяйте зарядный резистор
+    или поставьте аккумулятор LIR2032.</p>
+
+  <h2><span class="dot" style="background:var(--c-ctl)"></span>Кнопка, реле, светодиод</h2>
+  <div class="scroll"><table>
+    <tr><th>Что</th><th>ESP32 GPIO</th><th>ESP32 пин</th><th>Куда</th></tr>
+    <tr><td>Кнопка</td><td>GPIO32</td><td>левый 7</td><td>кнопка → GND (внутренняя подтяжка; провод &gt; 30 см — 10 кОм к 3.3 В + 100 нФ к GND)</td></tr>
+    <tr><td>Реле</td><td>GPIO27</td><td>левый 11</td><td>IN модуля реле; +5V и GND модуля — к 5V / GND</td></tr>
+    <tr><td>Светодиод</td><td>GPIO13</td><td>левый 15</td><td>1 кОм → анод LED, катод → GND</td></tr>
+  </table></div>
+
+  <h2>ESP32-DevKitC-V4 — полный пиноут</h2>
+  <div class="scroll"><table>
+    <tr><th>№</th><th>Левый ряд</th><th>Подключено</th><th>Правый ряд</th><th>Подключено</th></tr>
+    <tr><td>1</td><td>3V3</td><td><b>DS3231 VCC</b></td><td>GND</td><td><b>DS3231 GND</b></td></tr>
+    <tr><td>2</td><td>EN</td><td>—</td><td>GPIO23</td><td>—</td></tr>
+    <tr><td>3</td><td>GPIO36/VP</td><td>—</td><td>GPIO22</td><td><b>DS3231 SCL</b></td></tr>
+    <tr><td>4</td><td>GPIO39/VN</td><td>—</td><td>GPIO1/TX0</td><td>—</td></tr>
+    <tr><td>5</td><td>GPIO34</td><td>—</td><td>GPIO3/RX0</td><td>—</td></tr>
+    <tr><td>6</td><td>GPIO35</td><td>—</td><td>GPIO21</td><td><b>DS3231 SDA</b></td></tr>
+    <tr><td>7</td><td>GPIO32</td><td><b>кнопка</b></td><td>GND</td><td>—</td></tr>
+    <tr><td>8</td><td>GPIO33</td><td><b>PCM5102A DIN</b></td><td>GPIO19</td><td>—</td></tr>
+    <tr><td>9</td><td>GPIO25</td><td><b>PCM5102A LCK</b></td><td>GPIO18</td><td>—</td></tr>
+    <tr><td>10</td><td>GPIO26</td><td><b>PCM5102A BCK</b></td><td>GPIO5</td><td>—</td></tr>
+    <tr><td>11</td><td>GPIO27</td><td><b>реле IN</b></td><td>GPIO17</td><td>—</td></tr>
+    <tr><td>12</td><td>GPIO14</td><td>—</td><td>GPIO16</td><td>—</td></tr>
+    <tr><td>13</td><td>GPIO12 ⚠</td><td>не трогать (strapping)</td><td>GPIO4</td><td>—</td></tr>
+    <tr><td>14</td><td>GND</td><td><b>PCM5102A GND, SCK</b></td><td>GPIO0 ⚠</td><td>не трогать (Boot)</td></tr>
+    <tr><td>15</td><td>GPIO13</td><td><b>светодиод</b></td><td>GPIO2 ⚠</td><td>не трогать (strapping)</td></tr>
+    <tr><td>16</td><td>GPIO9/SD2</td><td>не трогать (flash)</td><td>GPIO15 ⚠</td><td>не трогать (strapping)</td></tr>
+    <tr><td>17</td><td>GPIO10/SD3</td><td>не трогать (flash)</td><td>GPIO8/SD1</td><td>не трогать (flash)</td></tr>
+    <tr><td>18</td><td>GPIO11/CMD</td><td>не трогать (flash)</td><td>GPIO7/SD0</td><td>не трогать (flash)</td></tr>
+    <tr><td>19</td><td>5V</td><td><b>PCM5102A VIN</b></td><td>GPIO6/CLK</td><td>не трогать (flash)</td></tr>
+  </table></div>
+  <p class="sub" style="margin-top:12px">Нумерация — по Espressif ESP32-DevKitC-V4 Getting Started Guide, как в
+    <code>footprint/schematic_netlist.md</code>. Пины — <code>server/src/config.h</code>.</p>
+</main>
+</body>
+</html>
