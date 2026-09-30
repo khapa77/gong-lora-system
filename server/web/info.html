@@ -69,6 +69,8 @@
 </head>
 <body>
 <main>
+  <p style="margin:0 0 12px"><a href="/" style="color:inherit">← К управлению гонгом</a>
+    &nbsp;·&nbsp; <a href="/guide" style="color:inherit">Инструкция</a></p>
   <h1>Gong standalone — распиновка</h1>
   <p class="sub">Сборка на макете: ESP32-DevKitC-V4 (38 pin) + ЦАП PCM5102A + часы DS3231 (ZS-042), ветка <code>standalone</code>, FW 6.2-solo.
     ESP32 нарисован сверху: антенна вверху, USB внизу. Пин 1 — у антенны, пин 19 — у USB.</p>
@@ -273,7 +275,8 @@
     <tr><td>19</td><td>5V</td><td><b>PCM5102A VIN</b></td><td>GPIO6/CLK</td><td>не трогать (flash)</td></tr>
   </table></div>
   <p class="sub" style="margin-top:12px">Нумерация — по Espressif ESP32-DevKitC-V4 Getting Started Guide, как в
-    <code>footprint/schematic_netlist.md</code>. Пины — <code>server/src/config.h</code>.</p>
+    <code>footprint/schematic_netlist.md</code>. Пины — <code>server/src/config.h</code>.
+    Эта страница встроена в прошивку: <code>http://gong.local/info</code>.</p>
 </main>
 </body>
 </html>

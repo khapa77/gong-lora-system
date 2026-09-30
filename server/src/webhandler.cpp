@@ -23,6 +23,10 @@ static WebServer server(80);
 // progress with it. embed_txtfiles appends a NUL, hence the -1.
 extern const uint8_t index_html_start[] asm("_binary_web_index_html_start");
 extern const uint8_t index_html_end[]   asm("_binary_web_index_html_end");
+extern const uint8_t info_html_start[]  asm("_binary_web_info_html_start");
+extern const uint8_t info_html_end[]    asm("_binary_web_info_html_end");
+extern const uint8_t guide_html_start[] asm("_binary_web_guide_html_start");
+extern const uint8_t guide_html_end[]   asm("_binary_web_guide_html_end");
 
 // -------------------------------------------------------
 // Response plumbing. Handlers run under sys_lock() (they touch the schedule,
@@ -34,7 +38,8 @@ extern const uint8_t index_html_end[]   asm("_binary_web_index_html_end");
 static int         respCode = 0;
 static const char* respType = "text/plain";
 static String      respBody;
-static bool        respPage = false;
+static const uint8_t* respPage    = nullptr;   // встроенная страница (index/info/guide) или nullptr
+static const uint8_t* respPageEnd = nullptr;
 
 static void reply(int code, const char* type, const String& body) {
     respCode = code;
@@ -259,8 +264,8 @@ enum : uint8_t { R_OPEN = 0, R_AUTH = 1, R_CSRF = 2, R_WRITE = R_AUTH | R_CSRF }
 static void flushResponse() {
     if (respPage) {
         server.sendHeader("Cache-Control", "no-cache");
-        server.send_P(200, "text/html; charset=utf-8", (PGM_P)index_html_start,
-                      (size_t)(index_html_end - index_html_start) - 1);
+        server.send_P(200, "text/html; charset=utf-8", (PGM_P)respPage,
+                      (size_t)(respPageEnd - respPage) - 1);
     } else if (respCode) {
         server.send(respCode, respType, respBody);
     }
@@ -269,7 +274,7 @@ static void flushResponse() {
 
 static void dispatch(void (*fn)(), uint8_t flags) {
     respCode = 0;
-    respPage = false;
+    respPage = nullptr;
     if (!hostAllowed()) { server.send(403, "text/plain", "Forbidden host"); return; }
     // Auth runs OUTSIDE sys_lock: a PBKDF2 check takes ~1 s and auth state is
     // only ever touched from this (loopTask) side.
@@ -344,7 +349,11 @@ static int daysInMonth(int y, int mo) {
 // Handlers — auth/CSRF/host are checked by dispatch() (see route flags in
 // web_setup), so a handler only does its own job.
 // -------------------------------------------------------
-static void handleRoot() { respPage = true; }
+static void handleRoot() { respPage = index_html_start; respPageEnd = index_html_end; }
+// /info — схема подключения (server/web/info.html)
+static void handleInfo() { respPage = info_html_start;  respPageEnd = info_html_end; }
+// /guide — инструкция: светодиод, кнопка, реле, предупреждения (server/web/guide.html)
+static void handleGuide() { respPage = guide_html_start; respPageEnd = guide_html_end; }
 
 // /api/schedule — GET only. The UI uses the day-scoped /api/day/entry.
 static void handleScheduleGET() {
@@ -642,6 +651,8 @@ void web_setup() {
     route("/favicon.ico",       HTTP_GET,    handleFavicon,        R_OPEN);
     route("/",                  HTTP_GET,    handleRoot,           R_AUTH);
     route("/index.html",        HTTP_GET,    handleRoot,           R_AUTH);
+    route("/info",              HTTP_GET,    handleInfo,           R_AUTH);
+    route("/guide",             HTTP_GET,    handleGuide,          R_AUTH);
     route("/api/schedule",      HTTP_GET,    handleScheduleGET,    R_AUTH);
     route("/api/state",         HTTP_GET,    handleState,          R_AUTH);
 

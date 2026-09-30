@@ -6,7 +6,8 @@
 [Audit_6.2.md](Audit_6.2.md) — аудит и исправления ·
 [CHANGELOG.md](CHANGELOG.md) ·
 [docs/platformio-setup.md](docs/platformio-setup.md) — PlatformIO с нуля ·
-[docs/wiring-standalone.html](docs/wiring-standalone.html) — схема подключения (ESP32, PCM5102A, DS3231)
+[server/web/info.html](server/web/info.html) — схема подключения (ESP32, PCM5102A, DS3231), на устройстве — `http://gong.local/info` ·
+[server/web/guide.html](server/web/guide.html) — краткая инструкция (светодиод, кнопка, реле, предупреждения), на устройстве — `http://gong.local/guide`
 
 > **Эта ветка — одиночный гонг без LoRa.** Одно устройство: расписание,
 > веб-интерфейс, DS3231 — всё как в основной версии, но без радио и

@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gong — инструкция</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1d2330; --muted: #6a7285; --line: #d9dde6; --card: #f5f6f9;
+    --accent: #2f6fd0; --ok: #23935a; --bad: #d6453d; --warn: #b7791f;
+    --warn-bg: #fff4dc; --warn-fg: #6b4a00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171d; --fg: #e4e7ee; --muted: #9aa2b4; --line: #2c313c; --card: #1c2029;
+      --accent: #6aa4ff; --ok: #4fd08d; --bad: #ff6b61; --warn: #ffab45;
+      --warn-bg: #3a2f14; --warn-fg: #ffd98a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14171d; --fg: #e4e7ee; --muted: #9aa2b4; --line: #2c313c; --card: #1c2029;
+    --accent: #6aa4ff; --ok: #4fd08d; --bad: #ff6b61; --warn: #ffab45;
+    --warn-bg: #3a2f14; --warn-fg: #ffd98a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 56px; }
+  nav.top { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 12px; font-size: 14px; }
+  nav.top a { color: inherit; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 19px; margin: 36px 0 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+  h3 { font-size: 16px; margin: 20px 0 6px; }
+  p.sub { color: var(--muted); margin: 0 0 18px; }
+  a { color: var(--accent); }
+  .toc { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px;
+         columns: 2 220px; font-size: 14px; }
+  .toc a { display: block; padding: 2px 0; color: inherit; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 6px 0; }
+  th, td { text-align: left; vertical-align: top; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+  td:first-child { white-space: nowrap; }
+  code { font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+         background: var(--card); padding: 1px 4px; border-radius: 4px; }
+  ul, ol { padding-left: 22px; margin: 6px 0; }
+  li { margin: 3px 0; }
+  .warn { background: var(--warn-bg); color: var(--warn-fg); border-radius: 8px; padding: 10px 14px; margin: 14px 0; }
+  .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 12px 0; font-size: 14px; }
+  .flow span { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+  .flow i { font-style: normal; color: var(--muted); }
+
+  /* LED pattern glyphs */
+  .led { display: inline-flex; gap: 3px; vertical-align: middle; margin-right: 8px; }
+  .led b { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+  .led b.on { background: var(--ok); }
+  .led.fast b.on { background: var(--bad); }
+  .led.hint b.on { background: var(--warn); }
+</style>
+</head>
+<body>
+<main>
+  <nav class="top">
+    <a href="/">← К управлению гонгом</a>
+    <a href="/info">Схема подключения</a>
+  </nav>
+  <h1>Gong — как всё устроено</h1>
+  <p class="sub">Одиночный гонг, ветка <code>standalone</code>, FW 6.2-solo. Краткая памятка для того,
+    кто обслуживает устройство. Полная версия — <code>Instruction.md</code> в репозитории.</p>
+
+  <div class="toc">
+    <a href="#how">1. Как это работает</a>
+    <a href="#led">2. Светодиод</a>
+    <a href="#button">3. Кнопка</a>
+    <a href="#relay">4. Реле и звук</a>
+    <a href="#alerts">5. Предупреждения в веб-интерфейсе</a>
+    <a href="#time">6. Время</a>
+    <a href="#days">7. Дни курса и расписание</a>
+    <a href="#power">8. Если пропало питание</a>
+    <a href="#setup">9. Первая настройка</a>
+    <a href="#security">10. Пароли</a>
+    <a href="#care">11. Обслуживание</a>
+    <a href="#trouble">12. Неисправности</a>
+  </div>
+
+  <h2 id="how">1. Как это работает</h2>
+  <p>ESP32 хранит расписание гонгов на 12 дней курса и сам поднимает точку доступа Wi-Fi
+    <b>GongServer</b> — интернет и роутер не нужны. В нужную минуту:</p>
+  <div class="flow">
+    <span>Расписание / кнопка / веб</span><i>→</i>
+    <span>реле включает усилитель</span><i>→</i>
+    <span>прогрев 0.8 с</span><i>→</i>
+    <span>MP3 из памяти</span><i>→</i>
+    <span>ЦАП PCM5102A</span><i>→</i>
+    <span>усилитель</span><i>→</i>
+    <span>после звука 3 с — реле выкл</span>
+  </div>
+  <ul>
+    <li><b>Часы</b> — DS3231 с батарейкой, время не теряется при выключении. Если есть интернет — время уточняется по NTP.</li>
+    <li><b>Веб-интерфейс</b> — <code>http://192.168.4.1</code> или <code>http://gong.local</code> после подключения к Wi-Fi GongServer.</li>
+    <li><b>Кнопка</b> — ручной гонг, стоп, реле без звука, сброс пароля.</li>
+    <li><b>Светодиод</b> — показывает, всё ли в порядке, без захода в веб.</li>
+  </ul>
+
+  <h2 id="led">2. Светодиод</h2>
+  <div class="scroll"><table>
+    <tr><th>Как светится</th><th>Что значит</th></tr>
+    <tr><td><span class="led"><b class="on"></b><b></b><b></b><b></b></span>короткая вспышка раз в 3 с</td>
+        <td><b>Всё в порядке</b>, гонги прозвучат по расписанию.</td></tr>
+    <tr><td><span class="led fast"><b class="on"></b><b></b><b class="on"></b><b></b></span>частое мигание (5 раз в секунду)</td>
+        <td><b>Гонг не прозвучит.</b> Нет времени, не смонтирована файловая система или не читается файл
+          активного дня. Откройте веб — красная плашка скажет причину (§5).</td></tr>
+    <tr><td><span class="led hint"><b class="on"></b><b class="on"></b><b class="on"></b><b class="on"></b></span>горит, пока держите кнопку</td>
+        <td>Держите 3–8 с: при отпускании будет <b>гонг</b>. При включении питания — идёт отсчёт сброса пароля.</td></tr>
+    <tr><td><span class="led hint"><b class="on"></b><b></b><b class="on"></b><b></b></span>мигает 2 раза в секунду, пока держите</td>
+        <td>Держите больше 8 с: при отпускании <b>реле переключится</b> без звука.</td></tr>
+  </table></div>
+  <p>Проверяйте светодиод каждый день, проходя мимо — этого достаточно, чтобы заметить проблему до утреннего гонга.</p>
+
+  <h2 id="button">3. Кнопка</h2>
+  <p>Кнопка работает по <b>удержанию</b> — случайное касание ничего не делает.</p>
+  <div class="scroll"><table>
+    <tr><th>Когда</th><th>Сколько держать</th><th>Что произойдёт</th></tr>
+    <tr><td>тишина</td><td>меньше 3 с</td><td>ничего</td></tr>
+    <tr><td>тишина</td><td>3–8 с, отпустить</td><td><b>гонг</b> (трек 1, громкость 30, один раз), через реле как обычно</td></tr>
+    <tr><td>тишина</td><td>больше 8 с, отпустить</td><td><b>реле вкл/выкл без звука</b> (только в режиме реле Auto)</td></tr>
+    <tr><td>звучит гонг</td><td>1 с</td><td><b>стоп</b> — сразу, не дожидаясь отпускания</td></tr>
+    <tr><td>при включении питания</td><td>10 с</td><td><b>сброс пароля админки</b>. Отпустили раньше — пароль не сбрасывается</td></tr>
+  </table></div>
+  <p>В тишине действие выполняется <b>при отпускании</b>; что именно будет — подсказывает светодиод (§2).</p>
+  <h3>Реле, включённое кнопкой</h3>
+  <ul>
+    <li>Выключается повторным удержанием больше 8 с, сменой режима реле в веб-интерфейсе или
+      <b>само через 30 минут</b>.</li>
+    <li>После перезагрузки реле выключено — включение кнопкой не запоминается.</li>
+    <li>Гонг в это время играет сразу, без прогрева; после гонга реле остаётся включённым.</li>
+    <li>В веб-интерфейсе на плашке реле видно <code>button, N min left</code>.</li>
+    <li>В режимах Always ON / Always OFF кнопка реле не трогает.</li>
+  </ul>
+
+  <h2 id="relay">4. Реле и звук</h2>
+  <p>Реле включает питание внешнего усилителя или трансляционной линии. Настраивается в карточке
+    <b>Gong &amp; Relay</b>.</p>
+  <div class="scroll"><table>
+    <tr><th>Режим</th><th>Поведение</th></tr>
+    <tr><td><b>Auto</b> (по умолчанию)</td><td>реле включается перед гонгом, через <i>Warm-up</i> начинается звук;
+      после окончания звука реле держится <i>Hold after</i> и выключается</td></tr>
+    <tr><td><b>Always ON</b></td><td>реле включено всегда</td></tr>
+    <tr><td><b>Always OFF</b></td><td>реле выключено всегда — если усилитель питается через реле, гонга не слышно</td></tr>
+  </table></div>
+  <div class="scroll"><table>
+    <tr><th>Параметр</th><th>По умолчанию</th><th>Предел</th></tr>
+    <tr><td>Warm-up — прогрев усилителя до гонга</td><td>800 мс</td><td>0–5000 мс</td></tr>
+    <tr><td>Hold after — удержание после гонга</td><td>3000 мс</td><td>0–20000 мс</td></tr>
+  </table></div>
+  <p>Звук выходит с ЦАП <b>PCM5102A</b> — это линейный выход, без своего усилителя. Прошивка сводит стерео-запись
+    в моно, поэтому на усилитель достаточно одного канала. Режим реле на выход ЦАП не влияет.</p>
+
+  <h2 id="alerts">5. Предупреждения в веб-интерфейсе</h2>
+  <p>Если что-то не так, вверху страницы управления появляется красная плашка.</p>
+  <div class="scroll"><table>
+    <tr><th>Сообщение</th><th>Что делать</th></tr>
+    <tr><td>❌ Файловая система не смонтирована</td><td>залить данные: <code>pio run -t uploadfs</code></td></tr>
+    <tr><td>❌ Файл активного дня не читается</td><td>активировать день заново; не помогает — <code>uploadfs</code></td></tr>
+    <tr><td>❌ Время не установлено</td><td>подключить Wi-Fi с интернетом, проверить батарейку DS3231 или установить время вручную</td></tr>
+    <tr><td>⚠️ Последний перезапуск: …</td><td>плата перезагружалась из-за сбоя (питание, зависание) — см. §12</td></tr>
+    <tr><td>⚠️ Пароль точки доступа стандартный</td><td>задать свой <code>AP_PASSWORD</code> при сборке</td></tr>
+    <tr><td>⚠️ Пароль админки не задан</td><td>вкладка <b>Security</b></td></tr>
+  </table></div>
+
+  <h2 id="time">6. Время</h2>
+  <p>Источник выбирается автоматически, переключателя нет. Часовой пояс — UTC+3 (Москва).</p>
+  <div class="scroll"><table>
+    <tr><th>Приоритет</th><th>Источник</th><th>Когда</th></tr>
+    <tr><td>1</td><td>🌐 NTP</td><td>устройство подключено к Wi-Fi с интернетом; опрос раз в час, время сразу пишется в DS3231</td></tr>
+    <tr><td>2</td><td>🔋 DS3231</td><td>при загрузке и раз в час, если NTP не отвечал больше 2 ч</td></tr>
+    <tr><td>3</td><td>✏️ Вручную</td><td>нет ни интернета, ни DS3231 с верным временем; записывается в DS3231</td></tr>
+  </table></div>
+  <div class="warn">Без действующего времени гонги <b>не звучат</b>: светодиод часто мигает, в вебе значок ⚠️ Not set.</div>
+
+  <h2 id="days">7. Дни курса и расписание</h2>
+  <ul>
+    <li>12 шаблонов: <b>День 00</b> (заезд), <b>01–10</b> (основные), <b>11</b> (отъезд).</li>
+    <li>В полночь курс сам переходит на следующий день. Если устройство было выключено несколько суток —
+      перейдёт сразу на нужное число дней. Перевод даты назад день не меняет.</li>
+    <li>После Дня 11 устройство остаётся на нём и звонит по нему каждый день — новый курс запускают вручную
+      кнопкой <b>Activate this day</b> на Дне 00.</li>
+    <li>Запись расписания: время, трек, громкость 0–30, повторы 1–7, описание, вкл/выкл.
+      Одна запись на минуту, до 32 записей в день.</li>
+    <li>Любой день можно редактировать, не делая его активным. Если файл трека пропал — сыграет трек 1.</li>
+  </ul>
+
+  <h2 id="power">8. Если пропало питание</h2>
+  <ul>
+    <li>Время идёт по DS3231; день курса, расписание и настройки сохраняются.</li>
+    <li>Гонг, время которого пришлось на перезагрузку, прозвучит сразу после включения, если прошло
+      не больше 2 минут. Уже прозвучавший гонг не повторяется.</li>
+    <li>Реле, включённое кнопкой, после перезагрузки выключено.</li>
+  </ul>
+
+  <h2 id="setup">9. Первая настройка</h2>
+  <ol>
+    <li>С телефона подключиться к Wi-Fi <b>GongServer</b>.</li>
+    <li>Открыть <code>http://192.168.4.1</code> (или <code>http://gong.local</code>).</li>
+    <li><b>Clock</b> — установить время: подключить устройство к роутеру с интернетом (вкладка WiFi)
+      или ввести дату и время вручную → <b>Set Time</b>.</li>
+    <li><b>Security</b> — задать пароль админки (от 8 символов), логин — <code>admin</code>.</li>
+    <li><b>Gong &amp; Relay</b> — нажать <b>Play</b>: проверить звук и щелчок реле.</li>
+    <li><b>Schedule</b> — проверить активный день и расписание.</li>
+    <li>Светодиод должен перейти на короткую вспышку раз в 3 с, красная плашка — исчезнуть.</li>
+  </ol>
+
+  <h2 id="security">10. Пароли</h2>
+  <ul>
+    <li><b>Wi-Fi GongServer</b> — пароль задаётся при сборке прошивки, минимум 8 символов.</li>
+    <li><b>Админка</b> — по умолчанию без пароля: пока он не задан, любой подключившийся может управлять гонгом.
+      Задайте пароль при первой настройке.</li>
+    <li><b>Забыли пароль админки</b> — зажать кнопку, включить питание и держать 10 с (светодиод горит).
+      Пароль стирается, вход снова открыт.</li>
+    <li>Неверный пароль проверяется не чаще раза в 3 с.</li>
+  </ul>
+
+  <h2 id="care">11. Обслуживание</h2>
+  <div class="scroll"><table>
+    <tr><th>Что</th><th>Когда</th></tr>
+    <tr><td>Взглянуть на светодиод (вспышка раз в 3 с)</td><td>каждый день</td></tr>
+    <tr><td>Проверить время в веб-интерфейсе</td><td>перед курсом</td></tr>
+    <tr><td>Активировать День 00, проверить расписание</td><td>перед каждым курсом</td></tr>
+    <tr><td>Батарейка DS3231</td><td>раз в год или при ⚠️ Not set после выключения</td></tr>
+  </table></div>
+
+  <h2 id="trouble">12. Неисправности</h2>
+  <div class="scroll"><table>
+    <tr><th>Симптом</th><th>Причина / что делать</th></tr>
+    <tr><td>Светодиод часто мигает</td><td>открыть веб — плашка скажет причину (§5)</td></tr>
+    <tr><td>Время ⚠️ Not set после выключения</td><td>села батарейка DS3231 или модуль не подключён</td></tr>
+    <tr><td>Реле щёлкает, звука нет</td><td>громкость на усилителе, кабель ЦАП → усилитель, питание PCM5102A,
+      перемычки SCK → GND и XSMT = H (см. <a href="/info">схему</a>)</td></tr>
+    <tr><td>Звука нет, реле не щёлкает</td><td>режим реле Always OFF; или гонга нет в расписании / запись выключена</td></tr>
+    <tr><td>Кнопка ничего не делает</td><td>держите дольше 3 с и отпустите; реле кнопкой — только в режиме Auto</td></tr>
+    <tr><td>Реле включено «наоборот»</td><td>модуль реле с управлением низким уровнем — прошивка с <code>RELAY_ACTIVE_LOW=1</code></td></tr>
+    <tr><td>Перезагрузка в момент гонга</td><td>просадка питания 5 В — усилитель на отдельном питании, конденсатор 470–1000 мкФ у ESP32</td></tr>
+    <tr><td>Ложные срабатывания кнопки</td><td>длинный провод — 10 кОм к 3.3 В и 100 нФ к GND у пина</td></tr>
+    <tr><td>Не открывается <code>gong.local</code></td><td>открыть по IP <code>192.168.4.1</code></td></tr>
+    <tr><td>Забыли пароль админки</td><td>кнопка при включении питания 10 с (§10)</td></tr>
+  </table></div>
+</main>
+</body>
+</html>
