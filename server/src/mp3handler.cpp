@@ -84,12 +84,15 @@ static void _startPlay(uint8_t track) {
 }
 
 void mp3_setup() {
-    logPrintf("[MP3] Initializing I2S (ESP32-audioI2S, MAX98357A)...\n");
+    logPrintf("[MP3] Initializing I2S (ESP32-audioI2S, PCM5102A)...\n");
 
     // Mutex is created before any task that could call into this module.
     audioMtx = xSemaphoreCreateMutex();
 
     audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
+    // PCM5102A выдаёт L и R раздельно (MAX98357A смешивал их в (L+R)/2
+    // резистором на SD) — сводим в моно, чтобы на выходе была вся запись.
+    audio.forceMono(true);
     applyVolume();
 
     logPrintf("[MP3] Ready — BCLK=%d LRC=%d DOUT=%d volume=%d/30\n",

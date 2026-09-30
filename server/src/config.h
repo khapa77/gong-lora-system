@@ -54,7 +54,7 @@ static inline bool localNow(struct tm& out) {
 #endif
 static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD короче 8 символов (минимум для WPA2)");
 
-// ── I2S пины для MAX98357A ────────────────────────────────────────────────
+// ── I2S пины для PCM5102A ─────────────────────────────────────────────────
 #define I2S_BCLK          26   // Bit Clock
 #define I2S_LRC           25   // Left/Right Clock (Word Select)
 #define I2S_DOUT          33   // Data Out

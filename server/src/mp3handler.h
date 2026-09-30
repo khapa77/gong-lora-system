@@ -3,7 +3,7 @@
 #include <Arduino.h>
 
 // ESP32-audioI2S (schreibfaul1) — I2S output, MP3 from SPIFFS
-// Пины I2S для MAX98357A в config.h
+// Пины I2S для PCM5102A в config.h
 
 void    mp3_setup();
 void    mp3_loop();
