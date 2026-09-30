@@ -17,6 +17,10 @@ static uint8_t   pTrack, pVol, pLoop;
 
 static uint32_t  lastActiveMs = 0;   // последний момент, когда звук играл или ждал старта
 
+// Ручное включение кнопкой (relay_setManual) — не сохраняется в NVS.
+static bool      manualOn     = false;
+static uint32_t  manualSince  = 0;
+
 static const char* modeName(RelayMode m) {
     switch (m) {
         case RelayMode::ON:  return "on";
@@ -156,6 +160,14 @@ void relay_loop() {
         case RelayMode::AUTO: break;
     }
 
+    if (manualOn) {
+        if (now - manualSince < RELAY_MANUAL_MAX_MS) { drive(true); return; }
+        manualOn = false;
+        logPrintf("[RELAY] Manual ON expired after %u min — back to auto\n",
+                  (unsigned)(RELAY_MANUAL_MAX_MS / 60000));
+        // lastActiveMs не трогаем: если звука давно не было — отпустит сразу.
+    }
+
     // mp3_isPlaying() takes audioMtx, which the decoder holds for whole
     // audio.loop() passes — polling it every 1ms loop() pass would keep
     // loopTask (web + scheduler) queued behind the decoder. 50ms is far
@@ -174,6 +186,7 @@ void relay_loop() {
 
 bool relay_setMode(RelayMode m) {
     mode = m;
+    manualOn = false;          // выбор режима в вебе отменяет включение кнопкой
     // Уход из AUTO во время ожидания — звук запускаем сразу, а не теряем.
     if (pending && m != RelayMode::AUTO) { pending = false; startNow(pTrack, pVol, pLoop); }
     lastActiveMs = millis();   // AUTO после ON — отпустить через holdMs, а не мгновенно
@@ -192,16 +205,32 @@ bool relay_setTiming(uint32_t pre, uint32_t hold) {
     return true;
 }
 
+bool relay_setManual(bool on) {
+    if (mode != RelayMode::AUTO) return false;
+    if (on == manualOn) return true;
+    manualOn = on;
+    if (on) manualSince = millis();
+    logPrintf("[RELAY] Manual %s\n", on ? "ON (no sound)" : "OFF");
+    relay_loop();              // выключение — сразу, если звука нет и hold истёк
+    return true;
+}
+
+bool     relay_isManual() { return manualOn; }
 bool     relay_isOn()   { return relayOn; }
 bool     relay_isBusy() { return pending || mp3_isPlaying(); }
 uint32_t relay_preMs()  { return preMs; }
 uint32_t relay_holdMs() { return holdMs; }
 
 String relay_toJSON() {
-    StaticJsonDocument<192> doc;
+    StaticJsonDocument<256> doc;
     doc["mode"]    = modeName(mode);
     doc["on"]      = relayOn;
     doc["pending"] = pending;
+    doc["manual"]  = manualOn;
+    if (manualOn) {
+        uint32_t el = millis() - manualSince;   // может чуть перешагнуть до следующего relay_loop()
+        doc["manual_left"] = el < RELAY_MANUAL_MAX_MS ? (RELAY_MANUAL_MAX_MS - el) / 1000 : 0;
+    }
     doc["pre"]     = preMs;
     doc["hold"]    = holdMs;
     doc["pin"]     = RELAY_PIN;

@@ -896,7 +896,8 @@ async function stopAll() {
 function applyRelay(d) {
   if (!d) return;
   const badge = document.getElementById('relayBadge');
-  badge.textContent = (d.on ? '⚡ ON' : '○ OFF') + (d.pending ? ' · warm-up' : '') + ' · GPIO' + d.pin;
+  badge.textContent = (d.on ? '⚡ ON' : '○ OFF') + (d.pending ? ' · warm-up' : '')
+    + (d.manual ? ' · button, ' + Math.ceil((d.manual_left || 0) / 60) + ' min left' : '') + ' · GPIO' + d.pin;
   badge.style.background = d.on ? 'rgba(52,201,126,.15)' : 'rgba(122,127,154,.15)';
   badge.style.color = d.on ? 'var(--green)' : 'var(--muted)';
   document.getElementById('relayStat').textContent = 'Relay: ' + (d.on ? 'ON' : 'off');

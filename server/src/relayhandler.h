@@ -14,6 +14,11 @@
 //   ON   — всегда включено (ручное управление из веб-интерфейса)
 //   OFF  — всегда выключено; гонг звучит только в локальном динамике MAX98357A
 //
+// Ручное включение (кнопка, удержание BUTTON_RELAY_HOLD_MS) — только в AUTO:
+// реле держится включённым без звука, пока его не выключат кнопкой, веб-режимом
+// или по истечении RELAY_MANUAL_MAX_MS. В NVS не пишется — после перезагрузки
+// реле выключено.
+//
 // Вызывается из controlTask и веб-обработчиков — всегда под sys_lock()
 // (sysstate.h), своих блокировок не нужно.
 
@@ -28,6 +33,10 @@ void   relay_stop();     // остановить звук и отменить о
 bool   relay_setMode(RelayMode mode);
 bool   relay_setTiming(uint32_t preMs, uint32_t holdMs);
 bool   relay_parseMode(const String& s, RelayMode& out);
+
+// false — режим не AUTO (ON/OFF из веба главнее кнопки), ничего не изменилось.
+bool   relay_setManual(bool on);
+bool   relay_isManual();
 
 bool     relay_isOn();
 bool     relay_isBusy();   // звук играет или ждёт окончания прогрева реле

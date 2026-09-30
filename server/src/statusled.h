@@ -10,3 +10,8 @@
 void led_setup();
 void led_loop();               // из controlTask
 void led_set(bool on);         // прямое управление (подсказка при сбросе пароля)
+
+// Подсказка, пока держат кнопку (buttonhandler): что будет при отпускании.
+// Перекрывает обычную индикацию, пока не вернут NONE.
+enum class LedHint : uint8_t { NONE, GONG, RELAY };
+void led_hint(LedHint h);      // GONG — горит, RELAY — мигает 2 Гц

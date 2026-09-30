@@ -114,14 +114,20 @@ static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD короче 8 симв
 #define RELAY_DEFAULT_HOLD_MS   3000UL
 #define RELAY_MAX_PRE_MS        5000UL    // прогрев усилителя до гонга
 #define RELAY_MAX_HOLD_MS       20000UL   // удержание ПОСЛЕ окончания гонга
+// Реле, включённое кнопкой (BUTTON_RELAY_HOLD_MS), само отключается через
+// это время — забытый включённым усилитель не работает всю ночь. Включение
+// кнопкой не сохраняется: после перезагрузки реле снова в AUTO и выключено.
+#define RELAY_MANUAL_MAX_MS     (30UL * 60 * 1000)
 
 // ── Физическая кнопка (запуск гонга мимо веб-интерфейса) ─────────────────
 // Кнопка между BUTTON_PIN и GND, внутренняя подтяжка к 3.3V включена.
 // Срабатывает по УДЕРЖАНИЮ, а не по касанию — случайное нажатие (задели
 // плечом, ребёнок, наводка) гонг не запустит:
-//   в тишине          — держать BUTTON_PLAY_HOLD_MS → гонг (BUTTON_TRACK/VOL/LOOP)
-//   во время звучания — держать BUTTON_STOP_HOLD_MS → стоп
-// Срабатывает один раз за нажатие, ещё пока кнопка зажата; дальше ждёт отпускания.
+//   в тишине, отпустить после BUTTON_PLAY_HOLD_MS  → гонг (BUTTON_TRACK/VOL/LOOP)
+//   в тишине, отпустить после BUTTON_RELAY_HOLD_MS → реле вкл/выкл без звука
+//   во время звучания — держать BUTTON_STOP_HOLD_MS → стоп (сразу, не дожидаясь отпускания)
+// В тишине действие выбирается по длительности и выполняется при ОТПУСКАНИИ;
+// пока держите, светодиод подсказывает: горит — гонг, мигает — реле.
 // GPIO32: не strapping, есть внутренний pull-up (у GPIO34–39 его нет).
 // Раньше была GPIO4 — на печатной плате она занята LoRa DIO0.
 // При проводе к кнопке длиннее ~30 см добавьте внешний 10 кОм к 3.3V и
@@ -132,6 +138,7 @@ static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD короче 8 симв
 #define BUTTON_DEBOUNCE_MS      50UL
 #define BUTTON_PLAY_HOLD_MS     3000UL
 #define BUTTON_STOP_HOLD_MS     1000UL
+#define BUTTON_RELAY_HOLD_MS    8000UL
 #define BUTTON_TRACK            DEFAULT_TRACK
 #define BUTTON_VOL              DEFAULT_VOLUME
 #define BUTTON_LOOP             1
