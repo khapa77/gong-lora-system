@@ -328,6 +328,24 @@ void sched_check() {
 }
 
 // -------------------------------------------------------
+// Only today's entries: at 00:00 the course switches to the next day's
+// schedule, so a gong just after midnight gets no pre-warm — its sound waits
+// for the warm-up instead (relay_play), as a gong from the web UI does.
+// -------------------------------------------------------
+long sched_msToNext() {
+    struct tm ti;
+    if (!localNow(ti) || ti.tm_year < 124) return -1;
+    long nowSec = ti.tm_hour * 3600L + ti.tm_min * 60L + ti.tm_sec;
+    long best = -1;
+    for (uint8_t i = 0; i < count; i++) {
+        if (!entries[i].enabled) continue;
+        long d = entries[i].hour * 3600L + entries[i].minute * 60L - nowSec;
+        if (d > 0 && (best < 0 || d < best)) best = d;
+    }
+    return best < 0 ? -1 : best * 1000L;
+}
+
+// -------------------------------------------------------
 bool sched_add(uint8_t h, uint8_t m, const String& desc, uint8_t track, uint8_t loop, uint8_t vol) {
     if (count >= MAX_SCHEDULES || h > 23 || m > 59) return false;
     if (track < 1 || track > 99) return false;

@@ -56,6 +56,11 @@ static void controlTask(void*) {
         uint32_t now = millis();
         if (now - lastSchedCheck >= 1000) {
             sched_check();
+            // Предвключение: реле включается за Warm-up до времени гонга, и
+            // звук идёт ровно по расписанию. Часы — с точностью до секунды,
+            // поэтому +1 с: реле включится не позже, чем нужно.
+            long toGong = sched_msToNext();
+            if (toGong > 0 && (uint32_t)toGong <= relay_preMs() + 1000) relay_prewarm((uint32_t)toGong);
             lastSchedCheck = now;
         }
         sys_unlock();

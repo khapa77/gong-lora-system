@@ -569,7 +569,7 @@ static void handleRelayPOST() {
         long pre  = doc["pre"]  | (long)relay_preMs();
         long hold = doc["hold"] | (long)relay_holdMs();
         if (pre < 0 || hold < 0 || !relay_setTiming((uint32_t)pre, (uint32_t)hold)) {
-            sendErr("warm-up 0-5000 ms, hold 0-20000 ms"); return;
+            sendErr("warm-up 0-30000 ms, hold 0-20000 ms"); return;
         }
     }
     if (doc.containsKey("mode")) {

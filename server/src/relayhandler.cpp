@@ -9,11 +9,15 @@ static RelayMode mode    = RelayMode::AUTO;
 static uint32_t  preMs   = RELAY_DEFAULT_PRE_MS;
 static uint32_t  holdMs  = RELAY_DEFAULT_HOLD_MS;
 static bool      relayOn = false;
+static uint32_t  onSince = 0;        // когда реле последний раз включилось — от него считается прогрев
 
-// Отложенный старт: реле уже включено, ждём preMs до mp3_play().
+// Отложенный старт: реле уже включено, ждём, пока с onSince пройдёт preMs.
 static bool      pending      = false;
-static uint32_t  pendingSince = 0;
 static uint8_t   pTrack, pVol, pLoop;
+
+// Предвключение перед гонгом по расписанию (relay_prewarm).
+static bool      prewarm      = false;
+static uint32_t  prewarmUntil = 0;
 
 static uint32_t  lastActiveMs = 0;   // последний момент, когда звук играл или ждал старта
 
@@ -39,6 +43,7 @@ bool relay_parseMode(const String& s, RelayMode& out) {
 static void drive(bool on) {
     if (on == relayOn) return;
     relayOn = on;
+    if (on) onSince = millis();
     digitalWrite(RELAY_PIN, (on != (bool)RELAY_ACTIVE_LOW) ? HIGH : LOW);
     logPrintf("[RELAY] %s\n", on ? "ON" : "OFF");
 }
@@ -120,19 +125,19 @@ static void startNow(uint8_t track, uint8_t vol, uint8_t loop) {
 }
 
 void relay_play(uint8_t track, uint8_t vol, uint8_t loop) {
-    // Реле уже включено (идёт гонг / удержание / режим ON) или вообще не
-    // участвует (OFF, preMs=0) — усилитель готов, ждать нечего.
-    if (mode != RelayMode::AUTO || (relayOn && !pending) || preMs == 0) {
-        if (mode == RelayMode::AUTO) drive(true);
-        startNow(track, vol, loop);
-        return;
-    }
+    // Режимы ON/OFF — реле от звука не зависит, ждать нечего.
+    if (mode != RelayMode::AUTO) { startNow(track, vol, loop); return; }
+
+    drive(true);
+    // Реле включено достаточно давно (предвключение, удержание после прошлого
+    // гонга, кнопка) или прогрев не нужен (preMs=0) — усилитель готов.
+    uint32_t onFor = millis() - onSince;
+    if (!pending && onFor >= preMs) { startNow(track, vol, loop); return; }
+
     // Повторный запрос во время ожидания заменяет параметры, но не сдвигает
     // момент старта — таймер отсчитывается от включения реле.
     if (!pending) {
-        drive(true);
-        pendingSince = millis();
-        logPrintf("[RELAY] Amp warm-up %ums before track %d\n", (unsigned)preMs, track);
+        logPrintf("[RELAY] Amp warm-up %ums before track %d\n", (unsigned)(preMs - onFor), track);
     }
     pending = true;
     pTrack = track; pVol = vol; pLoop = loop;
@@ -146,13 +151,27 @@ void relay_stop() {
     lastActiveMs = millis();
 }
 
+void relay_prewarm(uint32_t msUntilGong) {
+    if (mode != RelayMode::AUTO || preMs == 0) return;
+    uint32_t now = millis();
+    if (!prewarm) {
+        logPrintf("[RELAY] Pre-warm: scheduled gong in %ums (warm-up %ums)\n",
+                  (unsigned)msUntilGong, (unsigned)preMs);
+    }
+    prewarm      = true;
+    prewarmUntil = now + msUntilGong + RELAY_PREWARM_GRACE_MS;
+    lastActiveMs = now;
+    drive(true);
+}
+
 void relay_loop() {
     uint32_t now = millis();
 
-    if (pending && now - pendingSince >= preMs) {
+    if (pending && now - onSince >= preMs) {
         pending = false;
         startNow(pTrack, pVol, pLoop);
     }
+    if (prewarm && (int32_t)(now - prewarmUntil) >= 0) prewarm = false;
 
     switch (mode) {
         case RelayMode::ON:  drive(true);  return;
@@ -176,7 +195,7 @@ void relay_loop() {
     if (!pending && now - lastPollMs < 50) return;
     lastPollMs = now;
 
-    if (pending || mp3_isPlaying()) {
+    if (pending || prewarm || mp3_isPlaying()) {
         lastActiveMs = now;
         drive(true);
     } else if (relayOn && now - lastActiveMs >= holdMs) {
@@ -187,6 +206,7 @@ void relay_loop() {
 bool relay_setMode(RelayMode m) {
     mode = m;
     manualOn = false;          // выбор режима в вебе отменяет включение кнопкой
+    prewarm  = false;          // AUTO снова — следующая секунда расписания включит заново
     // Уход из AUTO во время ожидания — звук запускаем сразу, а не теряем.
     if (pending && m != RelayMode::AUTO) { pending = false; startNow(pTrack, pVol, pLoop); }
     lastActiveMs = millis();   // AUTO после ON — отпустить через holdMs, а не мгновенно
@@ -226,6 +246,7 @@ String relay_toJSON() {
     doc["mode"]    = modeName(mode);
     doc["on"]      = relayOn;
     doc["pending"] = pending;
+    doc["prewarm"] = prewarm;
     doc["manual"]  = manualOn;
     if (manualOn) {
         uint32_t el = millis() - manualSince;   // может чуть перешагнуть до следующего relay_loop()
