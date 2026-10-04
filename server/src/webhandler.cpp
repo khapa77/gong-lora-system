@@ -261,13 +261,34 @@ static bool hostAllowed() {
 
 enum : uint8_t { R_OPEN = 0, R_AUTH = 1, R_CSRF = 2, R_WRITE = R_AUTH | R_CSRF };
 
+// send_P()/send() hand the whole body to one WiFiClient::write(). For the
+// ~60 KB page lwIP ran out of send buffers mid-way (AP+STA), WiFiClient took
+// that as fatal and closed the socket: the browser got ~20 KB of the page,
+// a script cut in half and empty day tables. Small pieces, waiting while the
+// socket is busy, give up only after 5 s without progress.
+static void sendLarge(int code, const char* type, const uint8_t* p, size_t n) {
+    server.setContentLength(n);
+    server.send(code, type, "");          // headers only
+    WiFiClient c = server.client();
+    uint32_t progressAt = millis();
+    while (n && c.connected()) {
+        size_t w = c.write(p, n < 1024 ? n : 1024);
+        if (w) { p += w; n -= w; progressAt = millis(); }
+        else if (millis() - progressAt > 5000) break;
+        else delay(5);
+    }
+}
+
 static void flushResponse() {
     if (respPage) {
         server.sendHeader("Cache-Control", "no-cache");
-        server.send_P(200, "text/html; charset=utf-8", (PGM_P)respPage,
-                      (size_t)(respPageEnd - respPage) - 1);
+        sendLarge(200, "text/html; charset=utf-8", respPage,
+                  (size_t)(respPageEnd - respPage) - 1);
     } else if (respCode) {
-        server.send(respCode, respType, respBody);
+        if (respBody.length() > 2048)     // /api/course is ~23 KB
+            sendLarge(respCode, respType, (const uint8_t*)respBody.c_str(), respBody.length());
+        else
+            server.send(respCode, respType, respBody);
     }
     respBody = String();
 }

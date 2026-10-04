@@ -503,7 +503,7 @@ let viewSchedules = [];   // entries currently shown in the table (== liveSchedu
 let editId        = null;
 let schedDayView  = -1;
 let activeDayNum  = -1;
-let dayCount      = 12;
+let dayCount      = 13;
 let courseEnded   = false;
 let isPreview     = false;   // true when schedDayView !== activeDayNum — editing still allowed, but writes go to that day's template file, not the live schedule
 let availableTracks = [];
@@ -1290,7 +1290,7 @@ async function loadDaysStatus() {
 async function applyDays(d) {
   if (!d) return;
   activeDayNum = d.active;
-  dayCount     = d.count || 12;
+  dayCount     = d.count || 13;
   courseEnded  = !!d.ended;
   if (schedDayView < 0) schedDayView = activeDayNum >= 0 ? activeDayNum : 0;
   await updateSchedView();

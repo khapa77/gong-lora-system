@@ -95,7 +95,7 @@ static_assert(VOLUME_LIMIT >= 1 && VOLUME_LIMIT <= 30, "VOLUME_LIMIT: 1–30");
 #define DESC_MAX_BYTES    96
 
 // ── Многодневный курс ──────────────────────────────────────────────────────
-#define DAY_COUNT         12   // day00.conf .. day11.conf
+#define DAY_COUNT         13   // day00.conf .. day12.conf (day12 = changeover)
 
 // ── Аутентификация веб-админки ────────────────────────────────────────────
 #define AUTH_CONFIG_FILE  "/auth.conf"   // устаревшее: с 6.2 — в NVS, файл импортируется один раз
