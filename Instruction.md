@@ -374,6 +374,7 @@ curl -u admin:пароль -H "X-Gong-Request: 1" -H "Content-Type: application/
 | Флаг | Что делает |
 |---|---|
 | `-DAP_PASSWORD='"${sysenv.GONG_AP_PASSWORD}"'` | свой пароль AP (сначала `export GONG_AP_PASSWORD='...'`, ≥ 8 символов) |
+| `-DVOLUME_LIMIT=30` | без ограничения громкости — для HLK-10M05 (по умолчанию 25 под HLK-PM01) |
 | `-DTIME_TZ='"<+05>-5"'` | другой часовой пояс (POSIX TZ) |
 
 ### `server/src/config.h`
@@ -393,3 +394,4 @@ curl -u admin:пароль -H "X-Gong-Request: 1" -H "Content-Type: application/
 | `AUTH_RESET_HOLD_MS` | 10000 мс | сброс пароля кнопкой |
 | `AUTH_MIN_PASSWORD` | 8 | пароль админки |
 | `DEFAULT_VOLUME` | 30 | громкость по умолчанию (0–30) |
+| `VOLUME_LIMIT` | 25 | потолок: громкость 30 звучит как 25 (−3.5 дБ), шкала масштабируется; 30 — без ограничения ([docs/power.md](docs/power.md)) |

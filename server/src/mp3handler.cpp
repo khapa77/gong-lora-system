@@ -28,10 +28,15 @@ static inline bool audioLock() {
 }
 static inline void audioUnlock() { xSemaphoreGive(audioMtx); }
 
-// ESP32-audioI2S volume 0–21; we use 0–30 externally
+// ESP32-audioI2S volume 0–21; we use 0–30 externally. VOLUME_LIMIT
+// (config.h) scales the whole range down: 30 → VOLUME_LIMIT.
+static uint8_t libVolume(uint8_t vol) {
+    if (vol > 30) vol = 30;
+    return (uint8_t)((uint32_t)vol * VOLUME_LIMIT * 21 / (30 * 30));
+}
+
 static void applyVolume() {
-    uint8_t v = (curVol <= 30) ? (curVol * 21 / 30) : 21;
-    audio.setVolume(v);
+    audio.setVolume(libVolume(curVol));
 }
 
 static void trackPath(uint8_t track, char (&path)[16]) {
@@ -96,8 +101,8 @@ void mp3_setup() {
     audio.forceMono(true);
     applyVolume();
 
-    logPrintf("[MP3] Ready — BCLK=%d LRC=%d DOUT=%d volume=%d/30\n",
-                  I2S_BCLK, I2S_LRC, I2S_DOUT, curVol);
+    logPrintf("[MP3] Ready — BCLK=%d LRC=%d DOUT=%d volume=%d/30, limit %d/30 (max lib step %d/21)\n",
+                  I2S_BCLK, I2S_LRC, I2S_DOUT, curVol, VOLUME_LIMIT, libVolume(30));
 }
 
 void mp3_setVolume(uint8_t vol) {
