@@ -76,7 +76,7 @@
     ESP32 нарисован сверху: антенна вверху, USB внизу. Пин 1 — у антенны, пин 19 — у USB.</p>
 
   <div class="diagram">
-  <svg viewBox="0 0 980 770" role="img" aria-label="Схема соединений ESP32 с MAX98357A, DS3231 и кнопкой">
+  <svg viewBox="0 0 980 770" role="img" aria-label="Схема соединений ESP32 с MAX98357A и DS3231">
     <!-- ── ESP32 DevKitC-V4 ── -->
     <rect class="brd" x="460" y="92" width="220" height="600" rx="10"/>
     <rect x="530" y="98" width="80" height="44" rx="4" fill="none" stroke="var(--board-fg)" stroke-opacity=".4" stroke-dasharray="4 3"/>
@@ -93,7 +93,7 @@
       <circle class="pin nc" cx="472" cy="210" r="5"/><text class="brd-t" x="484" y="214" opacity=".55">39/VN</text>
       <circle class="pin nc" cx="472" cy="240" r="5"/><text class="brd-t" x="484" y="244" opacity=".55">34</text>
       <circle class="pin nc" cx="472" cy="270" r="5"/><text class="brd-t" x="484" y="274" opacity=".55">35</text>
-      <circle class="pin" cx="472" cy="300" r="5"/><text class="brd-t used" x="484" y="304">32</text><text class="brd-n" x="452" y="296" text-anchor="end" style="fill:var(--muted);opacity:1">7</text>
+      <circle class="pin nc" cx="472" cy="300" r="5"/><text class="brd-t" x="484" y="304" opacity=".55">32</text>
       <circle class="pin" cx="472" cy="330" r="5"/><text class="brd-t used" x="484" y="334">33</text><text class="brd-n" x="452" y="326" text-anchor="end" style="fill:var(--muted);opacity:1">8</text>
       <circle class="pin" cx="472" cy="360" r="5"/><text class="brd-t used" x="484" y="364">25</text><text class="brd-n" x="452" y="356" text-anchor="end" style="fill:var(--muted);opacity:1">9</text>
       <circle class="pin" cx="472" cy="390" r="5"/><text class="brd-t used" x="484" y="394">26</text><text class="brd-n" x="452" y="386" text-anchor="end" style="fill:var(--muted);opacity:1">10</text>
@@ -158,11 +158,6 @@
     <path class="w wgnd" d="M270 510 H472"/>
     <path class="w w5v" d="M270 660 H472"/>
 
-    <!-- ── control: button ── -->
-    <path class="w wctl" d="M440 300 H472"/>
-    <rect class="tag" x="300" y="288" width="140" height="24" rx="5"/>
-    <text class="tag-t" x="310" y="305">Кнопка → GND</text>
-
     <!-- ── DS3231 ── -->
     <rect class="mod" x="780" y="50" width="160" height="250" rx="8"/>
     <text class="mod-h" x="792" y="40">DS3231 (ZS-042)</text>
@@ -187,7 +182,6 @@
     <span style="--c:var(--c-gnd)">GND</span>
     <span style="--c:var(--c-i2s)">I2S</span>
     <span style="--c:var(--c-i2c)">I2C</span>
-    <span style="--c:var(--c-ctl)">кнопка</span>
   </div>
   </div>
 
@@ -224,12 +218,6 @@
   <p>Подтяжки 4.7 кОм на SDA/SCL уже стоят на модуле. С батарейкой CR2032 выпаяйте зарядный резистор
     или поставьте аккумулятор LIR2032.</p>
 
-  <h2><span class="dot" style="background:var(--c-ctl)"></span>Кнопка</h2>
-  <div class="scroll"><table>
-    <tr><th>Что</th><th>ESP32 GPIO</th><th>ESP32 пин</th><th>Куда</th></tr>
-    <tr><td>Кнопка</td><td>GPIO32</td><td>левый 7</td><td>кнопка → GND (внутренняя подтяжка; провод &gt; 30 см — 10 кОм к 3.3 В + 100 нФ к GND)</td></tr>
-  </table></div>
-
   <h2>ESP32-DevKitC-V4 — полный пиноут</h2>
   <div class="scroll"><table>
     <tr><th>№</th><th>Левый ряд</th><th>Подключено</th><th>Правый ряд</th><th>Подключено</th></tr>
@@ -239,7 +227,7 @@
     <tr><td>4</td><td>GPIO39/VN</td><td>—</td><td>GPIO1/TX0</td><td>—</td></tr>
     <tr><td>5</td><td>GPIO34</td><td>—</td><td>GPIO3/RX0</td><td>—</td></tr>
     <tr><td>6</td><td>GPIO35</td><td>—</td><td>GPIO21</td><td><b>DS3231 SDA</b></td></tr>
-    <tr><td>7</td><td>GPIO32</td><td><b>кнопка</b></td><td>GND</td><td>—</td></tr>
+    <tr><td>7</td><td>GPIO32</td><td>—</td><td>GND</td><td>—</td></tr>
     <tr><td>8</td><td>GPIO33</td><td><b>MAX98357A DIN</b></td><td>GPIO19</td><td>—</td></tr>
     <tr><td>9</td><td>GPIO25</td><td><b>MAX98357A LRC</b></td><td>GPIO18</td><td>—</td></tr>
     <tr><td>10</td><td>GPIO26</td><td><b>MAX98357A BCLK</b></td><td>GPIO5</td><td>—</td></tr>

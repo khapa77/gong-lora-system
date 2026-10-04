@@ -11,7 +11,6 @@
 #include "webhandler.h"
 #include "timesync.h"
 #include "wifihandler.h"
-#include "buttonhandler.h"
 
 // -------------------------------------------------------
 // Called when a schedule entry fires. MAX98357A is powered all the time —
@@ -23,8 +22,8 @@ static void onGongFire(uint8_t track, uint8_t loop, uint8_t vol) {
 }
 
 // -------------------------------------------------------
-// controlTask — everything that has to happen on time: schedule, button,
-// clock sync, WiFi reconnects. It used to share
+// controlTask — everything that has to happen on time: schedule, clock
+// sync, WiFi reconnects. It used to share
 // loop() with the web server, and WebServer::handleClient() waits up to 5 s
 // for a slow or silent client — per request — during which none of this ran.
 // Now HTTP stays in loopTask; state shared with web handlers is guarded by
@@ -37,7 +36,7 @@ static void onGongFire(uint8_t track, uint8_t loop, uint8_t vol) {
 // -------------------------------------------------------
 #define CONTROL_TASK_PRIORITY 2
 #define CONTROL_TASK_STACK    8192
-#define CONTROL_PERIOD_MS     10     // button debounce is 50 ms
+#define CONTROL_PERIOD_MS     10
 
 static void controlTask(void*) {
     esp_task_wdt_add(nullptr);   // M-9: a wedged schedule loop must reboot, not sit silent
@@ -47,7 +46,6 @@ static void controlTask(void*) {
         sys_lock();
         wifi_loop();
         time_loop();
-        button_loop();
         uint32_t now = millis();
         if (now - lastSchedCheck >= 1000) {
             sched_check();
@@ -101,9 +99,6 @@ void setup() {
         logPrintf("[MAIN] ERROR: no filesystem — NO SOUND, NO SCHEDULE. Not formatting "
                   "(that would erase whatever is left). Re-upload with: pio run -t uploadfs\n");
 
-    button_setup();
-    // Admin password recovery without reflashing (see AUTH_RESET_HOLD_MS).
-    if (button_resetHeldAtBoot(AUTH_RESET_HOLD_MS)) web_resetAuth();
 
     onScheduleTrigger = onGongFire;
 
@@ -124,9 +119,28 @@ void setup() {
     logPrintf("[MAIN] All modules ready. Entering main loop.\n");
 }
 
+// Admin password recovery over USB (AUTH_RESET_CMD in config.h). Runs in
+// loopTask, the same task as the web handlers that use the auth state.
+static void serialCommands() {
+    static char buf[24];
+    static uint8_t len = 0;
+    while (Serial.available()) {
+        char c = (char)Serial.read();
+        if (c == '\r' || c == '\n') {
+            buf[len] = '\0';
+            if (len && strcmp(buf, AUTH_RESET_CMD) == 0) web_resetAuth();
+            else if (len) logPrintf("[MAIN] Unknown serial command '%s' (known: " AUTH_RESET_CMD ")\n", buf);
+            len = 0;
+        } else if (len < sizeof(buf) - 1) {
+            buf[len++] = c;
+        }
+    }
+}
+
 void loop() {
     esp_task_wdt_reset();
     web_loop();
+    serialCommands();
     // M10: Arduino-ESP32's loopTask carries no automatic yield — without this
     // the Core-1 IDLE task (and its watchdog check) could starve while no
     // HTTP client is connected.

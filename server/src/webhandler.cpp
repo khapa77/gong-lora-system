@@ -174,7 +174,7 @@ void web_resetAuth() {
     authSaltHex = "";
     authHashHex = "";
     authCacheValid = false;
-    logPrintf("[AUTH] Admin password RESET by button hold at boot — web UI is open\n");
+    logPrintf("[AUTH] Admin password RESET by serial command — web UI is open\n");
 }
 
 static bool constTimeEqual(const uint8_t* a, const uint8_t* b, size_t n) {

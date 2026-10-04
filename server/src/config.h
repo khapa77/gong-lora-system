@@ -91,10 +91,12 @@ static_assert(VOLUME_LIMIT >= 1 && VOLUME_LIMIT <= 30, "VOLUME_LIMIT: 1–30");
 #define AUTH_CONFIG_FILE  "/auth.conf"   // устаревшее: с 6.2 — в NVS, файл импортируется один раз
 #define AUTH_REALM        "Gong Server"
 #define AUTH_MIN_PASSWORD 8
-// Сброс пароля админки без перепрошивки: держать кнопку гонга (BUTTON_PIN)
-// нажатой при включении питания AUTH_RESET_HOLD_MS; после сброса вход снова открыт. Нужен, потому что пока пароль не
-// задан, его может задать любой подключившийся к AP и запереть владельца.
-#define AUTH_RESET_HOLD_MS 10000UL
+// Сброс пароля админки без перепрошивки: по USB в Serial (115200) ввести
+// команду AUTH_RESET_CMD и Enter — пароль стирается, вход снова открыт.
+// Нужен, потому что пока пароль не задан, его может задать любой
+// подключившийся к AP и запереть владельца. Кнопки нет, а стирать NVS
+// целиком нельзя: пропадёт отметка миграции DS3231, и время сдвинется.
+#define AUTH_RESET_CMD    "reset-auth"
 
 // ── WiFi STA (подключение к существующей сети) ─────────────────────────────
 #define WIFI_CONFIG_FILE        "/wifi.conf"   // устаревшее: с 6.2 — в NVS
@@ -103,26 +105,6 @@ static_assert(VOLUME_LIMIT >= 1 && VOLUME_LIMIT <= 30, "VOLUME_LIMIT: 1–30");
 // раз в WIFI_RETRY_MS, между попытками AP работает спокойно.
 #define WIFI_CONNECT_TIMEOUT_MS 15000UL
 #define WIFI_RETRY_MS           60000UL
-
-// ── Физическая кнопка (запуск гонга мимо веб-интерфейса) ─────────────────
-// Кнопка между BUTTON_PIN и GND, внутренняя подтяжка к 3.3V включена.
-// Срабатывает по УДЕРЖАНИЮ, а не по касанию — случайное нажатие (задели
-// плечом, ребёнок, наводка) гонг не запустит:
-//   в тишине, отпустить после BUTTON_PLAY_HOLD_MS  → гонг (BUTTON_TRACK/VOL/LOOP)
-//   во время звучания — держать BUTTON_STOP_HOLD_MS → стоп (сразу, не дожидаясь отпускания)
-// GPIO32: не strapping, есть внутренний pull-up (у GPIO34–39 его нет).
-// Раньше была GPIO4 — на печатной плате она занята LoRa DIO0.
-// При проводе к кнопке длиннее ~30 см добавьте внешний 10 кОм к 3.3V и
-// 100 нФ к GND у пина — наводки от сети/усилителя дают ложные срабатывания.
-#ifndef BUTTON_PIN
-#define BUTTON_PIN              32
-#endif
-#define BUTTON_DEBOUNCE_MS      50UL
-#define BUTTON_PLAY_HOLD_MS     3000UL
-#define BUTTON_STOP_HOLD_MS     1000UL
-#define BUTTON_TRACK            DEFAULT_TRACK
-#define BUTTON_VOL              DEFAULT_VOLUME
-#define BUTTON_LOOP             1
 
 // ── M-14: догоняющее срабатывание после перезагрузки ────────────────────────
 // Если сервер перезагрузился в узком окне вокруг времени гонга, тот гонг не
