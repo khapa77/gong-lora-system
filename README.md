@@ -6,6 +6,7 @@
 [Audit_6.2.md](Audit_6.2.md) — аудит и исправления ·
 [CHANGELOG.md](CHANGELOG.md) ·
 [docs/platformio-setup.md](docs/platformio-setup.md) — PlatformIO с нуля ·
+[docs/pinout.md](docs/pinout.md) — **распиновка этой ветки** (MAX98357A, DS3231, все 38 выводов) ·
 [docs/power.md](docs/power.md) — расчёт питания, HLK-PM01 или HLK-10M05 ·
 [server/web/info.html](server/web/info.html) — схема подключения (ESP32, MAX98357A, DS3231), на устройстве — `http://gong.local/info` ·
 [server/web/guide.html](server/web/guide.html) — краткая инструкция (звук, предупреждения, пароли), на устройстве — `http://gong.local/guide`
