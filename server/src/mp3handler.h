@@ -3,7 +3,7 @@
 #include <Arduino.h>
 
 // ESP32-audioI2S (schreibfaul1) — I2S output, MP3 from SPIFFS
-// Пины I2S для PCM5102A в config.h
+// Пины I2S для MAX98357A в config.h
 
 void    mp3_setup();
 void    mp3_loop();
@@ -11,6 +11,9 @@ void    mp3_startAudioTask();
 
 // track=1 → /0001.mp3, track=2 → /0002.mp3
 void    mp3_play(uint8_t track, uint8_t loops = 1);  // loops=1 → play once
+
+// Громкость + трек одним вызовом — общий вход для расписания, кнопки и веба.
+void    mp3_start(uint8_t track, uint8_t vol, uint8_t loops);
 
 void    mp3_stop();
 bool    mp3_trackExists(uint8_t track);   // /NNNN.mp3 present on LittleFS

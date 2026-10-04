@@ -4,7 +4,6 @@
 #include "schedule.h"
 #include "mp3handler.h"
 #include "timesync.h"
-#include "relayhandler.h"
 #include "wifihandler.h"
 #include <LittleFS.h>
 #include <WiFi.h>
@@ -30,7 +29,7 @@ extern const uint8_t guide_html_end[]   asm("_binary_web_guide_html_end");
 
 // -------------------------------------------------------
 // Response plumbing. Handlers run under sys_lock() (they touch the schedule,
-// relay, WiFi state that controlTask also uses) but must NOT send while
+// WiFi state that controlTask also uses) but must NOT send while
 // holding it: a slow client would then stall the scheduler for as long as
 // the TCP write blocks. So handlers only stage the response here, and
 // dispatch() sends it after unlocking.
@@ -352,7 +351,7 @@ static int daysInMonth(int y, int mo) {
 static void handleRoot() { respPage = index_html_start; respPageEnd = index_html_end; }
 // /info — схема подключения (server/web/info.html)
 static void handleInfo() { respPage = info_html_start;  respPageEnd = info_html_end; }
-// /guide — инструкция: светодиод, кнопка, реле, предупреждения (server/web/guide.html)
+// /guide — инструкция: кнопка, предупреждения (server/web/guide.html)
 static void handleGuide() { respPage = guide_html_start; respPageEnd = guide_html_end; }
 
 // /api/schedule — GET only. The UI uses the day-scoped /api/day/entry.
@@ -396,7 +395,7 @@ static void handleTimeSet() {
 
 // -------------------------------------------------------
 // /api/status — see also /api/state (M-10), which bundles this with
-// schedule/days/relay/wifi/auth into one response for the UI's poll loop.
+// schedule/days/wifi/auth into one response for the UI's poll loop.
 // -------------------------------------------------------
 static String statusJSON() {
     DynamicJsonDocument doc(768);
@@ -423,7 +422,6 @@ static String statusJSON() {
     doc["ntp_age"]     = time_ntpAgeSec();    // s since last NTP sync, -1 = never
     doc["active_day"]  = sched_getActiveDay();
     doc["day_count"]   = DAY_COUNT;
-    doc["relay_on"]    = relay_isOn();
     // Health — anything here that is false/true-bad means gongs may not ring.
     doc["fs_ok"]        = sys_fsOk();
     doc["sched_error"]  = sched_hasError();
@@ -537,8 +535,7 @@ static void handleDayEntryDELETE() {
 }
 
 // -------------------------------------------------------
-// /api/play  /api/stop — manual control. Playback goes through the relay
-// module so the external amplifier is powered before the first sample.
+// /api/play  /api/stop — manual control.
 // -------------------------------------------------------
 static void handlePlay() {
     DynamicJsonDocument doc(256);
@@ -548,36 +545,13 @@ static void handlePlay() {
     int loop  = doc["loop"]  | 1;
     if (track < 1 || track > 99) { sendErr("track 1-99"); return; }
     // loop wasn't capped here (the schedule caps at 7): 255 repeats = hours of gong.
-    relay_play((uint8_t)track, (uint8_t)constrain(vol, 0, 30), (uint8_t)constrain(loop, 1, LOOP_MAX));
+    mp3_start((uint8_t)track, (uint8_t)constrain(vol, 0, 30), (uint8_t)constrain(loop, 1, LOOP_MAX));
     sendOK();
 }
 
 static void handleStop() {
-    relay_stop();
+    mp3_stop();
     sendOK();
-}
-
-// -------------------------------------------------------
-// /api/relay — GET state; POST {"mode":"auto|on|off"} and/or {"pre":ms,"hold":ms}
-// -------------------------------------------------------
-static void handleRelayGET() { sendJSON(200, relay_toJSON()); }
-
-static void handleRelayPOST() {
-    DynamicJsonDocument doc(256);
-    if (!parseBody(doc)) return;
-    if (doc.containsKey("pre") || doc.containsKey("hold")) {
-        long pre  = doc["pre"]  | (long)relay_preMs();
-        long hold = doc["hold"] | (long)relay_holdMs();
-        if (pre < 0 || hold < 0 || !relay_setTiming((uint32_t)pre, (uint32_t)hold)) {
-            sendErr("warm-up 0-30000 ms, hold 0-20000 ms"); return;
-        }
-    }
-    if (doc.containsKey("mode")) {
-        RelayMode m;
-        if (!relay_parseMode(String((const char*)(doc["mode"] | "")), m)) { sendErr("mode: auto|on|off"); return; }
-        relay_setMode(m);
-    }
-    sendJSON(200, relay_toJSON());
 }
 
 // -------------------------------------------------------
@@ -628,7 +602,6 @@ static void handleState() {
     s += "\"status\":";   s += statusJSON();
     s += ",\"schedule\":"; s += schedule;
     s += ",\"days\":";     s += daysJSON();
-    s += ",\"relay\":";    s += relay_toJSON();
     s += ",\"wifi\":";     s += wifi_statusJSON();
     s += ",\"auth\":";     s += authJSON();
     s += "}";
@@ -675,8 +648,6 @@ void web_setup() {
     route("/api/play",          HTTP_POST,   handlePlay,           R_WRITE);
     route("/api/stop",          HTTP_POST,   handleStop,           R_WRITE);
 
-    route("/api/relay",         HTTP_GET,    handleRelayGET,       R_AUTH);
-    route("/api/relay",         HTTP_POST,   handleRelayPOST,      R_WRITE);
 
     route("/api/wifi",          HTTP_GET,    handleWifiGET,        R_AUTH);
     route("/api/wifi",          HTTP_POST,   handleWifiPOST,       R_WRITE);

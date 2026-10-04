@@ -37,7 +37,7 @@ static int    activeDay  = -1;
 static String activeDate = "";
 
 // Active day's file missing/unreadable at boot — schedule is empty and no
-// gong will ring. Surfaced in /api/status and on the status LED.
+// gong will ring. Surfaced in /api/status (red banner in the UI).
 static bool   schedError = false;
 
 // M-16: don't write to SPIFFS while a track is playing — a write landing
@@ -325,24 +325,6 @@ void sched_check() {
             break; // one trigger per minute
         }
     }
-}
-
-// -------------------------------------------------------
-// Only today's entries: at 00:00 the course switches to the next day's
-// schedule, so a gong just after midnight gets no pre-warm — its sound waits
-// for the warm-up instead (relay_play), as a gong from the web UI does.
-// -------------------------------------------------------
-long sched_msToNext() {
-    struct tm ti;
-    if (!localNow(ti) || ti.tm_year < 124) return -1;
-    long nowSec = ti.tm_hour * 3600L + ti.tm_min * 60L + ti.tm_sec;
-    long best = -1;
-    for (uint8_t i = 0; i < count; i++) {
-        if (!entries[i].enabled) continue;
-        long d = entries[i].hour * 3600L + entries[i].minute * 60L - nowSec;
-        if (d > 0 && (best < 0 || d < best)) best = d;
-    }
-    return best < 0 ? -1 : best * 1000L;
 }
 
 // -------------------------------------------------------

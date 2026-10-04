@@ -16,9 +16,6 @@ struct ScheduleEntry {
 
 void   sched_setup();
 void   sched_check();     // call every second from main loop
-// ms until the next enabled gong later TODAY; -1 if none or no valid time.
-// Used for the relay pre-warm (amp powered up before the gong's time).
-long   sched_msToNext();
 
 bool   sched_add(uint8_t h, uint8_t m, const String& desc, uint8_t track, uint8_t loop, uint8_t vol = DEFAULT_VOLUME);
 bool   sched_edit(uint32_t id, uint8_t h, uint8_t m,

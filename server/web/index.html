@@ -184,7 +184,6 @@ tr:hover td { background: rgba(79,158,248,.04); }
   <div id="statusBar">
     <span id="wifiStat">&#8212; loading &#8212;</span>
     <span id="heapStat"></span>
-    <span id="relayStat"></span>
     <span id="clock" style="font-variant-numeric:tabular-nums"></span>
     <a href="/guide" style="color:inherit">Инструкция</a>
     <a href="/info" style="color:inherit">Схема</a>
@@ -311,12 +310,11 @@ tr:hover td { background: rgba(79,158,248,.04); }
     </div>
   </div>
 
-  <!-- ── Gong & Relay ── -->
+  <!-- ── Gong ── -->
   <div class="card" id="sectionControl">
     <div class="card-title">
       <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0">
-        <span style="color:#4f9ef8">Gong &amp; Relay</span>
-        <span id="relayBadge" class="tag" style="font-size:.72rem"></span>
+        <span style="color:#4f9ef8">Gong</span>
       </div>
       <button class="collapse-btn" onclick="toggleCard('sectionControl')">&#9662;</button>
     </div>
@@ -335,33 +333,10 @@ tr:hover td { background: rgba(79,158,248,.04); }
           <input type="number" id="cLoop" min="1" max="7" value="1">
         </div>
       </div>
-      <div class="btn-group" style="margin-top:0;margin-bottom:18px">
+      <div class="btn-group" style="margin-top:0">
         <button class="btn btn-green" onclick="playGong()">&#9654; Play</button>
         <button class="btn btn-red"   onclick="stopAll()">&#9632;&#9632; Stop</button>
       </div>
-      <label>Relay mode</label>
-      <div style="display:flex;gap:6px;margin:6px 0 14px">
-        <button id="relayAuto" class="btn btn-sm btn-ghost" onclick="setRelayMode('auto')">Auto</button>
-        <button id="relayOn"   class="btn btn-sm btn-ghost" onclick="setRelayMode('on')">Always ON</button>
-        <button id="relayOff"  class="btn btn-sm btn-ghost" onclick="setRelayMode('off')">Always OFF</button>
-      </div>
-      <div class="row" style="align-items:flex-end">
-        <div class="col" style="max-width:150px">
-          <label>Warm-up, ms (≤ 30000)</label>
-          <input type="number" id="relayPre" min="0" max="30000" step="100">
-        </div>
-        <div class="col" style="max-width:150px">
-          <label>Hold after, ms (≤ 20000)</label>
-          <input type="number" id="relayHold" min="0" max="20000" step="500">
-        </div>
-        <div class="col" style="display:flex;align-items:flex-end">
-          <button class="btn btn-primary btn-sm" onclick="saveRelayTiming()">Save</button>
-        </div>
-      </div>
-      <p style="color:var(--muted);font-size:.78rem;margin-top:10px">
-        Auto: реле включает усилитель за «Warm-up» до гонга и выключает через «Hold after» после окончания.
-        Always ON/OFF — ручное управление. PCM5102A выдаёт звук в любом режиме, слышно — если включён усилитель на его линейном выходе.
-      </p>
     </div>
   </div>
 
@@ -552,7 +527,6 @@ async function refreshAll() {
     applyStatus(d.status);
     applySchedule(d.schedule);
     await applyDays(d.days);
-    applyRelay(d.relay);
     applyWifi(d.wifi);
   } catch {
     document.getElementById('wifiStat').innerHTML = '<span class="dot dot-red"></span>Offline';
@@ -565,7 +539,7 @@ async function refreshAll() {
 // Status
 // ─────────────────────────────────────────────
 // Anything that means the gong will NOT ring (or the device is exposed) is
-// shown in a red banner at the top — the same conditions blink the LED.
+// shown in a red banner at the top.
 let authOpen = false;
 function applyAlerts(d) {
   const a = [];
@@ -599,7 +573,6 @@ function applyStatus(d) {
       : '<span class="dot dot-yellow"></span>AP: ' + (d.ssid||'?') + ' (' + (d.ip||'?') + ')';
     const kb = Math.round((d.heap || 0) / 1024);
     document.getElementById('heapStat').textContent = kb ? 'Heap: ' + kb + 'KB' : '';
-    document.getElementById('relayStat').textContent = 'Relay: ' + (d.relay_on ? 'ON' : 'off');
     if (d.time) { espTime = d.time; espTimestamp = Date.now(); }
     if (d.date) {
       const dateInput = document.getElementById('tDate');
@@ -875,7 +848,7 @@ async function saveModal() {
 }
 
 // ─────────────────────────────────────────────
-// Manual control / Relay
+// Manual control
 // ─────────────────────────────────────────────
 // M-11: `parseInt(...) || 30` mapped a deliberately-entered 0 to 30 (0 is
 // falsy in JS) — silent gong at "0" was never reachable from the UI.
@@ -894,37 +867,6 @@ async function playGong() {
 async function stopAll() {
   const r = await postJSON('/api/stop', {});
   toast(r && r.ok ? 'Stopped' : (r?.err || 'Error'), r && r.ok ? 'ok' : 'err');
-}
-function applyRelay(d) {
-  if (!d) return;
-  const badge = document.getElementById('relayBadge');
-  badge.textContent = (d.on ? '⚡ ON' : '○ OFF') + (d.pending || d.prewarm ? ' · warm-up' : '')
-    + (d.manual ? ' · button, ' + Math.ceil((d.manual_left || 0) / 60) + ' min left' : '') + ' · GPIO' + d.pin;
-  badge.style.background = d.on ? 'rgba(52,201,126,.15)' : 'rgba(122,127,154,.15)';
-  badge.style.color = d.on ? 'var(--green)' : 'var(--muted)';
-  document.getElementById('relayStat').textContent = 'Relay: ' + (d.on ? 'ON' : 'off');
-  [['auto','relayAuto'],['on','relayOn'],['off','relayOff']].forEach(([m, id]) => {
-    const b = document.getElementById(id);
-    b.classList.toggle('btn-primary', d.mode === m);
-    b.classList.toggle('btn-ghost',   d.mode !== m);
-  });
-  // Don't clobber the fields while the operator is typing in them.
-  const pre = document.getElementById('relayPre'), hold = document.getElementById('relayHold');
-  if (document.activeElement !== pre)  pre.value  = d.pre;
-  if (document.activeElement !== hold) hold.value = d.hold;
-}
-async function setRelayMode(mode) {
-  const r = await postJSON('/api/relay', { mode });
-  if (r && r.mode) { applyRelay(r); toast('Relay: ' + mode, 'ok'); }
-  else toast(r?.err || 'Error', 'err');
-}
-async function saveRelayTiming() {
-  const pre  = parseInt(document.getElementById('relayPre').value);
-  const hold = parseInt(document.getElementById('relayHold').value);
-  if (!Number.isFinite(pre) || !Number.isFinite(hold)) { toast('Enter numbers', 'err'); return; }
-  const r = await postJSON('/api/relay', { pre, hold });
-  if (r && r.mode) { applyRelay(r); toast('Relay timing saved', 'ok'); }
-  else toast(r?.err || 'Error', 'err');
 }
 
 // ─────────────────────────────────────────────

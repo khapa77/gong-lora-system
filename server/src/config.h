@@ -4,7 +4,7 @@
 
 // Low: exposed in /api/status so an operator can confirm every client and
 // the server were flashed from the same build (no version info existed at all before).
-#define FW_VERSION "6.2-solo"
+#define FW_VERSION "6.2-max"
 
 // ── Время: неблокирующая замена getLocalTime() ─────────────────────────────
 // Штатный getLocalTime(tm*, ms=5000) крутит delay(10) до 5 СЕКУНД, если время
@@ -54,7 +54,7 @@ static inline bool localNow(struct tm& out) {
 #endif
 static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD короче 8 символов (минимум для WPA2)");
 
-// ── I2S пины для PCM5102A ─────────────────────────────────────────────────
+// ── I2S пины для MAX98357A ────────────────────────────────────────────────
 #define I2S_BCLK          26   // Bit Clock
 #define I2S_LRC           25   // Left/Right Clock (Word Select)
 #define I2S_DOUT          33   // Data Out
@@ -80,8 +80,7 @@ static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD короче 8 симв
 #define AUTH_REALM        "Gong Server"
 #define AUTH_MIN_PASSWORD 8
 // Сброс пароля админки без перепрошивки: держать кнопку гонга (BUTTON_PIN)
-// нажатой при включении питания AUTH_RESET_HOLD_MS — светодиод горит, пока
-// держите; после сброса вход снова открыт. Нужен, потому что пока пароль не
+// нажатой при включении питания AUTH_RESET_HOLD_MS; после сброса вход снова открыт. Нужен, потому что пока пароль не
 // задан, его может задать любой подключившийся к AP и запереть владельца.
 #define AUTH_RESET_HOLD_MS 10000UL
 
@@ -93,48 +92,12 @@ static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD короче 8 симв
 #define WIFI_CONNECT_TIMEOUT_MS 15000UL
 #define WIFI_RETRY_MS           60000UL
 
-// ── Реле (питание внешнего усилителя / трансляционной линии) ───────────────
-// GPIO27: не strapping-пин, не input-only, при загрузке не дёргается.
-// Освободившиеся после LoRa пины (4, 14, 18, 19, 23; на печатной плате они
-// разведены на разъём Ra-02 и свободны, только пока модуль не вставлен) тоже
-// подойдут; GPIO5 — нет, он strapping. Большинство китайских модулей реле с оптроном
-// включаются НИЗКИМ уровнем — тогда соберите с -DRELAY_ACTIVE_LOW=1.
-// До первого digitalWrite() пин висит в воздухе: на плате нужна подтяжка к
-// «неактивному» уровню (10 кОм), иначе реле может щёлкнуть при старте.
-#ifndef RELAY_PIN
-#define RELAY_PIN               27
-#endif
-#ifndef RELAY_ACTIVE_LOW
-#define RELAY_ACTIVE_LOW        0
-#endif
-#define RELAY_CONFIG_FILE       "/relay.conf"  // устаревшее: с 6.2 — в NVS
-// Авто-режим: реле включается ДО звука (усилителю нужно время выйти на режим,
-// иначе начало удара гонга срезается) и держится после окончания трека.
-// Гонг по расписанию включает реле заранее — за preMs до своего времени
-// (предвключение), и звук начинается ровно по расписанию. Запуск из веба или
-// кнопкой заранее не известен — там звук ждёт прогрева.
-#define RELAY_DEFAULT_PRE_MS    800UL
-#define RELAY_DEFAULT_HOLD_MS   3000UL
-#define RELAY_MAX_PRE_MS        30000UL   // прогрев усилителя до гонга
-// Предвключение держит реле до времени гонга + этот запас: гонг срабатывает
-// при ежесекундной проверке, т.е. чуть позже границы минуты. Если гонг так и
-// не пришёл (запись удалили/выключили), реле отпустит через запас + holdMs.
-#define RELAY_PREWARM_GRACE_MS  5000UL
-#define RELAY_MAX_HOLD_MS       20000UL   // удержание ПОСЛЕ окончания гонга
-// Реле, включённое кнопкой (BUTTON_RELAY_HOLD_MS), само отключается через
-// это время — забытый включённым усилитель не работает всю ночь. Включение
-// кнопкой не сохраняется: после перезагрузки реле снова в AUTO и выключено.
-#define RELAY_MANUAL_MAX_MS     (30UL * 60 * 1000)
-
 // ── Физическая кнопка (запуск гонга мимо веб-интерфейса) ─────────────────
 // Кнопка между BUTTON_PIN и GND, внутренняя подтяжка к 3.3V включена.
 // Срабатывает по УДЕРЖАНИЮ, а не по касанию — случайное нажатие (задели
 // плечом, ребёнок, наводка) гонг не запустит:
 //   в тишине, отпустить после BUTTON_PLAY_HOLD_MS  → гонг (BUTTON_TRACK/VOL/LOOP)
-//   в тишине, отпустить после BUTTON_RELAY_HOLD_MS → реле вкл/выкл без звука
 //   во время звучания — держать BUTTON_STOP_HOLD_MS → стоп (сразу, не дожидаясь отпускания)
-// В тишине действие выбирается по длительности и выполняется при ОТПУСКАНИИ;
-// пока держите, светодиод подсказывает: горит — гонг, мигает — реле.
 // GPIO32: не strapping, есть внутренний pull-up (у GPIO34–39 его нет).
 // Раньше была GPIO4 — на печатной плате она занята LoRa DIO0.
 // При проводе к кнопке длиннее ~30 см добавьте внешний 10 кОм к 3.3V и
@@ -145,23 +108,9 @@ static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD короче 8 симв
 #define BUTTON_DEBOUNCE_MS      50UL
 #define BUTTON_PLAY_HOLD_MS     3000UL
 #define BUTTON_STOP_HOLD_MS     1000UL
-#define BUTTON_RELAY_HOLD_MS    8000UL
 #define BUTTON_TRACK            DEFAULT_TRACK
 #define BUTTON_VOL              DEFAULT_VOLUME
 #define BUTTON_LOOP             1
-
-// ── Светодиод состояния (statusled.h) ───────────────────────────────────────
-// GPIO13 — LED2 на печатной плате (как STATUS_LED у клиента). Раньше был
-// GPIO2 (встроенный синий DevKit) — это strapping-пин, на плате он NC.
-// Для макета без платы: -DSTATUS_LED_PIN=2 — уровень GPIO2
-// читается только в момент сброса — выход после загрузки прошивке не мешает.
-// -1 — отключить.
-#ifndef STATUS_LED_PIN
-#define STATUS_LED_PIN          13
-#endif
-#ifndef STATUS_LED_ACTIVE_LOW
-#define STATUS_LED_ACTIVE_LOW   0
-#endif
 
 // ── M-14: догоняющее срабатывание после перезагрузки ────────────────────────
 // Если сервер перезагрузился в узком окне вокруг времени гонга, тот гонг не
