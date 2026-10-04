@@ -32,6 +32,9 @@ header {
 }
 header h1 { font-size: 1.4rem; font-weight: 700; letter-spacing: .02em; }
 header h1 span { color: var(--accent); }
+#devLabel { margin-left: 10px; padding: 2px 10px; border-radius: 8px; background: var(--accent); color: #fff;
+  font-size: 1rem; font-weight: 700; white-space: nowrap; }
+#devLabel:empty { display: none; }
 #statusBar {
   display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
   font-size: .82rem; color: var(--muted);
@@ -180,7 +183,7 @@ tr:hover td { background: rgba(79,158,248,.04); }
 <body>
 
 <header>
-  <h1>&#128276; Gong <span>Server</span></h1>
+  <h1>&#128276; Gong <span>Server</span><b id="devLabel"></b></h1>
   <div id="statusBar">
     <span id="wifiStat">&#8212; loading &#8212;</span>
     <span id="heapStat"></span>
@@ -268,6 +271,37 @@ tr:hover td { background: rgba(79,158,248,.04); }
           </div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- ── Device ── -->
+  <div class="card" id="sectionDevice">
+    <div class="card-title">
+      Device
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="devBadge" class="tag" style="font-size:.75rem"></span>
+        <button class="collapse-btn" onclick="toggleCard('sectionDevice')">&#9662;</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="row" style="align-items:flex-end">
+        <div class="col form-group" style="max-width:120px">
+          <label>Number (1–99)</label>
+          <input type="number" id="devNum" min="0" max="99" placeholder="—">
+        </div>
+        <div class="col form-group">
+          <label>Label <span style="color:var(--muted)">(e.g. Зал, Столовая)</span></label>
+          <input type="text" id="devName" maxlength="32" placeholder="optional">
+        </div>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-primary" onclick="saveDevice()">Save</button>
+      </div>
+      <p style="color:var(--muted);font-size:.78rem;margin-top:10px">
+        Номер входит в имя Wi-Fi сети и адрес: <b>GongServer-N</b>, <b>http://gongN.local</b>.
+        Без номера имя берётся из MAC. После смены номера устройство перезагрузится, а телефон
+        нужно заново подключить к сети с новым именем (пароль тот же). Подпись видна только здесь, в шапке и вкладке браузера.
+      </p>
     </div>
   </div>
 
@@ -371,9 +405,9 @@ tr:hover td { background: rgba(79,158,248,.04); }
         <button class="btn btn-red btn-sm" id="wifiForgetBtn" onclick="forgetWifi()" style="display:none">Forget network</button>
       </div>
       <p style="color:var(--muted);font-size:.78rem;margin-top:10px">
-        Точка доступа <b>GongServer</b> (192.168.4.1) работает всегда — через неё можно зайти, даже если сеть недоступна.
+        Точка доступа <b>GongServer-N</b> (192.168.4.1) работает всегда — через неё можно зайти, даже если сеть недоступна.
         При подключении к роутеру AP переходит на его канал: телефон может на секунду отключиться от GongServer.
-        В сети роутера устройство доступно по адресу <b>http://gong.local</b> или по IP из статуса.
+        В сети роутера устройство доступно по адресу <b>http://gongN.local</b> (N — номер, карточка Device) или по IP из статуса.
       </p>
     </div>
   </div>
@@ -527,6 +561,7 @@ async function refreshAll() {
     applyStatus(d.status);
     applySchedule(d.schedule);
     await applyDays(d.days);
+    applyDevice(d.device);
     applyWifi(d.wifi);
   } catch {
     document.getElementById('wifiStat').innerHTML = '<span class="dot dot-red"></span>Offline';
@@ -549,6 +584,7 @@ function applyAlerts(d) {
   if (d.crash_count > 0 && d.reset_reason && !/power-on|software|external/.test(d.reset_reason))
     a.push('⚠️ Последний перезапуск: ' + esc(d.reset_reason) + ' (сбоев всего: ' + d.crash_count + ').');
   if (d.ap_default_pw) a.push('⚠️ Пароль точки доступа стандартный — задайте свой (<code>AP_PASSWORD</code> в platformio.ini).');
+  if (d.device_num === 0) a.push('⚠️ Номер устройства не задан — имя сети взято из MAC. Задайте номер в карточке Device, чтобы различать гонги.');
   if (authOpen) a.push('⚠️ Пароль админки не задан — любой подключившийся может управлять гонгом (вкладка Security).');
   const el = document.getElementById('alerts');
   el.innerHTML = a.join('<br>');
@@ -888,7 +924,7 @@ function applyWifi(d) {
   } else {
     badge.textContent = 'AP only';
     badge.style.background = 'rgba(122,127,154,.15)'; badge.style.color = 'var(--muted)';
-    info.textContent = 'No network saved — only the GongServer access point is active.';
+    info.textContent = "No network saved — only the device's own access point is active.";
   }
   document.getElementById('wifiForgetBtn').style.display = d.configured ? '' : 'none';
   const ssidEl = document.getElementById('wSsid');
@@ -935,7 +971,7 @@ async function connectWifi() {
   } else toast(r?.err || 'Error', 'err');
 }
 async function forgetWifi() {
-  if (!confirm('Forget saved network? The device will stay reachable via the GongServer access point.')) return;
+  if (!confirm('Forget saved network? The device will stay reachable via its own access point.')) return;
   const r = await postJSON('/api/wifi/forget', {});
   if (r && r.ok) { toast('Network forgotten', 'ok'); document.getElementById('wSsid').value = ''; }
   else toast('Error', 'err');
@@ -944,6 +980,32 @@ async function forgetWifi() {
 // ─────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// Device number / label
+// ─────────────────────────────────────────────
+function applyDevice(d) {
+  if (!d) return;
+  const label = (d.num ? '#' + d.num : '') + (d.num && d.name ? ' · ' : '') + (d.name || '');
+  document.getElementById('devLabel').textContent = label;
+  document.title = 'Gong' + (label ? ' ' + label : ' Server');
+  document.getElementById('devBadge').textContent = d.ssid + ' · ' + d.host + '.local';
+  const num = document.getElementById('devNum'), name = document.getElementById('devName');
+  if (document.activeElement !== num)  num.value  = d.num || '';
+  if (document.activeElement !== name) name.value = d.name || '';
+}
+async function saveDevice() {
+  const raw = document.getElementById('devNum').value.trim();
+  const num = raw === '' ? 0 : parseInt(raw);
+  if (!Number.isInteger(num) || num < 0 || num > 99) { toast('Number 1–99 (empty = from MAC)', 'err'); return; }
+  const name = document.getElementById('devName').value.trim();
+  const r = await postJSON('/api/device', { num, name });
+  if (!r || !r.ssid) { toast(r?.err || 'Error', 'err'); return; }
+  applyDevice(r);
+  if (r.restarting)
+    alert('Устройство перезагружается. Подключитесь к Wi-Fi «' + r.ssid + '» и откройте http://' + r.host + '.local или http://192.168.4.1');
+  else toast('Saved', 'ok');
+}
+
 async function postJSON(url, body, method = 'POST') {
   try {
     const r = await fetch(url, {
@@ -961,7 +1023,7 @@ async function postJSON(url, body, method = 'POST') {
 // ─────────────────────────────────────────────
 // Collapsible cards
 // ─────────────────────────────────────────────
-const CARD_IDS = ['sectionSchedule','sectionControl','sectionWifi','sectionClock','sectionSecurity'];
+const CARD_IDS = ['sectionSchedule','sectionControl','sectionWifi','sectionClock','sectionDevice','sectionSecurity'];
 
 function initCards() {
   CARD_IDS.forEach(id => {

@@ -44,8 +44,18 @@ static inline bool localNow(struct tm& out) {
 // если домашняя сеть недоступна или пароль к ней неверный. Дополнительно
 // устройство может подключиться к существующей сети (STA) — SSID/пароль
 // задаются в веб-интерфейсе и хранятся в WIFI_CONFIG_FILE (в .gitignore).
+// К обоим добавляется номер устройства: "GongServer-2", http://gong2.local
+// (см. device.h). Номер задаётся в веб-интерфейсе и хранится в NVS.
 #define AP_SSID           "GongServer"
-#define MDNS_NAME         "gong"        // http://gong.local
+#define MDNS_NAME         "gong"
+// Номер по умолчанию, пока в NVS его нет: 0 — имя из MAC ("GongServer-A3F2").
+// Партию можно прошить сразу с номерами: build_flags = -DDEVICE_NUM=3
+#ifndef DEVICE_NUM
+#define DEVICE_NUM        0
+#endif
+#define DEVICE_NUM_MAX    99
+#define DEVICE_NAME_MAX   32      // подпись в вебе, байт UTF-8 (~16 кириллических букв)
+#define DEVICE_REBOOT_DELAY_MS 2000UL
 // Смените перед развёртыванием! Можно передать через build_flags вместо
 // правки файла — see platformio.ini:
 //   build_flags = -DAP_PASSWORD='"${sysenv.GONG_AP_PASSWORD}"'

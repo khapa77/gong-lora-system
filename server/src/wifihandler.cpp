@@ -1,4 +1,5 @@
 #include "wifihandler.h"
+#include "device.h"
 #include "config.h"
 #include "timesync.h"
 #include <WiFi.h>
@@ -67,26 +68,26 @@ void wifi_setup() {
     // полностью, и драйвер подключался бы сам по старым данным.
     WiFi.persistent(false);
     WiFi.setAutoReconnect(false);   // повторные попытки — только в wifi_loop()
-    WiFi.setHostname(MDNS_NAME);
+    WiFi.setHostname(device_host().c_str());
     loadConfig();
     // Pure AP unless a network is saved — exactly what the LoRa branches run.
     // An idle-but-enabled STA interface still costs the AP airtime, and a
     // page transfer stalled mid-way is what showed up as "иероглифы".
     WiFi.mode(staSsid.length() ? WIFI_AP_STA : WIFI_AP);
-    WiFi.softAP(AP_SSID, AP_PASSWORD);
+    WiFi.softAP(device_ssid().c_str(), AP_PASSWORD);
     logPrintf("[WIFI] AP '%s' started — IP: %s\n",
-              AP_SSID, WiFi.softAPIP().toString().c_str());
+              device_ssid().c_str(), WiFi.softAPIP().toString().c_str());
 
     if (staSsid.length()) beginConnect();
     else                  logPrintf("[WIFI] STA not configured — AP only\n");
 
-    MDNS.begin(MDNS_NAME);
+    MDNS.begin(device_host().c_str());
     // M11: without an advertised service, some resolvers (notably Windows
     // without Bonjour, and some Android NSD-based clients) never resolve the
     // plain hostname — only the fact that the device offers an "http"
     // service actually gets it into their mDNS cache.
     MDNS.addService("http", "tcp", 80);
-    logPrintf("[MDNS] http://%s.local\n", MDNS_NAME);
+    logPrintf("[MDNS] http://%s.local\n", device_host().c_str());
 }
 
 void wifi_loop() {
@@ -198,7 +199,7 @@ String wifi_scanJSON() {
 
 String wifi_statusJSON() {
     StaticJsonDocument<320> doc;
-    doc["ap_ssid"]    = AP_SSID;
+    doc["ap_ssid"]    = device_ssid();
     doc["ap_ip"]      = WiFi.softAPIP().toString();
     doc["configured"] = !staSsid.isEmpty();
     doc["ssid"]       = staSsid;

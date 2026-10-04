@@ -5,6 +5,7 @@
 #include "mp3handler.h"
 #include "timesync.h"
 #include "wifihandler.h"
+#include "device.h"
 #include <LittleFS.h>
 #include <WiFi.h>
 #include <ArduinoJson.h>
@@ -240,9 +241,9 @@ static bool checkOrigin() {
 // DNS rebinding: an internet page can re-point its own hostname at this
 // device's IP and then talk to it as "same origin" — X-Gong-Request doesn't
 // help there. The Host header still carries the attacker's name, so only
-// names that are actually this device are accepted: the IPs, "gong", and
-// "gong.<one label>" (gong.local via mDNS, gong.lan / gong.home via a
-// router's DHCP DNS). Registering a whole top-level domain is out of reach.
+// names that are actually this device are accepted: the IPs, its host name
+// ("gong2") and "gong2.<one label>" (gong2.local via mDNS, gong2.lan /
+// gong2.home via a router's DHCP DNS). Registering a whole top-level domain is out of reach.
 static bool hostAllowed() {
     String h = server.hostHeader();
     h.toLowerCase();
@@ -252,7 +253,7 @@ static bool hostAllowed() {
     if (h.isEmpty()) return true;   // HTTP/1.0 client without Host — no name to rebind
     if (h == WiFi.softAPIP().toString()) return true;
     if (WiFi.status() == WL_CONNECTED && h == WiFi.localIP().toString()) return true;
-    const String name = MDNS_NAME;
+    const String& name = device_host();
     if (h == name) return true;
     if (h.startsWith(name + ".")) return h.indexOf('.', name.length() + 1) < 0;
     return false;
@@ -401,7 +402,9 @@ static String statusJSON() {
     DynamicJsonDocument doc(768);
     doc["mode"]   = WiFi.status() == WL_CONNECTED ? "AP+STA" : "AP";
     doc["ip"]     = wifi_apIP();
-    doc["ssid"]   = AP_SSID;
+    doc["ssid"]   = device_ssid();
+    doc["device_num"]  = device_num();
+    doc["device_name"] = device_name();
     if (WiFi.status() == WL_CONNECTED) doc["sta_ip"] = WiFi.localIP().toString();
     doc["heap"]   = (int)ESP.getFreeHeap();
     doc["uptime"] = (uint32_t)(millis() / 1000);
@@ -549,6 +552,24 @@ static void handlePlay() {
     sendOK();
 }
 
+// -------------------------------------------------------
+// /api/device — GET {"num","name","ssid","host"}; POST {"num":0-99,"name":"..."}.
+// A new number renames the AP — the device restarts after replying.
+// -------------------------------------------------------
+static void handleDeviceGET() { sendJSON(200, device_toJSON()); }
+
+static void handleDevicePOST() {
+    DynamicJsonDocument doc(256);
+    if (!parseBody(doc)) return;
+    long n = doc["num"] | (long)device_num();
+    String name = doc.containsKey("name") ? String((const char*)(doc["name"] | "")) : device_name();
+    bool reboot = false;
+    if (n < 0 || !device_set((uint8_t)constrain(n, 0, 255), name, &reboot)) {
+        sendErr("num 0-99 (0 = name from MAC)"); return;
+    }
+    sendJSON(200, device_toJSON());
+}
+
 static void handleStop() {
     mp3_stop();
     sendOK();
@@ -602,6 +623,7 @@ static void handleState() {
     s += "\"status\":";   s += statusJSON();
     s += ",\"schedule\":"; s += schedule;
     s += ",\"days\":";     s += daysJSON();
+    s += ",\"device\":";   s += device_toJSON();
     s += ",\"wifi\":";     s += wifi_statusJSON();
     s += ",\"auth\":";     s += authJSON();
     s += "}";
@@ -649,6 +671,8 @@ void web_setup() {
     route("/api/stop",          HTTP_POST,   handleStop,           R_WRITE);
 
 
+    route("/api/device",        HTTP_GET,    handleDeviceGET,      R_AUTH);
+    route("/api/device",        HTTP_POST,   handleDevicePOST,     R_WRITE);
     route("/api/wifi",          HTTP_GET,    handleWifiGET,        R_AUTH);
     route("/api/wifi",          HTTP_POST,   handleWifiPOST,       R_WRITE);
     route("/api/wifi/forget",   HTTP_POST,   handleWifiForget,     R_WRITE);

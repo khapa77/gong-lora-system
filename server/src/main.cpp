@@ -11,6 +11,7 @@
 #include "webhandler.h"
 #include "timesync.h"
 #include "wifihandler.h"
+#include "device.h"
 
 // -------------------------------------------------------
 // Called when a schedule entry fires. MAX98357A is powered all the time —
@@ -106,6 +107,7 @@ void setup() {
     mp3_setup();
     mp3_startAudioTask();
     sched_setup();
+    device_setup();  // number + label → AP name / mDNS host (before wifi_setup)
     wifi_setup();    // own AP always + STA if a network is saved
     web_setup();     // HTTP server
 
@@ -141,6 +143,7 @@ void loop() {
     esp_task_wdt_reset();
     web_loop();
     serialCommands();
+    device_loop();   // restart after a device-number change, once the reply is out
     // M10: Arduino-ESP32's loopTask carries no automatic yield — without this
     // the Core-1 IDLE task (and its watchdog check) could starve while no
     // HTTP client is connected.
