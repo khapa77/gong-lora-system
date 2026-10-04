@@ -94,6 +94,19 @@ static void dayPath(int day, char (&path)[16]) {
     snprintf(path, sizeof(path), "/day%02d.conf", day);
 }
 
+// Course import staging (see sched_stageDay).
+static void stagePath(int day, char (&path)[16]) {
+    snprintf(path, sizeof(path), "/day%02d.new", day);
+}
+
+static void dropStaged() {
+    char path[16];
+    for (int d = 0; d < DAY_COUNT; d++) {
+        stagePath(d, path);
+        if (LittleFS.exists(path)) LittleFS.remove(path);
+    }
+}
+
 // Set active day + date stamp (does not touch entries).
 static void setActiveDay(int day, const String& date) {
     activeDay  = day;
@@ -237,6 +250,7 @@ void sched_setup() {
     firePrefs.begin("gong", false);
     lastFireTs = firePrefs.getUInt("lastfire", 0);
 
+    dropStaged();   // a course upload interrupted by a reboot is never committed
     loadActiveDay();
 
     if (activeDay >= 0) {
@@ -692,4 +706,115 @@ bool sched_delFromDay(uint8_t day, uint32_t id) {
     if (!saveDayArray(day, doc)) return false;
     logPrintf("[SCHED] Day %02d (template): deleted entry id=%u\n", (int)day, (unsigned)id);
     return true;
+}
+
+// -------------------------------------------------------
+// Whole-course import/export (see schedule.h). The browser expands the
+// course file's templates and sends one day at a time; each day is checked
+// with the same rules as a single-entry edit, renumbered from id 1 and
+// written to /dayNN.new. Nothing touches the real day files until commit.
+// -------------------------------------------------------
+bool sched_stageDay(uint8_t day, JsonArrayConst in, String& err) {
+    if (day >= DAY_COUNT) { err = "invalid day"; return false; }
+    if (in.isNull())      { err = "entries must be an array"; return false; }
+    if (in.size() > MAX_SCHEDULES) { err = "more than " + String(MAX_SCHEDULES) + " entries"; return false; }
+    if (day == 0) dropStaged();
+
+    DynamicJsonDocument doc(SCHED_JSON_CAPACITY);
+    if (doc.capacity() == 0) { err = "out of memory"; return false; }
+    JsonArray out = doc.to<JsonArray>();
+    uint32_t id = 1;
+    for (JsonVariantConst v : in) {
+        JsonObjectConst o = v.as<JsonObjectConst>();
+        String where = "entry " + String(id) + ": ";
+        if (o.isNull() || !o["hour"].is<int>() || !o["min"].is<int>()) {
+            err = where + "hour and min are required"; return false;
+        }
+        int h = o["hour"], m = o["min"];
+        if (h < 0 || h > 23 || m < 0 || m > 59) { err = where + "hour 0-23, min 0-59"; return false; }
+        int track = o["track"] | DEFAULT_TRACK;
+        if (track < 1 || track > 99) { err = where + "track 1-99"; return false; }
+        if (!mp3_trackExists((uint8_t)track)) {
+            err = where + "track " + String(track) + " not found on device"; return false;
+        }
+        if (dayTimeTaken(out, (uint8_t)h, (uint8_t)m, 0)) {
+            char t[6];
+            snprintf(t, sizeof(t), "%02d:%02d", h, m);
+            err = where + t + " used twice"; return false;
+        }
+        String desc = o["desc"] | "";
+        desc.trim();
+        if (desc.length() > DESC_MAX_BYTES) {   // don't cut a UTF-8 character in half
+            size_t k = DESC_MAX_BYTES;
+            while (k > 0 && ((uint8_t)desc[k] & 0xC0) == 0x80) k--;
+            desc.remove(k);
+        }
+        JsonObject e = out.createNestedObject();
+        e["id"]    = id++;
+        e["hour"]  = h;
+        e["min"]   = m;
+        e["track"] = track;
+        e["loop"]  = constrain((int)(o["loop"] | 1), 1, LOOP_MAX);
+        e["vol"]   = constrain((int)(o["vol"] | DEFAULT_VOLUME), 0, 30);
+        e["en"]    = (bool)(o["en"] | true);
+        e["desc"]  = desc;
+    }
+    if (doc.overflowed()) { err = "out of memory"; return false; }
+
+    char path[16];
+    stagePath(day, path);
+    File f = LittleFS.open(path, "w");
+    if (!f) { err = "file write failed"; return false; }
+    serializeJson(doc, f);
+    f.close();
+    logPrintf("[SCHED] Course import: day %02d staged (%u entries)\n", (int)day, (unsigned)out.size());
+    return true;
+}
+
+bool sched_commitCourse(String& err) {
+    char from[16], to[16];
+    for (int d = 0; d < DAY_COUNT; d++) {
+        stagePath(d, from);
+        if (!LittleFS.exists(from)) {
+            err = "day " + String(d) + " was not uploaded";
+            return false;
+        }
+    }
+    for (int d = 0; d < DAY_COUNT; d++) {
+        stagePath(d, from);
+        dayPath(d, to);
+        // LittleFS replaces an existing target on rename; the remove is only
+        // a fallback for a VFS that refuses to.
+        if (!LittleFS.rename(from, to) && !(LittleFS.remove(to) && LittleFS.rename(from, to))) {
+            err = "rename failed at day " + String(d) + " — days before it are already replaced";
+            logPrintf("[SCHED] Course import: %s\n", err.c_str());
+            return false;
+        }
+    }
+    // The live schedule is the active day's file: reload it. A save deferred
+    // while a gong was playing would write the OLD entries back over it.
+    if (activeDay >= 0) {
+        schedPendingSave = false;
+        dayPath(activeDay, to);
+        schedError = !sched_parseFromPath(to);
+    }
+    logPrintf("[SCHED] Course import: %d days committed, active day %02d (%d entries)\n",
+              DAY_COUNT, activeDay, count);
+    return true;
+}
+
+String sched_courseJSON() {
+    String s;
+    if (!s.reserve(DAY_COUNT * 2048)) return String();
+    s = "{\"days\":[";
+    for (int d = 0; d < DAY_COUNT; d++) {
+        if (d) s += ',';
+        // The active day's in-memory entries are newer than its file while a
+        // save is deferred.
+        String day = isActiveDay((uint8_t)d) ? sched_toJSON() : sched_dayJSON((uint8_t)d);
+        if (day.length() == 0) return String();
+        s += day;
+    }
+    s += "]}";
+    return s;
 }

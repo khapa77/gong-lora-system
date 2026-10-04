@@ -78,6 +78,14 @@ Wi-Fi **GongServer-N**, адрес **http://gongN.local**, в шапке стр�
 (`GongServer-A3F2`), чтобы новые устройства не совпадали. Смена номера — перезагрузка.
 Подробно — [Instruction.md §5a](Instruction.md#5a-несколько-устройств).
 
+### Курс одним файлом
+
+Карточка **Course**: «Скачать курс» — все дни одним JSON-файлом, одинаковые дни
+описаны один раз в `templates`; «Загрузить курс» — проверить файл и залить все
+дни по Wi-Fi, без `uploadfs` и без правки по одной записи. Тот же файл можно залить
+на другие гонги. Формат и пример — [Instruction.md §6](Instruction.md#курс-одним-файлом),
+[docs/course-example.json](docs/course-example.json).
+
 ### Wi-Fi
 
 - Точка доступа **GongServer-N** (192.168.4.1, N — номер устройства) поднимается **всегда** — это
@@ -101,6 +109,7 @@ Wi-Fi **GongServer-N**, адрес **http://gongN.local**, в шапке стр�
 |---|---|---|
 | POST | `/api/play` | `{track,vol,loop}` — гонг |
 | POST | `/api/stop` | остановить |
+| GET / PUT / POST | `/api/course`, `/api/course/day`, `/api/course/commit` | курс одним файлом: экспорт; день в черновик; применить все дни |
 | GET/POST | `/api/device` | номер и подпись; `{"num":0–99,"name":"…"}`, смена номера — перезагрузка |
 | GET/POST | `/api/wifi` | статус STA; `{"ssid","pass"}` — сохранить и подключиться |
 | POST | `/api/wifi/forget` | забыть сеть |

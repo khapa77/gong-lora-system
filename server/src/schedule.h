@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include "config.h"
+#include <ArduinoJson.h>
 
 struct ScheduleEntry {
     uint32_t id;
@@ -43,6 +44,15 @@ bool   sched_addToDay(uint8_t day, uint8_t h, uint8_t m,
 bool   sched_editInDay(uint8_t day, uint32_t id, uint8_t h, uint8_t m,
                        const String& desc, uint8_t track, uint8_t loop, bool enabled, uint8_t vol = DEFAULT_VOLUME);
 bool   sched_delFromDay(uint8_t day, uint32_t id);
+
+// Whole-course import/export (web "Course" card). Every day is first staged
+// into /dayNN.new; sched_commitCourse() then renames all of them over the
+// day files at once — an upload cut off halfway leaves the old course intact.
+// Staging Day 0 starts a new upload and drops leftovers of an earlier one.
+// The active day and its date are kept; only the entries change.
+bool   sched_stageDay(uint8_t day, JsonArrayConst entries, String& err);
+bool   sched_commitCourse(String& err);
+String sched_courseJSON();   // {"days":[[...], ...]}; String() on out-of-memory
 
 // Callback: fired when a scheduled gong triggers
 extern void (*onScheduleTrigger)(uint8_t track, uint8_t loop, uint8_t vol);

@@ -240,6 +240,39 @@ tr:hover td { background: rgba(79,158,248,.04); }
     </div>
   </div>
 
+  <!-- ── Course ── -->
+  <div class="card" id="sectionCourse">
+    <div class="card-title">
+      Course
+      <button class="collapse-btn" onclick="toggleCard('sectionCourse')">&#9662;</button>
+    </div>
+    <div class="card-body">
+      <div class="btn-group" style="margin-top:0">
+        <button class="btn btn-ghost" onclick="exportCourse()">&#11015; Скачать курс</button>
+        <button class="btn btn-primary" onclick="document.getElementById('courseFile').click()">&#11014; Загрузить курс</button>
+        <input type="file" id="courseFile" accept=".json,application/json" style="display:none" onchange="pickCourse(this)">
+      </div>
+      <div id="coursePreview" style="display:none;margin-top:14px">
+        <div id="courseName" style="font-weight:600;margin-bottom:8px"></div>
+        <table>
+          <thead><tr><th>День</th><th>Шаблон</th><th>Гонгов</th><th>Время</th></tr></thead>
+          <tbody id="courseBody"></tbody>
+        </table>
+        <div class="btn-group">
+          <button class="btn btn-green" id="courseApplyBtn" onclick="applyCourse()">Залить на устройство</button>
+          <button class="btn btn-ghost" onclick="cancelCourse()">Отмена</button>
+          <span id="courseProgress" style="align-self:center;font-size:.85rem;color:var(--muted)"></span>
+        </div>
+      </div>
+      <p style="color:var(--muted);font-size:.78rem;margin-top:10px">
+        Все дни курса одним файлом. «Скачать» — резервная копия или заготовка для правки и для других гонгов.
+        В файле одинаковые дни описаны один раз в <b>templates</b>, а <b>days</b> — список шаблонов по дням
+        (вместо имени можно вписать день целиком). Загрузка заменяет расписание всех дней сразу; текущий день
+        курса не меняется. Если связь оборвётся посередине, старый курс останется как был.
+      </p>
+    </div>
+  </div>
+
   <!-- ── Clock ── -->
   <div class="card" id="sectionClock">
     <div class="card-title">
@@ -286,12 +319,16 @@ tr:hover td { background: rgba(79,158,248,.04); }
     <div class="card-body">
       <div class="row" style="align-items:flex-end">
         <div class="col form-group" style="max-width:120px">
-          <label>Number (1–99)</label>
-          <input type="number" id="devNum" min="0" max="99" placeholder="—">
+          <label>Number</label>
+          <select id="devNum" onchange="devDirty = true">
+            <option value="0">— (MAC)</option>
+            <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
+            <option>6</option><option>7</option><option>8</option><option>9</option>
+          </select>
         </div>
         <div class="col form-group">
           <label>Label <span style="color:var(--muted)">(e.g. Зал, Столовая)</span></label>
-          <input type="text" id="devName" maxlength="32" placeholder="optional">
+          <input type="text" id="devName" maxlength="32" placeholder="optional" oninput="devDirty = true">
         </div>
       </div>
       <div class="btn-group">
@@ -978,34 +1015,207 @@ async function forgetWifi() {
 }
 
 // ─────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────
-// ─────────────────────────────────────────────
 // Device number / label
 // ─────────────────────────────────────────────
+// The 5 s poll fills the form only until the operator edits it: guarding just
+// the focused field let it wipe the number as soon as focus moved to the label.
+let devDirty = false;
 function applyDevice(d) {
   if (!d) return;
+  deviceInfo = d;
   const label = (d.num ? '#' + d.num : '') + (d.num && d.name ? ' · ' : '') + (d.name || '');
   document.getElementById('devLabel').textContent = label;
   document.title = 'Gong' + (label ? ' ' + label : ' Server');
   document.getElementById('devBadge').textContent = d.ssid + ' · ' + d.host + '.local';
-  const num = document.getElementById('devNum'), name = document.getElementById('devName');
-  if (document.activeElement !== num)  num.value  = d.num || '';
-  if (document.activeElement !== name) name.value = d.name || '';
+  if (devDirty) return;
+  const sel = document.getElementById('devNum');
+  // A number above 9 (set with -DDEVICE_NUM or the API) still shows up.
+  if (d.num && ![...sel.options].some(o => +o.value === d.num)) sel.add(new Option(d.num, d.num));
+  sel.value = d.num || 0;
+  document.getElementById('devName').value = d.name || '';
 }
 async function saveDevice() {
-  const raw = document.getElementById('devNum').value.trim();
-  const num = raw === '' ? 0 : parseInt(raw);
-  if (!Number.isInteger(num) || num < 0 || num > 99) { toast('Number 1–99 (empty = from MAC)', 'err'); return; }
+  const num = parseInt(document.getElementById('devNum').value) || 0;
   const name = document.getElementById('devName').value.trim();
   const r = await postJSON('/api/device', { num, name });
   if (!r || !r.ssid) { toast(r?.err || 'Error', 'err'); return; }
+  devDirty = false;
   applyDevice(r);
   if (r.restarting)
     alert('Устройство перезагружается. Подключитесь к Wi-Fi «' + r.ssid + '» и откройте http://' + r.host + '.local или http://192.168.4.1');
   else toast('Saved', 'ok');
 }
 
+// ─────────────────────────────────────────────
+// Course — whole-course export/import as one file. Identical days are kept
+// once in "templates"; "days" names a template per day (or holds the day's
+// entries inline). The device only knows days: the browser expands the file
+// and PUTs one day at a time, then /api/course/commit swaps them all in.
+// ─────────────────────────────────────────────
+let deviceInfo = null;
+let pendingCourse = null;   // {name, days: [[entry…]…], names: [template name per day]}
+
+const ENTRY_KEYS = ['hour', 'min', 'track', 'loop', 'vol', 'en', 'desc'];
+function cleanEntry(e) {
+  const o = {};
+  ENTRY_KEYS.forEach(k => { if (e[k] !== undefined) o[k] = e[k]; });
+  return o;
+}
+
+function courseText(c) {
+  const j = v => JSON.stringify(v);
+  const tpl = Object.entries(c.templates).map(([k, arr]) => '    ' + j(k) + ': ' +
+    (arr.length ? '[\n' + arr.map(e => '      ' + j(e)).join(',\n') + '\n    ]' : '[]')).join(',\n');
+  return '{\n  "format": "gong-course",\n  "version": 1,\n  "name": ' + j(c.name) +
+    ',\n  "templates": {\n' + tpl + '\n  },\n  "days": ' + j(c.days) + '\n}\n';
+}
+
+async function exportCourse() {
+  let d;
+  try {
+    const r = await fetch('/api/course');
+    d = await r.json();
+  } catch { d = null; }
+  if (!d || !Array.isArray(d.days)) { toast(d?.err || 'Error', 'err'); return; }
+  // Identical days → one template, named after the first day that uses it.
+  const templates = {}, byText = {}, days = [];
+  d.days.forEach((list, i) => {
+    const entries = (list || []).map(cleanEntry);
+    const key = JSON.stringify(entries);
+    if (!byText[key]) { byText[key] = 'day' + pad(i); templates[byText[key]] = entries; }
+    days.push(byText[key]);
+  });
+  const label = deviceInfo ? ((deviceInfo.num ? 'Gong #' + deviceInfo.num : deviceInfo.ssid) +
+                              (deviceInfo.name ? ' · ' + deviceInfo.name : '')) : 'Gong';
+  const text = courseText({ name: label + ', ' + new Date().toISOString().slice(0, 10), templates, days });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  a.download = 'gong-course-' + (deviceInfo?.host || 'gong') + '.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// Throws an Error with a message for the operator; same rules as the device.
+function parseCourse(text) {
+  let c;
+  try { c = JSON.parse(text); } catch (e) { throw new Error('Файл не читается как JSON: ' + e.message); }
+  if (!c || typeof c !== 'object' || Array.isArray(c)) throw new Error('Ожидается объект с полями templates и days');
+  if (c.format !== 'gong-course') throw new Error('Это не файл курса (нет "format": "gong-course")');
+  if (c.version !== 1) throw new Error('Неизвестная версия формата: ' + c.version);
+  const templates = c.templates || {};
+  if (typeof templates !== 'object' || Array.isArray(templates)) throw new Error('templates должен быть объектом');
+  if (!Array.isArray(c.days)) throw new Error('days должен быть списком');
+  if (c.days.length !== dayCount)
+    throw new Error('В файле ' + c.days.length + ' дн., а на устройстве ' + dayCount);
+  const days = [], names = [];
+  c.days.forEach((ref, i) => {
+    const where = 'День ' + pad(i);
+    let list;
+    if (typeof ref === 'string') {
+      list = templates[ref];
+      if (!Array.isArray(list)) throw new Error(where + ': нет шаблона «' + ref + '»');
+      names.push(ref);
+    } else if (Array.isArray(ref)) {
+      list = ref;
+      names.push('—');
+    } else throw new Error(where + ': ожидается имя шаблона или список гонгов');
+    days.push(checkDay(list, where + (typeof ref === 'string' ? ' (шаблон «' + ref + '»)' : '')));
+  });
+  return { name: typeof c.name === 'string' ? c.name : '', days, names };
+}
+
+function checkDay(list, where) {
+  if (list.length > 32) throw new Error(where + ': больше 32 гонгов');
+  const seen = new Set();
+  return list.map((e, k) => {
+    const at = where + ', запись ' + (k + 1) + ': ';
+    if (!e || typeof e !== 'object') throw new Error(at + 'ожидается объект');
+    const int = v => Number.isInteger(v);
+    if (!int(e.hour) || !int(e.min) || e.hour < 0 || e.hour > 23 || e.min < 0 || e.min > 59)
+      throw new Error(at + 'нужны hour 0–23 и min 0–59');
+    const t = pad(e.hour) + ':' + pad(e.min);
+    if (seen.has(t)) throw new Error(at + t + ' повторяется');
+    seen.add(t);
+    const track = e.track ?? 1;
+    if (!int(track) || track < 1 || track > 99) throw new Error(at + 'track 1–99');
+    if (availableTracks.length && !availableTracks.includes(track))
+      throw new Error(at + 'трека ' + track + ' (/' + String(track).padStart(4, '0') + '.mp3) нет на устройстве');
+    for (const [k, lo, hi] of [['loop', 1, 7], ['vol', 0, 30]])
+      if (e[k] !== undefined && (!int(e[k]) || e[k] < lo || e[k] > hi)) throw new Error(at + k + ' ' + lo + '–' + hi);
+    if (e.en !== undefined && typeof e.en !== 'boolean') throw new Error(at + 'en — true или false');
+    if (e.desc !== undefined && typeof e.desc !== 'string') throw new Error(at + 'desc — строка');
+    return cleanEntry(e);
+  });
+}
+
+function pickCourse(input) {
+  const file = input.files[0];
+  input.value = '';   // the same file can be picked again after an edit
+  if (!file) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    try { pendingCourse = parseCourse(rd.result); }
+    catch (e) { pendingCourse = null; alert(e.message); cancelCourse(); return; }
+    renderCoursePreview(file.name);
+  };
+  rd.readAsText(file);
+}
+
+function renderCoursePreview(fileName) {
+  const c = pendingCourse;
+  document.getElementById('courseName').textContent = (c.name || fileName) + ' — проверка пройдена';
+  document.getElementById('courseBody').innerHTML = c.days.map((list, i) => {
+    const on = list.filter(e => e.en !== false)
+      .map(e => pad(e.hour) + ':' + pad(e.min)).sort();
+    const span = on.length ? on[0] + '–' + on[on.length - 1] : '—';
+    const act = i === activeDayNum ? ' <span class="tag tag-on">активный</span>' : '';
+    return `<tr><td>${pad(i)}${act}</td><td>${esc(c.names[i])}</td><td>${on.length}` +
+           (on.length !== list.length ? ` <span style="color:var(--muted)">(+${list.length - on.length} выкл.)</span>` : '') +
+           `</td><td>${span}</td></tr>`;
+  }).join('');
+  document.getElementById('courseProgress').textContent = '';
+  document.getElementById('courseApplyBtn').disabled = false;
+  document.getElementById('coursePreview').style.display = '';
+}
+
+function cancelCourse() {
+  pendingCourse = null;
+  document.getElementById('coursePreview').style.display = 'none';
+}
+
+async function applyCourse() {
+  const c = pendingCourse;
+  if (!c) return;
+  if (!confirm('Заменить расписание всех ' + c.days.length + ' дней?\n' +
+               'Текущий день курса (' + pad(activeDayNum) + ') не меняется, но его гонги сразу станут как в файле.')) return;
+  const btn = document.getElementById('courseApplyBtn');
+  const prog = document.getElementById('courseProgress');
+  btn.disabled = true;
+  for (let i = 0; i < c.days.length; i++) {
+    prog.textContent = 'День ' + (i + 1) + '/' + c.days.length + '…';
+    const r = await postJSON('/api/course/day', { day: i, entries: c.days[i] }, 'PUT');
+    if (!r || !r.ok) {
+      prog.textContent = '';
+      btn.disabled = false;
+      toast((r?.err || 'Нет связи') + ' — курс не изменён', 'err');
+      return;
+    }
+  }
+  prog.textContent = 'Применяю…';
+  const r = await postJSON('/api/course/commit', {});
+  btn.disabled = false;
+  if (!r || !r.ok) { prog.textContent = ''; toast(r?.err || 'Error', 'err'); return; }
+  cancelCourse();
+  toast('Курс загружен', 'ok');
+  await refreshAll();
+  await updateSchedView();   // a previewed non-active day is re-read too
+}
+
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
 async function postJSON(url, body, method = 'POST') {
   try {
     const r = await fetch(url, {
@@ -1023,7 +1233,7 @@ async function postJSON(url, body, method = 'POST') {
 // ─────────────────────────────────────────────
 // Collapsible cards
 // ─────────────────────────────────────────────
-const CARD_IDS = ['sectionSchedule','sectionControl','sectionWifi','sectionClock','sectionDevice','sectionSecurity'];
+const CARD_IDS = ['sectionSchedule','sectionCourse','sectionControl','sectionWifi','sectionClock','sectionDevice','sectionSecurity'];
 
 function initCards() {
   CARD_IDS.forEach(id => {

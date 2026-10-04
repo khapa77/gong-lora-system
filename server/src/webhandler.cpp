@@ -303,9 +303,9 @@ static void truncUtf8(String& s, size_t maxBytes) {
 
 // Parse the request body; the pool is sized to the body so a long field is
 // "too large", not a silent NoMemory.
-static bool parseBody(DynamicJsonDocument& doc) {
+static bool parseBody(DynamicJsonDocument& doc, size_t maxLen = 2048) {
     const String& body = server.arg("plain");
-    if (body.length() > 2048) { sendErr("request too large"); return false; }
+    if (body.length() > maxLen) { sendErr("request too large"); return false; }
     if (deserializeJson(doc, body)) { sendErr("bad json"); return false; }
     return true;
 }
@@ -538,6 +538,46 @@ static void handleDayEntryDELETE() {
 }
 
 // -------------------------------------------------------
+// /api/course — whole-course export/import (Course card). The browser
+// expands the file's templates and PUTs one day at a time into staging;
+// /api/course/commit swaps them all in at once (see sched_stageDay).
+// -------------------------------------------------------
+static void handleCourseGET() {
+    String s = sched_courseJSON();
+    if (s.length() == 0) { sendErr("out of memory"); return; }
+    // ~23 KB: moved, not copied by reply().
+    respCode = 200;
+    respType = "application/json";
+    respBody = std::move(s);
+}
+
+static void handleCourseDayPUT() {
+    // 32 entries with 96-byte descriptions are ~5 KB of JSON.
+    const size_t maxLen = 6144;
+    const size_t len = server.arg("plain").length();
+    if (len > maxLen) { sendErr("request too large"); return; }
+    DynamicJsonDocument doc(2048 + 2 * len);
+    if (!parseBody(doc, maxLen)) return;
+    if (!doc["day"].is<int>()) { sendErr("day is required"); return; }
+    int day = doc["day"];
+    if (day < 0 || day >= DAY_COUNT) { sendErr("invalid day"); return; }
+    String err;
+    if (!sched_stageDay((uint8_t)day, doc["entries"].as<JsonArrayConst>(), err)) {
+        char pre[16];
+        snprintf(pre, sizeof(pre), "day %02d: ", day);
+        sendErr((pre + err).c_str());
+        return;
+    }
+    sendOK();
+}
+
+static void handleCourseCommit() {
+    String err;
+    if (sched_commitCourse(err)) sendOK();
+    else sendErr(err.c_str());
+}
+
+// -------------------------------------------------------
 // /api/play  /api/stop — manual control.
 // -------------------------------------------------------
 static void handlePlay() {
@@ -671,6 +711,9 @@ void web_setup() {
     route("/api/stop",          HTTP_POST,   handleStop,           R_WRITE);
 
 
+    route("/api/course",        HTTP_GET,    handleCourseGET,      R_AUTH);
+    route("/api/course/day",    HTTP_PUT,    handleCourseDayPUT,   R_WRITE);
+    route("/api/course/commit", HTTP_POST,   handleCourseCommit,   R_WRITE);
     route("/api/device",        HTTP_GET,    handleDeviceGET,      R_AUTH);
     route("/api/device",        HTTP_POST,   handleDevicePOST,     R_WRITE);
     route("/api/wifi",          HTTP_GET,    handleWifiGET,        R_AUTH);
