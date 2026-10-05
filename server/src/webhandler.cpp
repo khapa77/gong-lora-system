@@ -14,19 +14,21 @@
 #include "mbedtls/pkcs5.h"
 #include "mbedtls/base64.h"
 #include <esp_system.h>
+#include <lwip/sockets.h>
 
 static WebServer server(80);
 
-// The UI is compiled INTO the firmware (platformio.ini: board_build.embed_txtfiles).
+// The UI is compiled INTO the firmware (platformio.ini: board_build.embed_files).
 // It used to live on LittleFS, so every UI change needed `uploadfs` — which
 // rewrites the whole partition and wiped settings, schedule edits and course
-// progress with it. embed_txtfiles appends a NUL, hence the -1.
-extern const uint8_t index_html_start[] asm("_binary_web_index_html_start");
-extern const uint8_t index_html_end[]   asm("_binary_web_index_html_end");
-extern const uint8_t info_html_start[]  asm("_binary_web_info_html_start");
-extern const uint8_t info_html_end[]    asm("_binary_web_info_html_end");
-extern const uint8_t guide_html_start[] asm("_binary_web_guide_html_start");
-extern const uint8_t guide_html_end[]   asm("_binary_web_guide_html_end");
+// progress with it. The pages are gzip-compressed at build time
+// (scripts/gzip_web.py) and sent as-is with Content-Encoding: gzip.
+extern const uint8_t index_html_start[] asm("_binary_web_gz_index_html_gz_start");
+extern const uint8_t index_html_end[]   asm("_binary_web_gz_index_html_gz_end");
+extern const uint8_t info_html_start[]  asm("_binary_web_gz_info_html_gz_start");
+extern const uint8_t info_html_end[]    asm("_binary_web_gz_info_html_gz_end");
+extern const uint8_t guide_html_start[] asm("_binary_web_gz_guide_html_gz_start");
+extern const uint8_t guide_html_end[]   asm("_binary_web_gz_guide_html_gz_end");
 
 // -------------------------------------------------------
 // Response plumbing. Handlers run under sys_lock() (they touch the schedule,
@@ -261,29 +263,37 @@ static bool hostAllowed() {
 
 enum : uint8_t { R_OPEN = 0, R_AUTH = 1, R_CSRF = 2, R_WRITE = R_AUTH | R_CSRF };
 
-// send_P()/send() hand the whole body to one WiFiClient::write(). For the
-// ~60 KB page lwIP ran out of send buffers mid-way (AP+STA), WiFiClient took
-// that as fatal and closed the socket: the browser got ~20 KB of the page,
-// a script cut in half and empty day tables. Small pieces, waiting while the
-// socket is busy, give up only after 5 s without progress.
+// send_P()/send() hand the whole body to one WiFiClient::write(), and
+// WiFiClient closes the socket on any send() error except EAGAIN — including
+// ENOMEM, which lwIP returns when its send buffers are momentarily full
+// (typical in AP+STA). The browser then got part of the page: an uncompressed
+// page broke half-way, a gzip one rendered as garbage or not at all. So the
+// socket is written directly: EAGAIN and ENOMEM mean "wait and retry", give
+// up only after 5 s without progress.
 static void sendLarge(int code, const char* type, const uint8_t* p, size_t n) {
     server.setContentLength(n);
     server.send(code, type, "");          // headers only
-    WiFiClient c = server.client();
+    int fd = server.client().fd();
+    if (fd < 0) { logPrintf("[WEB] Send aborted — socket closed while sending headers\n"); return; }
     uint32_t progressAt = millis();
-    while (n && c.connected()) {
-        size_t w = c.write(p, n < 1024 ? n : 1024);
-        if (w) { p += w; n -= w; progressAt = millis(); }
-        else if (millis() - progressAt > 5000) break;
-        else delay(5);
+    while (n) {
+        int w = ::send(fd, p, n < 1024 ? n : 1024, MSG_DONTWAIT);
+        if (w > 0) { p += w; n -= w; progressAt = millis(); continue; }
+        int e = errno;
+        if ((w < 0 && e != EAGAIN && e != EWOULDBLOCK && e != ENOMEM) ||
+            millis() - progressAt > 5000) {
+            logPrintf("[WEB] Send aborted (errno %d), %u bytes left\n", w < 0 ? e : 0, (unsigned)n);
+            break;
+        }
+        delay(5);
     }
 }
 
 static void flushResponse() {
     if (respPage) {
         server.sendHeader("Cache-Control", "no-cache");
-        sendLarge(200, "text/html; charset=utf-8", respPage,
-                  (size_t)(respPageEnd - respPage) - 1);
+        server.sendHeader("Content-Encoding", "gzip");
+        sendLarge(200, "text/html; charset=utf-8", respPage, (size_t)(respPageEnd - respPage));
     } else if (respCode) {
         if (respBody.length() > 2048)     // /api/course is ~23 KB
             sendLarge(respCode, respType, (const uint8_t*)respBody.c_str(), respBody.length());
