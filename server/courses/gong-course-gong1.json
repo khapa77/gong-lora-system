@@ -1,7 +1,7 @@
 {
   "format": "gong-course",
   "version": 1,
-  "name": "13-дневный курс (как в server/data)",
+  "name": "Gong #1 · ManFirst, 2026-10-04",
   "templates": {
     "day00": [
       {"hour":7,"min":0,"track":1,"loop":1,"vol":30,"en":true,"desc":"Перерыв на завтрак"},

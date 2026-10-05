@@ -428,6 +428,7 @@ static String statusJSON() {
     doc["device_name"] = device_name();
     if (WiFi.status() == WL_CONNECTED) doc["sta_ip"] = WiFi.localIP().toString();
     doc["heap"]   = (int)ESP.getFreeHeap();
+    doc["heap_max"] = (int)ESP.getMaxAllocHeap();   // largest block: what a big allocation can actually get
     doc["uptime"] = (uint32_t)(millis() / 1000);
     doc["fw"]     = FW_VERSION;
 
@@ -678,8 +679,11 @@ static void handleLogs() {
 // refreshAll().
 // -------------------------------------------------------
 static void handleState() {
+    // OOM marker → null, not "[]": an empty array made the page show "no
+    // schedules" while the gongs still rang. The UI shows a banner and falls
+    // back to /api/day (the active day's file).
     String schedule = sched_toJSON();
-    if (schedule.length() == 0) schedule = "[]";   // overflow/OOM marker — never break /api/state
+    if (schedule.length() == 0) schedule = "null";
     String s = "{";
     s += "\"status\":";   s += statusJSON();
     s += ",\"schedule\":"; s += schedule;

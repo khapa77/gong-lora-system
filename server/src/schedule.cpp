@@ -15,7 +15,8 @@
 // EMPTY) and createNestedObject started returning null (entries silently
 // DROPPED on save → data loss). With desc capped at DESC_MAX_BYTES, 32
 // entries need ~7.5 KB worst case; 12 KB leaves real headroom. Overflow is
-// additionally checked at every save point below.
+// additionally checked at every save point below. Upper bound only — pools
+// are sized by the file (dayPoolSize) so they fit a fragmented heap.
 #define SCHED_JSON_CAPACITY 12288
 
 void (*onScheduleTrigger)(uint8_t track, uint8_t loop, uint8_t vol) = nullptr;
@@ -89,6 +90,16 @@ static int daysBetween(const String& from, const String& to) {
 
 static bool sched_parseFromPath(const char* path);
 static void sched_saveNow();
+
+// JSON pool for a day file of `fileSize` bytes, plus room for one more entry
+// (template add). Each entry is 9 pool slots (16 B on ESP32) plus its strings
+// — up to ~2.4x a file with empty descriptions; 3x + 1 KB covers it (checked
+// against data/*.conf and a 32-entry worst case). A fixed 12 KB block per
+// call used to fail on a fragmented heap — the midnight day switch included.
+static size_t dayPoolSize(size_t fileSize) {
+    size_t n = 1024 + 3 * fileSize;
+    return n < SCHED_JSON_CAPACITY ? n : SCHED_JSON_CAPACITY;
+}
 
 static void dayPath(int day, char (&path)[16]) {
     snprintf(path, sizeof(path), "/day%02d.conf", day);
@@ -385,40 +396,45 @@ bool sched_del(uint32_t id) {
 }
 
 // -------------------------------------------------------
-// Use heap for large JSON to avoid stack overflow on ESP32 (was 4KB on stack)
+// Serialized one entry at a time through a small pool. It used to build the
+// whole day in one 12 KB DynamicJsonDocument — on every 5 s UI poll. Once WiFi
+// and the audio task had fragmented the heap there was often no 12 KB block
+// left even with 60+ KB free: /api/state then sent "schedule":[] and the page
+// showed an empty table while the gongs still rang. The only big buffer now
+// is the output String itself (~3.5 KB for a 16-entry day).
 // -------------------------------------------------------
 String sched_toJSON() {
     // Out of memory used to return "[]" — a NON-empty string, so
     // sched_saveNow() happily wrote an empty schedule over gong.conf AND the
     // active day's file. Every caller treats String() as "error, don't persist".
-    DynamicJsonDocument *doc = new (std::nothrow) DynamicJsonDocument(SCHED_JSON_CAPACITY);
-    if (!doc || doc->capacity() == 0) {
-        delete doc;
+    String s;
+    if (!s.reserve(64 + count * 200)) {
         logPrintf("[SCHED] ERROR: out of memory in sched_toJSON\n");
         return String();
     }
-    JsonArray arr = doc->to<JsonArray>();
+    s = "[";
+    StaticJsonDocument<384> doc;   // 8 members + a desc of up to DESC_MAX_BYTES
     for (uint8_t i = 0; i < count; i++) {
-        JsonObject o = arr.createNestedObject();
-        o["id"]    = entries[i].id;
-        o["hour"]  = entries[i].hour;
-        o["min"]   = entries[i].minute;
-        o["track"] = entries[i].track;
-        o["loop"]  = entries[i].loop;
-        o["vol"]   = entries[i].vol;
-        o["en"]    = entries[i].enabled;
-        o["desc"]  = entries[i].description;
+        doc.clear();
+        doc["id"]    = entries[i].id;
+        doc["hour"]  = entries[i].hour;
+        doc["min"]   = entries[i].minute;
+        doc["track"] = entries[i].track;
+        doc["loop"]  = entries[i].loop;
+        doc["vol"]   = entries[i].vol;
+        doc["en"]    = entries[i].enabled;
+        doc["desc"]  = entries[i].description;
+        // An overflowed entry would be written without its fields — that is
+        // permanent data loss once saved; sched_save() refuses String().
+        if (doc.overflowed()) {
+            logPrintf("[SCHED] ERROR: JSON pool overflow in sched_toJSON (entry id=%u)\n",
+                      (unsigned)entries[i].id);
+            return String();
+        }
+        if (i) s += ',';
+        serializeJson(doc, s);
     }
-    // If the pool overflowed, entries were silently dropped — writing that
-    // result to disk would be permanent data loss. Log loudly; sched_save()
-    // below refuses to persist an overflowed snapshot.
-    if (doc->overflowed())
-        logPrintf("[SCHED] ERROR: JSON pool overflow in sched_toJSON — increase SCHED_JSON_CAPACITY\n");
-    bool overflowed = doc->overflowed();
-    String s;
-    serializeJson(*doc, s);
-    delete doc;
-    if (overflowed) return String();   // empty marker — callers treat as error
+    s += ']';
     return s;
 }
 
@@ -461,7 +477,7 @@ void sched_save() {
 static bool sched_parseFromPath(const char* path) {
     File f = LittleFS.open(path, "r");
     if (!f) return false;
-    DynamicJsonDocument *doc = new (std::nothrow) DynamicJsonDocument(SCHED_JSON_CAPACITY);
+    DynamicJsonDocument *doc = new (std::nothrow) DynamicJsonDocument(dayPoolSize(f.size()));
     if (!doc || doc->capacity() == 0) { delete doc; f.close(); return false; }
     if (deserializeJson(*doc, f)) {
         f.close(); delete doc; return false;
@@ -581,6 +597,16 @@ static bool dayTimeTaken(JsonArray arr, uint8_t h, uint8_t m, uint32_t excludeId
     return false;
 }
 
+// Pool for editing day N's template: sized by its file (see dayPoolSize).
+static size_t dayEditPool(uint8_t day) {
+    char path[16];
+    dayPath(day, path);
+    File f = LittleFS.open(path, "r");
+    size_t n = f ? f.size() : 0;
+    if (f) f.close();
+    return dayPoolSize(n);
+}
+
 static bool isActiveDay(uint8_t day) {
     return activeDay >= 0 && day == (uint8_t)activeDay;
 }
@@ -629,7 +655,7 @@ bool sched_addToDay(uint8_t day, uint8_t h, uint8_t m,
     if (loop > 7) loop = 7;
     if (vol > 30) vol = 30;
 
-    DynamicJsonDocument doc(SCHED_JSON_CAPACITY);
+    DynamicJsonDocument doc(dayEditPool(day));
     JsonArray arr;
     if (!loadDayArray(day, doc, arr)) return false;
     if ((int)arr.size() >= MAX_SCHEDULES) return false;
@@ -662,7 +688,7 @@ bool sched_editInDay(uint8_t day, uint32_t id, uint8_t h, uint8_t m,
     if (loop > 7) loop = 7;
     if (vol > 30) vol = 30;
 
-    DynamicJsonDocument doc(SCHED_JSON_CAPACITY);
+    DynamicJsonDocument doc(dayEditPool(day));
     JsonArray arr;
     if (!loadDayArray(day, doc, arr)) return false;
     if (dayTimeTaken(arr, h, m, id)) return false;
@@ -691,7 +717,7 @@ bool sched_editInDay(uint8_t day, uint32_t id, uint8_t h, uint8_t m,
 bool sched_delFromDay(uint8_t day, uint32_t id) {
     if (isActiveDay(day)) return sched_del(id);
 
-    DynamicJsonDocument doc(SCHED_JSON_CAPACITY);
+    DynamicJsonDocument doc(dayEditPool(day));
     JsonArray arr;
     if (!loadDayArray(day, doc, arr)) return false;
 

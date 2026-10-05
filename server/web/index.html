@@ -595,8 +595,13 @@ async function refreshAll() {
     if (!r.ok) { document.getElementById('wifiStat').innerHTML = '<span class="dot dot-red"></span>Server error ' + r.status; return; }
     const d = await r.json();
     applyAuth(d.auth);      // before applyStatus: the alert banner reads authOpen
+    schedFetchFailed = d.schedule === null;   // device ran out of memory building it — keep the last copy
     applyStatus(d.status);
-    applySchedule(d.schedule);
+    if (!schedFetchFailed) applySchedule(d.schedule);
+    else if (d.days && d.days.active >= 0) {
+      // Fallback: the active day's file — the device streams it without a big buffer.
+      try { applySchedule(await (await fetch('/api/day?n=' + d.days.active)).json()); } catch { /* keep the last copy */ }
+    }
     await applyDays(d.days);
     applyDevice(d.device);
     applyWifi(d.wifi);
@@ -613,8 +618,10 @@ async function refreshAll() {
 // Anything that means the gong will NOT ring (or the device is exposed) is
 // shown in a red banner at the top.
 let authOpen = false;
+let schedFetchFailed = false;
 function applyAlerts(d) {
   const a = [];
+  if (schedFetchFailed) a.push('⚠️ Устройству не хватило памяти, чтобы отдать расписание — показан файл активного дня. Гонги звонят как обычно.');
   if (d.fs_ok === false) a.push('❌ Файловая система не смонтирована — нет звука и расписания. Залейте данные: <code>pio run -t uploadfs</code>.');
   if (d.sched_error) a.push('❌ Файл активного дня не читается — расписание пустое. Активируйте день заново.');
   if (!d.time) a.push('❌ Время не установлено — гонги не звучат. Подключите WiFi с интернетом, проверьте батарейку DS3231 или установите время вручную.');
@@ -645,7 +652,8 @@ function applyStatus(d) {
       ? '<span class="dot dot-green"></span>WiFi: ' + d.sta_ip + ' · AP: ' + (d.ip||'?')
       : '<span class="dot dot-yellow"></span>AP: ' + (d.ssid||'?') + ' (' + (d.ip||'?') + ')';
     const kb = Math.round((d.heap || 0) / 1024);
-    document.getElementById('heapStat').textContent = kb ? 'Heap: ' + kb + 'KB' : '';
+    const maxKb = Math.round((d.heap_max || 0) / 1024);
+    document.getElementById('heapStat').textContent = kb ? 'Heap: ' + kb + 'KB' + (maxKb ? ' (max ' + maxKb + 'KB)' : '') : '';
     if (d.time) { espTime = d.time; espTimestamp = Date.now(); }
     if (d.date) {
       const dateInput = document.getElementById('tDate');
