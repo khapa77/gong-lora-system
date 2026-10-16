@@ -14,6 +14,7 @@
 #include "mbedtls/pkcs5.h"
 #include "mbedtls/base64.h"
 #include <esp_system.h>
+#include <lwip/sockets.h>
 
 static WebServer server(80);
 
@@ -261,13 +262,41 @@ static bool hostAllowed() {
 
 enum : uint8_t { R_OPEN = 0, R_AUTH = 1, R_CSRF = 2, R_WRITE = R_AUTH | R_CSRF };
 
+// send()/send_P() hand the whole body to one WiFiClient::write(), and
+// WiFiClient closes the socket on any send() error except EAGAIN — including
+// ENOMEM, which lwIP returns when its send buffers are momentarily full
+// (typical in AP+STA). The browser then got a cut-off reply. So big replies
+// (/api/course, ~20 KB) are written to the socket directly: EAGAIN and
+// ENOMEM mean "wait and retry", give up only after 5 s without progress.
+static void sendLarge(int code, const char* type, const uint8_t* p, size_t n) {
+    server.setContentLength(n);
+    server.send(code, type, "");          // headers only
+    int fd = server.client().fd();
+    if (fd < 0) { logPrintf("[WEB] Send aborted — socket closed while sending headers\n"); return; }
+    uint32_t progressAt = millis();
+    while (n) {
+        int w = ::send(fd, p, n < 1024 ? n : 1024, MSG_DONTWAIT);
+        if (w > 0) { p += w; n -= w; progressAt = millis(); continue; }
+        int e = errno;
+        if ((w < 0 && e != EAGAIN && e != EWOULDBLOCK && e != ENOMEM) ||
+            millis() - progressAt > 5000) {
+            logPrintf("[WEB] Send aborted (errno %d), %u bytes left\n", w < 0 ? e : 0, (unsigned)n);
+            break;
+        }
+        delay(5);
+    }
+}
+
 static void flushResponse() {
     if (respPage) {
         server.sendHeader("Cache-Control", "no-cache");
         server.send_P(200, "text/html; charset=utf-8", (PGM_P)respPage,
                       (size_t)(respPageEnd - respPage) - 1);
     } else if (respCode) {
-        server.send(respCode, respType, respBody);
+        if (respBody.length() > 2048)     // /api/course is ~20 KB
+            sendLarge(respCode, respType, (const uint8_t*)respBody.c_str(), respBody.length());
+        else
+            server.send(respCode, respType, respBody);
     }
     respBody = String();
 }
@@ -303,10 +332,13 @@ static void truncUtf8(String& s, size_t maxBytes) {
 
 // Parse the request body; the pool is sized to the body so a long field is
 // "too large", not a silent NoMemory.
-static bool parseBody(DynamicJsonDocument& doc) {
+static bool parseBody(DynamicJsonDocument& doc, size_t maxLen = 2048) {
     const String& body = server.arg("plain");
-    if (body.length() > 2048) { sendErr("request too large"); return false; }
-    if (deserializeJson(doc, body)) { sendErr("bad json"); return false; }
+    if (body.length() > maxLen) { sendErr("request too large"); return false; }
+    if (doc.capacity() == 0) { sendErr("out of memory"); return false; }
+    DeserializationError e = deserializeJson(doc, body);
+    if (e == DeserializationError::NoMemory) { sendErr("request too large"); return false; }
+    if (e) { sendErr("bad json"); return false; }
     return true;
 }
 
@@ -537,6 +569,49 @@ static void handleDayEntryDELETE() {
 }
 
 // -------------------------------------------------------
+// /api/course — whole-course export/import (Course card). The browser
+// expands the file's templates and PUTs one day at a time into staging;
+// /api/course/commit swaps them all in at once (see sched_stageDay).
+// -------------------------------------------------------
+static void handleCourseGET() {
+    String s = sched_courseJSON();
+    if (s.length() == 0) { sendErr("out of memory"); return; }
+    // ~20 KB: moved, not copied by reply().
+    respCode = 200;
+    respType = "application/json";
+    respBody = std::move(s);
+}
+
+static void handleCourseDayPUT() {
+    // 32 entries with 96-byte descriptions are ~5 KB of JSON.
+    const size_t maxLen = 6144;
+    const size_t len = server.arg("plain").length();
+    if (len > maxLen) { sendErr("request too large"); return; }
+    // Exact upper bound instead of 2x the body: {day, entries} + 32 entries of
+    // up to 8 members; copied strings are never longer than the body itself.
+    DynamicJsonDocument doc(JSON_OBJECT_SIZE(2) + JSON_ARRAY_SIZE(MAX_SCHEDULES) +
+                            MAX_SCHEDULES * JSON_OBJECT_SIZE(8) + len);
+    if (!parseBody(doc, maxLen)) return;
+    if (!doc["day"].is<int>()) { sendErr("day is required"); return; }
+    int day = doc["day"];
+    if (day < 0 || day >= DAY_COUNT) { sendErr("invalid day"); return; }
+    String err;
+    if (!sched_stageDay((uint8_t)day, doc["entries"].as<JsonArrayConst>(), err)) {
+        char pre[16];
+        snprintf(pre, sizeof(pre), "day %02d: ", day);
+        sendErr((pre + err).c_str());
+        return;
+    }
+    sendOK();
+}
+
+static void handleCourseCommit() {
+    String err;
+    if (sched_commitCourse(err)) sendOK();
+    else sendErr(err.c_str());
+}
+
+// -------------------------------------------------------
 // /api/play  /api/stop — manual control. Playback goes through the relay
 // module so the external amplifier is powered before the first sample.
 // -------------------------------------------------------
@@ -674,6 +749,9 @@ void web_setup() {
 
     route("/api/play",          HTTP_POST,   handlePlay,           R_WRITE);
     route("/api/stop",          HTTP_POST,   handleStop,           R_WRITE);
+    route("/api/course",        HTTP_GET,    handleCourseGET,      R_AUTH);
+    route("/api/course/day",    HTTP_PUT,    handleCourseDayPUT,   R_WRITE);
+    route("/api/course/commit", HTTP_POST,   handleCourseCommit,   R_WRITE);
 
     route("/api/relay",         HTTP_GET,    handleRelayGET,       R_AUTH);
     route("/api/relay",         HTTP_POST,   handleRelayPOST,      R_WRITE);
