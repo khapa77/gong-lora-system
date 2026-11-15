@@ -338,6 +338,14 @@ void sched_check() {
     // /activeday.conf), so a gong at 00:00 already uses the new day's schedule.
     checkDateAdvance();
 
+    // The RAM guard is lost on reboot; the persisted timestamp still protects
+    // that absolute minute. Only use it before this boot's first firing:
+    // catch-up records playback time, not necessarily the scheduled minute.
+    if (lastFiredKey == -1 && lastFireTs != 0) {
+        const time_t now = mktime(&ti);
+        if (now / 60 == (time_t)lastFireTs / 60) return;
+    }
+
     // Guard: prevent re-triggering within the same minute.
     // Use 65 s window (5 s margin) to handle NTP clock jitter.
     if (lastFiredKey == key && millis() - lastFiredMillis < 65000UL) return;
