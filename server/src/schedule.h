@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include "config.h"
 #include <ArduinoJson.h>
+#include "active_day_state.h"
 
 struct ScheduleEntry {
     uint32_t id;
@@ -25,7 +26,10 @@ bool   sched_del(uint32_t id);
 
 String sched_toJSON();
 void   sched_save();
-void   sched_load();
+// Explicit reload of the accepted day's current file, never /gong.conf.
+// File BLOCKED is cleared only after successful preparation; publication
+// then stays paused until Resume. UNKNOWN/INVALID and pending edits refuse it.
+bool   sched_load();
 
 // Multi-day support. The active day lives in NVS; its /dayNN.conf is the
 // live schedule's only on-disk copy.
@@ -33,7 +37,13 @@ String sched_dayJSON(uint8_t day);      // read /dayNN.conf → JSON (no memory 
 bool   sched_activateDay(uint8_t day);  // load /dayNN.conf as active schedule
 int    sched_getActiveDay();            // -1 if not set
 bool   sched_courseEnded();             // true if active day is the last day (DAY_COUNT-1)
-bool   sched_hasError();                // active day's file failed to load at boot — no gongs
+bool   sched_hasError();                // file/preparation or persistence failure
+active_day::Status sched_persistenceStatus();
+bool   sched_isRunning();
+// Internal only: no HTTP/UI/serial caller in A02.1. Recovery preserves the
+// exact expected record and leaves execution paused; Resume performs no I/O.
+bool   sched_recover(uint64_t expected, bool discardPending = false);
+bool   sched_resume();
 
 // Template editing — modifies /dayNN.conf directly on disk WITHOUT activating
 // it or touching the live in-memory schedule. If `day` happens to already be
@@ -47,9 +57,11 @@ bool   sched_delFromDay(uint8_t day, uint32_t id);
 
 // Whole-course import/export (web "Course" card). Every day is first staged
 // into /dayNN.new; sched_commitCourse() then renames all of them over the
-// day files at once — an upload cut off halfway leaves the old course intact.
+// day files sequentially. An interrupted staging upload leaves the old course;
+// an interrupted commit can leave a mixed course (A03 is not implemented).
 // Staging Day 0 starts a new upload and drops leftovers of an earlier one.
-// The active day and its date are kept; only the entries change.
+// The active day and its date are kept; only the entries change. A failed
+// active-file reload returns false and latches file BLOCKED, without invalidating NVS.
 bool   sched_stageDay(uint8_t day, JsonArrayConst entries, String& err);
 bool   sched_commitCourse(String& err);
 String sched_courseJSON();   // {"days":[[...], ...]}; String() on out-of-memory

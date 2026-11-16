@@ -1,9 +1,13 @@
 #include "schedule.h"
 #include "config.h"
 #include "mp3handler.h"
+#include "active_day_state.h"
+#include "sysstate.h"
 #include <LittleFS.h>
 #include <time.h>
 #include <new>
+#include <memory>
+#include <utility>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 
@@ -30,16 +34,27 @@ static int           lastFiredKey    = -1;
 static unsigned long lastFiredMillis = 0;
 static unsigned long lastTimeLog     = 0;
 
-// Active course day + the calendar date it was stamped with. Lives in NVS
-// (was /activeday.conf): NVS writes are atomic, and uploadfs — which rewrites
-// the whole LittleFS partition — no longer resets the course to Day 00.
-// Cached in RAM, so the per-second date check costs no flash reads.
+// The pair is encoded in one NVS record; legacy fields are read-only inputs.
 static int    activeDay  = -1;
 static String activeDate = "";
+static active_day::Store activeStore(DAY_COUNT);
+static bool executionRunning = false;
+static uint64_t publishedActive = 0;
+enum class ScheduleFileState { Unprepared, Ready, Blocked };
+static ScheduleFileState scheduleFileState = ScheduleFileState::Unprepared;
+// Retain a validated boot input if its file cannot yet be prepared.
+static active_day::Record loadedRecord;
+static active_day::Source loadedSource = active_day::Source::Error;
 
-// Active day's file missing/unreadable at boot — schedule is empty and no
-// gong will ring. Surfaced in /api/status (red banner in the UI).
-static bool   schedError = false;
+static bool schedulerReady() {
+    return activeStore.status() == active_day::Status::Ready && executionRunning &&
+        scheduleFileState == ScheduleFileState::Ready;
+}
+
+static void blockScheduleFile() {
+    scheduleFileState = ScheduleFileState::Blocked;
+    executionRunning = false;
+}
 
 // M-16: don't write to SPIFFS while a track is playing — a write landing
 // exactly then competes with the audio task for the same flash and causes
@@ -89,7 +104,7 @@ static int daysBetween(const String& from, const String& to) {
 }
 
 static bool sched_parseFromPath(const char* path);
-static void sched_saveNow();
+static bool sched_saveNow();
 
 // JSON pool for a day file of `fileSize` bytes, plus room for one more entry
 // (template add). Each entry is 9 pool slots (16 B on ESP32) plus its strings
@@ -118,35 +133,77 @@ static void dropStaged() {
     }
 }
 
-// Set active day + date stamp (does not touch entries).
-static void setActiveDay(int day, const String& date) {
-    activeDay  = day;
-    activeDate = date;
-    firePrefs.putInt("aday", day);
-    firePrefs.putString("adate", date);
+struct PreparedDay {
+    ScheduleEntry items[MAX_SCHEDULES]{};
+    uint8_t size = 0;
+    uint32_t next = 1;
+    active_day::Record record;
+    uint64_t encoded = 0;
+    String date;
+};
+
+static bool prepareRecord(PreparedDay& candidate, const active_day::Record& record) {
+    if (!active_day::encode(record, DAY_COUNT, candidate.encoded)) return false;
+    char text[11];
+    active_day::formatDate(record.date, text);
+    candidate.date = text;
+    if (candidate.date.length() != strlen(text)) return false;
+    candidate.record = record;
+    return true;
+}
+
+static bool prepareFromPath(const char* path, PreparedDay& candidate);
+
+// Fully allocated candidate; ESP32 Arduino 2.0.16 String moves never allocate.
+static void publishPrepared(PreparedDay& candidate, bool running, bool pending) noexcept {
+    sys_lock();
+    for (unsigned i = 0; i < MAX_SCHEDULES; ++i) entries[i] = std::move(candidate.items[i]);
+    count = candidate.size;
+    nextId = candidate.next;
+    activeDay = candidate.record.day;
+    publishedActive = candidate.encoded;
+    activeDate = std::move(candidate.date);
+    schedPendingSave = pending;
+    scheduleFileState = ScheduleFileState::Ready;
+    activeStore.published();
+    executionRunning = running;
+    sys_unlock();
+}
+
+// Date-only transactions retain live edits and their pending-save ownership.
+static bool setActiveDay(int day, const String& date) {
+    if (!schedulerReady() || day != activeDay) return false;
+    active_day::Record record;
+    record.day = uint8_t(day);
+    if (!active_day::parseDate(date.c_str(), record.date)) return false;
+    std::unique_ptr<PreparedDay> candidate(new (std::nothrow) PreparedDay);
+    if (!candidate || !prepareRecord(*candidate, record)) return false;
+    candidate->size = count;
+    candidate->next = nextId;
+    for (unsigned i = 0; i < count; ++i) {
+        candidate->items[i] = entries[i];
+        if (candidate->items[i].description.length() != entries[i].description.length()) return false;
+    }
+    if (!activeStore.persist(record)) return false;
+    publishPrepared(*candidate, true, schedPendingSave);
+    return true;
 }
 
 static void loadActiveDay() {
-    if (firePrefs.isKey("aday")) {
-        activeDay  = firePrefs.getInt("aday", -1);
-        activeDate = firePrefs.getString("adate", "");
-        if (activeDay >= DAY_COUNT) activeDay = -1;
+    active_day::Record record;
+    const active_day::Source source = activeStore.load(sys_fsOk(), record);
+    if (source == active_day::Source::Empty || source == active_day::Source::Error) return;
+    loadedRecord = record;
+    loadedSource = source;
+    std::unique_ptr<PreparedDay> candidate(new (std::nothrow) PreparedDay);
+    char path[16];
+    dayPath(record.day, path);
+    if (!sys_fsOk() || !candidate || !prepareRecord(*candidate, record) || !prepareFromPath(path, *candidate)) {
+        blockScheduleFile();  // The validated NVS classification is unchanged.
         return;
     }
-    // One-time import of the pre-6.2 /activeday.conf.
-    File f = LittleFS.open("/activeday.conf", "r");
-    if (!f) return;
-    DynamicJsonDocument doc(96);
-    bool ok = !deserializeJson(doc, f);
-    f.close();
-    int day = ok ? (int)(doc["day"] | -1) : -1;
-    if (day < 0 || day >= DAY_COUNT) {
-        logPrintf("[SCHED] /activeday.conf unreadable — not imported\n");
-        return;
-    }
-    setActiveDay(day, String((const char*)(doc["date"] | "")));
-    LittleFS.remove("/activeday.conf");
-    logPrintf("[SCHED] Imported active day %02d from /activeday.conf into NVS\n", day);
+    if (source == active_day::Source::Legacy && !activeStore.persist(record)) return;
+    publishPrepared(*candidate, true, false);
 }
 
 // -------------------------------------------------------
@@ -156,7 +213,7 @@ static void loadActiveDay() {
 // only became available after midnight had already passed.
 // -------------------------------------------------------
 static void checkDateAdvance() {
-    if (activeDay < 0) return;
+    if (!schedulerReady() || activeDay < 0) return;
     String today = currentDateStr();
     if (!today.length()) return;
     if (!activeDate.length()) {
@@ -236,6 +293,7 @@ static void doFire(const ScheduleEntry& e, const char* why) {
 // after a 04:20 gong lost the 06:30 one. `fireT > lastFireTs` alone already
 // rules out a double fire, and CATCHUP_WINDOW_S bounds how stale a replay can be.
 static void sched_catchup() {
+    if (!schedulerReady()) return;
     if (!timeIsSet() || lastFireTs == 0) return;
     time_t now = time(nullptr);
     if ((uint32_t)now <= lastFireTs) return;   // clock behind the watermark — don't guess
@@ -258,31 +316,15 @@ static void sched_catchup() {
 
 // -------------------------------------------------------
 void sched_setup() {
-    firePrefs.begin("gong", false);
+    if (!firePrefs.begin("gong", false)) { activeStore.unknown(); return; }
     lastFireTs = firePrefs.getUInt("lastfire", 0);
 
-    dropStaged();   // a course upload interrupted by a reboot is never committed
     loadActiveDay();
-
-    if (activeDay >= 0) {
-        // The active day's file is the single source of truth (/gong.conf used
-        // to be a second copy, and a power cut between the two writes of a day
-        // switch could make the next edit overwrite the wrong day's template).
-        char path[16];
-        dayPath(activeDay, path);
-        if (!sched_parseFromPath(path)) {
-            schedError = true;
-            logPrintf("[SCHED] ERROR: %s missing or unreadable — schedule EMPTY, no gongs "
-                      "until a day is activated in the web UI\n", path);
-        }
-    } else {
-        // First-ever boot: auto-activate Day 00 (seeded from /gong.conf if
-        // day00.conf doesn't exist yet) so the course machinery and its
-        // midnight advance are live without anyone opening the web UI.
-        sched_load();
+    if (activeStore.status() == active_day::Status::Empty) {
         logPrintf("[SCHED] No active day set — auto-activating Day 00\n");
         sched_activateDay(0);
     }
+    if (schedulerReady()) dropStaged();
     logPrintf("[SCHED] Day %02d, %d entries.\n", activeDay, count);
 
     // Date first: after a reboot across midnight, catch-up must look at
@@ -297,10 +339,10 @@ void sched_setup() {
 // in the web UI — see timesync.h.
 // -------------------------------------------------------
 void sched_check() {
+    if (!schedulerReady()) return;
     // M-16: flush a save that was deferred while a gong was playing.
     if (schedPendingSave && !mp3_isPlaying()) {
-        schedPendingSave = false;
-        sched_save();
+        sched_saveNow();  // failure retains pending; the consistent live day can still ring
     }
 
     struct tm ti;
@@ -337,6 +379,7 @@ void sched_check() {
     // Every second: a RAM-only compare now (was a 30 s poll reading
     // /activeday.conf), so a gong at 00:00 already uses the new day's schedule.
     checkDateAdvance();
+    if (!schedulerReady()) return;
 
     // The RAM guard is lost on reboot; the persisted timestamp still protects
     // that absolute minute. Only use it before this boot's first firing:
@@ -362,6 +405,7 @@ void sched_check() {
 
 // -------------------------------------------------------
 bool sched_add(uint8_t h, uint8_t m, const String& desc, uint8_t track, uint8_t loop, uint8_t vol) {
+    if (!schedulerReady()) return false;
     if (count >= MAX_SCHEDULES || h > 23 || m > 59) return false;
     if (track < 1 || track > 99) return false;
     if (sched_timeTaken(h, m, 0)) return false;   // slot already used this day
@@ -375,6 +419,7 @@ bool sched_add(uint8_t h, uint8_t m, const String& desc, uint8_t track, uint8_t 
 
 bool sched_edit(uint32_t id, uint8_t h, uint8_t m,
                 const String& desc, uint8_t track, uint8_t loop, bool enabled, uint8_t vol) {
+    if (!schedulerReady()) return false;
     if (h > 23 || m > 59) return false;
     if (track < 1 || track > 99) return false;
     if (sched_timeTaken(h, m, id)) return false;  // slot already used by another entry
@@ -392,6 +437,7 @@ bool sched_edit(uint32_t id, uint8_t h, uint8_t m,
 }
 
 bool sched_del(uint32_t id) {
+    if (!schedulerReady()) return false;
     for (uint8_t i = 0; i < count; i++) {
         if (entries[i].id == id) {
             for (uint8_t j = i; j < count - 1; j++) entries[j] = entries[j + 1];
@@ -448,28 +494,33 @@ String sched_toJSON() {
 
 // M-16: the actual disk write, always synchronous. sched_save() (below) is
 // the public entry point and defers to this when it's safe to write.
-static void sched_saveNow() {
+static bool sched_saveNow() {
+    if (!schedulerReady()) return false;
     String json = sched_toJSON();
     if (json.length() == 0) {   // overflow marker from sched_toJSON
         logPrintf("[SCHED] Save ABORTED — JSON overflow, on-disk data left untouched\n");
-        return;
+        return false;
     }
 
-    // The active day's file is the only copy (/gong.conf is just the
-    // first-boot seed now). LittleFS commits a file atomically on close().
+    // /gong.conf is only a first-boot seed. A full byte count below is not
+    // an atomic replacement or a close/flush durability acknowledgement (A04).
     char path[16];
     if (activeDay >= 0) dayPath(activeDay, path);
     else                snprintf(path, sizeof(path), "%s", SCHEDULE_FILE);
     File f = LittleFS.open(path, "w");
-    if (!f) { logPrintf("[SCHED] Save failed (%s)\n", path); return; }
-    f.print(json);
+    if (!f) { logPrintf("[SCHED] Save failed (%s)\n", path); return false; }
+    const size_t written = f.print(json);
     f.close();
-    schedError = false;   // an explicit edit replaced the unreadable file
+    if (written != json.length()) return false;
+    schedPendingSave = false;
 
     logPrintf("[SCHED] Saved %d entries to %s\n", count, path);
+    return true;
 }
 
 void sched_save() {
+    if (!schedulerReady()) return;
+    schedPendingSave = true;
     if (mp3_isPlaying()) {
         // In-memory `entries[]` is already up to date at this point (every
         // caller mutates it before calling sched_save()), so the API/UI see
@@ -482,19 +533,19 @@ void sched_save() {
     sched_saveNow();
 }
 
-static bool sched_parseFromPath(const char* path) {
+static bool prepareFromPath(const char* path, PreparedDay& candidate) {
     File f = LittleFS.open(path, "r");
     if (!f) return false;
     DynamicJsonDocument *doc = new (std::nothrow) DynamicJsonDocument(dayPoolSize(f.size()));
     if (!doc || doc->capacity() == 0) { delete doc; f.close(); return false; }
-    if (deserializeJson(*doc, f)) {
+    if (deserializeJson(*doc, f) || !doc->is<JsonArray>()) {
         f.close(); delete doc; return false;
     }
     f.close();
-    count  = 0;
-    nextId = 1;
+    candidate.size = 0;
+    candidate.next = 1;
     for (JsonObject o : doc->as<JsonArray>()) {
-        if (count >= MAX_SCHEDULES) break;
+        if (candidate.size >= MAX_SCHEDULES) break;
         uint8_t track = o["track"] | 1;
         if (track < 1)  track = 1;
         if (track > 99) track = 99;
@@ -503,28 +554,53 @@ static bool sched_parseFromPath(const char* path) {
         if (loop > 7) loop = 7;
         uint8_t vol = o["vol"] | DEFAULT_VOLUME;   // M-12: legacy files without "vol" keep the old default
         if (vol > 30) vol = 30;
-        uint32_t id = o["id"] | nextId;
-        entries[count++] = {
+        uint32_t id = o["id"] | candidate.next;
+        const char* description = o["desc"] | "";
+        ScheduleEntry& entry = candidate.items[candidate.size++];
+        entry = {
             id,
             (uint8_t)(o["hour"] | 0),
             (uint8_t)(o["min"]  | 0),
             track, loop, vol,
             (bool)(o["en"] | true),
-            String((const char*)(o["desc"] | ""))
+            String(description)
         };
-        if (id >= nextId) nextId = id + 1;
+        if (entry.description.length() != strlen(description)) { delete doc; return false; }
+        if (id >= candidate.next) candidate.next = id + 1;
     }
     delete doc;
     return true;
 }
 
-void sched_load() {
-    if (!LittleFS.exists(SCHEDULE_FILE)) {
-        logPrintf("[SCHED] No file, starting empty\n");
-        return;
-    }
-    if (!sched_parseFromPath(SCHEDULE_FILE))
-        logPrintf("[SCHED] Parse error\n");
+static bool sched_parseFromPath(const char* path) {
+    if (!schedulerReady() || schedPendingSave) return false;
+    std::unique_ptr<PreparedDay> candidate(new (std::nothrow) PreparedDay);
+    active_day::Record record;
+    record.day = uint8_t(activeDay);
+    if (!active_day::parseDate(activeDate.c_str(), record.date) || !candidate ||
+        !prepareRecord(*candidate, record) || !prepareFromPath(path, *candidate)) return false;
+    publishPrepared(*candidate, true, false);
+    return true;
+}
+
+bool sched_load() {
+    sys_lock();
+    struct Unlock { ~Unlock() { sys_unlock(); } } unlock;
+    const bool blocked = scheduleFileState == ScheduleFileState::Blocked;
+    if (schedPendingSave || (!blocked && !schedulerReady())) return false;
+    const active_day::Status status = activeStore.status();
+    if (status != active_day::Status::Ready && status != active_day::Status::Loaded) return false;
+    active_day::Record record = loadedRecord;
+    if (status == active_day::Status::Ready && !active_day::decode(publishedActive, DAY_COUNT, record)) return false;
+    std::unique_ptr<PreparedDay> candidate(new (std::nothrow) PreparedDay);
+    char path[16];
+    dayPath(record.day, path);
+    if (!sys_fsOk() || !candidate || !prepareRecord(*candidate, record) || !prepareFromPath(path, *candidate)) return false;
+    // Only a previously deferred legacy migration needs an NVS transaction.
+    if (status == active_day::Status::Loaded && loadedSource == active_day::Source::Legacy &&
+        !activeStore.persist(record)) return false;
+    publishPrepared(*candidate, !blocked, false);
+    return true;
 }
 
 // -------------------------------------------------------
@@ -543,49 +619,95 @@ String sched_dayJSON(uint8_t day) {
 
 bool sched_activateDay(uint8_t day) {
     if (day >= DAY_COUNT) return false;
+    const active_day::Status status = activeStore.status();
+    if (scheduleFileState == ScheduleFileState::Blocked ||
+        (!schedulerReady() && status != active_day::Status::Empty)) return false;
+    if (!sys_fsOk()) return false;
     char path[16];
     dayPath(day, path);
-    if (!LittleFS.exists(path)) {
-        File nf = LittleFS.open(path, "w");
-        if (!nf) { logPrintf("[SCHED] Day %02d: create failed\n", (int)day); return false; }
-        // First-ever activation (no active day yet): seed with current schedule so
-        // existing entries are not lost. Subsequent new days start empty.
-        bool firstActivation = (activeDay < 0);
-        String seed = firstActivation ? sched_toJSON() : String("[]");
-        if (seed.length() == 0) seed = "[]";   // overflow marker — never write ""
-        nf.print(seed);
-        nf.close();
-        logPrintf("[SCHED] Day %02d created (%s)\n", (int)day,
-                      firstActivation ? "seeded from current" : "empty");
+    const active_day::FilePresence presence = active_day::probeFile(path);
+    if (presence == active_day::FilePresence::Error) {
+        if (status == active_day::Status::Empty) activeStore.unknown();
+        return false;
+    }
+    if (presence == active_day::FilePresence::ConfirmedAbsent) {
+        String seed("[]");
+        if (status == active_day::Status::Empty) {
+            const active_day::FilePresence seedPresence = active_day::probeFile(SCHEDULE_FILE);
+            if (seedPresence == active_day::FilePresence::Error) { activeStore.unknown(); return false; }
+            if (seedPresence == active_day::FilePresence::Present) {
+                File old = LittleFS.open(SCHEDULE_FILE, "r");
+                if (!old) { activeStore.unknown(); return false; }
+                const size_t expected = old.size();
+                seed = old.readString();
+                old.close();
+                if (!seed.length() || seed.length() != expected) { activeStore.unknown(); return false; }
+            }
+        }
+        File file = LittleFS.open(path, "w");
+        if (!file) {
+            if (status == active_day::Status::Empty) activeStore.unknown();
+            return false;
+        }
+        const size_t written = file.print(seed);
+        file.close();
+        if (written != seed.length()) return false;
     }
 
     // Flush current schedule to its day file before switching (activeDay
     // still points to the old day here). Always synchronous, unlike the
     // public sched_save() — deferring THIS specific write risks the flush
     // landing after entries[] has already been overwritten with the new
-    // day's content below. Skipped while the old day's file failed to load:
-    // entries[] is empty then, and flushing would wipe that file for good.
-    if (activeDay >= 0 && !schedError) sched_saveNow();
-    schedPendingSave = false;
-
-    // Load new day into memory; on failure entries[] and activeDay are untouched.
-    if (!sched_parseFromPath(path)) {
-        logPrintf("[SCHED] Day %02d: %s unreadable — not activated\n", (int)day, path);
+    // day's content below. File BLOCKED was rejected before this point, so
+    // an activation cannot flush stale RAM over a replaced active-day file.
+    if (schedPendingSave && !sched_saveNow()) return false;
+    std::unique_ptr<PreparedDay> candidate(new (std::nothrow) PreparedDay);
+    active_day::Record record;
+    record.day = day;
+    const String date = currentDateStr();
+    if ((timeIsSet() && !date.length()) || !active_day::parseDate(date.c_str(), record.date) ||
+        !candidate || !prepareRecord(*candidate, record) || !prepareFromPath(path, *candidate)) {
+        if (status == active_day::Status::Empty) activeStore.unknown();
         return false;
     }
-
-    // Only now switch the tracker (date-stamped so sched_check() can detect
-    // day changes even across a missed midnight tick). A power cut before
-    // this line simply leaves the old day active — consistent either way.
-    setActiveDay(day, currentDateStr());
-    schedError = false;
+    if (!activeStore.persist(record)) return false;
+    publishPrepared(*candidate, true, false);
 
     logPrintf("[SCHED] Activated day %02d (%d entries)\n", (int)day, count);
     return true;
 }
 
 int  sched_getActiveDay() { return activeDay; }
-bool sched_hasError()     { return schedError; }
+bool sched_hasError()     { return scheduleFileState != ScheduleFileState::Ready || activeStore.status() != active_day::Status::Ready; }
+
+active_day::Status sched_persistenceStatus() { return activeStore.status(); }
+bool sched_isRunning() { return schedulerReady(); }
+
+bool sched_recover(uint64_t expected, bool discardPending) {
+    sys_lock();
+    struct Unlock { ~Unlock() { sys_unlock(); } } unlock;
+    if (scheduleFileState == ScheduleFileState::Blocked && activeStore.status() != active_day::Status::Unknown) return false;
+    if (activeStore.status() == active_day::Status::Ready) return !executionRunning && expected == publishedActive;
+    if (activeStore.status() != active_day::Status::Unknown || (schedPendingSave && !discardPending)) return false;
+    active_day::Record record;
+    uint64_t raw = 0;
+    if (!activeStore.readActive(record, raw) || raw != expected) return false;
+    std::unique_ptr<PreparedDay> candidate(new (std::nothrow) PreparedDay);
+    char path[16];
+    dayPath(record.day, path);
+    if (!sys_fsOk() || !candidate || !prepareRecord(*candidate, record) ||
+        !prepareFromPath(path, *candidate) || !activeStore.persist(record, true)) return false;
+    publishPrepared(*candidate, false, false);
+    return true;
+}
+
+bool sched_resume() {
+    sys_lock();
+    const bool ready = activeStore.status() == active_day::Status::Ready && scheduleFileState == ScheduleFileState::Ready;
+    if (ready) executionRunning = true;
+    sys_unlock();
+    return ready;
+}
 
 bool sched_courseEnded() {
     return activeDay >= 0 && activeDay == DAY_COUNT - 1;
@@ -657,6 +779,7 @@ static bool saveDayArray(uint8_t day, DynamicJsonDocument& doc) {
 
 bool sched_addToDay(uint8_t day, uint8_t h, uint8_t m,
                      const String& desc, uint8_t track, uint8_t loop, uint8_t vol) {
+    if (!schedulerReady()) return false;
     if (isActiveDay(day)) return sched_add(h, m, desc, track, loop, vol);
     if (h > 23 || m > 59 || track < 1 || track > 99) return false;
     if (loop < 1) loop = 1;
@@ -690,6 +813,7 @@ bool sched_addToDay(uint8_t day, uint8_t h, uint8_t m,
 
 bool sched_editInDay(uint8_t day, uint32_t id, uint8_t h, uint8_t m,
                      const String& desc, uint8_t track, uint8_t loop, bool enabled, uint8_t vol) {
+    if (!schedulerReady()) return false;
     if (isActiveDay(day)) return sched_edit(id, h, m, desc, track, loop, enabled, vol);
     if (h > 23 || m > 59 || track < 1 || track > 99) return false;
     if (loop < 1) loop = 1;
@@ -723,6 +847,7 @@ bool sched_editInDay(uint8_t day, uint32_t id, uint8_t h, uint8_t m,
 }
 
 bool sched_delFromDay(uint8_t day, uint32_t id) {
+    if (!schedulerReady()) return false;
     if (isActiveDay(day)) return sched_del(id);
 
     DynamicJsonDocument doc(dayEditPool(day));
@@ -749,6 +874,7 @@ bool sched_delFromDay(uint8_t day, uint32_t id) {
 // written to /dayNN.new. Nothing touches the real day files until commit.
 // -------------------------------------------------------
 bool sched_stageDay(uint8_t day, JsonArrayConst in, String& err) {
+    if (!schedulerReady()) { err = "scheduler unavailable or paused"; return false; }
     if (day >= DAY_COUNT) { err = "invalid day"; return false; }
     if (in.isNull())      { err = "entries must be an array"; return false; }
     if (in.size() > MAX_SCHEDULES) { err = "more than " + String(MAX_SCHEDULES) + " entries"; return false; }
@@ -806,6 +932,7 @@ bool sched_stageDay(uint8_t day, JsonArrayConst in, String& err) {
 }
 
 bool sched_commitCourse(String& err) {
+    if (!schedulerReady() || schedPendingSave) { err = "scheduler unavailable, paused or has unsaved edits"; return false; }
     char from[16], to[16];
     for (int d = 0; d < DAY_COUNT; d++) {
         stagePath(d, from);
@@ -814,12 +941,16 @@ bool sched_commitCourse(String& err) {
             return false;
         }
     }
+    bool activeFileTouched = false;
     for (int d = 0; d < DAY_COUNT; d++) {
         stagePath(d, from);
         dayPath(d, to);
+        // A failed rename/remove can also leave the active file indeterminate.
+        if (d == activeDay) activeFileTouched = true;
         // LittleFS replaces an existing target on rename; the remove is only
         // a fallback for a VFS that refuses to.
         if (!LittleFS.rename(from, to) && !(LittleFS.remove(to) && LittleFS.rename(from, to))) {
+            if (activeFileTouched) blockScheduleFile();
             err = "rename failed at day " + String(d) + " — days before it are already replaced";
             logPrintf("[SCHED] Course import: %s\n", err.c_str());
             return false;
@@ -830,7 +961,11 @@ bool sched_commitCourse(String& err) {
     if (activeDay >= 0) {
         schedPendingSave = false;
         dayPath(activeDay, to);
-        schedError = !sched_parseFromPath(to);
+        if (!sched_parseFromPath(to)) {
+            blockScheduleFile();
+            err = "active day file could not be loaded; scheduler BLOCKED";
+            return false;
+        }
     }
     logPrintf("[SCHED] Course import: %d days committed, active day %02d (%d entries)\n",
               DAY_COUNT, activeDay, count);
