@@ -60,7 +60,7 @@ static inline bool localNow(struct tm& out) {
 // правки файла — see platformio.ini:
 //   build_flags = -DAP_PASSWORD='"${sysenv.GONG_AP_PASSWORD}"'
 #ifndef AP_PASSWORD
-#define AP_PASSWORD       "vipassana"   // минимум 8 символов для WPA2
+#define AP_PASSWORD       "Vipassana7"   // минимум 8 символов для WPA2
 #endif
 static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD короче 8 символов (минимум для WPA2)");
 
