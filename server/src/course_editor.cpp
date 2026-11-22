@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <new>
 #include <string>
 #include <utility>
@@ -1290,6 +1291,150 @@ static bool importCourseBody(const char* data, std::size_t size, std::string& er
         return false;
     }
     return commitEditingGeneration(published, built, cal, source, error);
+}
+
+// Parses one template body into its event list. Same wrapper trick as
+// parseDaySlice(): only this template exists in RAM.
+static bool parseTemplateBody(const char* data, const ScannedCourse& doc,
+                              std::size_t index, std::vector<course::Event>& out,
+                              std::string& error) {
+    const TemplateSlice& tmpl = doc.templates[index];
+    std::string wrapped;
+    wrapped.reserve(tmpl.body.length + 160);
+    wrapped += "{\"format\":\"gong-course\",\"version\":2,\"templates\":{\"";
+    wrapped += escapeJsonText(tmpl.name);
+    wrapped += "\":";
+    wrapped.append(data + tmpl.body.begin, tmpl.body.length);
+    wrapped += "},\"days\":[{\"template\":\"";
+    wrapped += escapeJsonText(tmpl.name);
+    wrapped += "\"}]}";
+    course::Course one;
+    std::string parseError;
+    if (!course::fromJson(wrapped, one, parseError)) {
+        error = "template " + tmpl.name + ": " + parseError;
+        return false;
+    }
+    std::map<std::string, std::vector<course::Event> >::const_iterator it =
+        one.templates.find(tmpl.name);
+    if (it == one.templates.end()) {
+        error = "template " + tmpl.name + ": missing after parse";
+        return false;
+    }
+    out = it->second;
+    return true;
+}
+
+// Stage B: stores the referenced templates once and each day as a reference.
+//
+// NOT WIRED INTO THE HTTP HANDLERS ON PURPOSE. A template generation cannot be
+// executed until stage E loads the template cache at boot / Apply / Activate,
+// so the operational import (importCourseBody) keeps writing expanded days.
+static bool importCompactBody(const char* data, std::size_t size, std::string& error) {
+    error.clear();
+    ScannedCourse doc;
+    if (!scanCourse(data, size, doc, error)) return false;
+
+    std::map<std::string, std::vector<course::Event> > used;
+    std::vector<bool> isReference(doc.days.size(), false);
+    std::vector<std::string> referenceName(doc.days.size());
+    std::size_t uniqueEvents = 0;
+    for (std::size_t i = 0; i < doc.days.size(); ++i) {
+        bool reference = false;
+        std::string name;
+        if (!classifyDay(data, doc, i, reference, name, error)) return false;
+        isReference[i] = reference;
+        referenceName[i] = name;
+        if (!reference) continue;
+        if (used.find(name) != used.end()) continue;  // occurrences share one copy
+        std::size_t templateIndex = 0;
+        bool found = false;
+        for (std::size_t t = 0; t < doc.templates.size(); ++t) {
+            if (doc.templates[t].name == name) {
+                templateIndex = t;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            error = "day " + std::to_string(i) + ": unknown template: " + name;
+            return false;
+        }
+        std::vector<course::Event> events;
+        if (!parseTemplateBody(data, doc, templateIndex, events, error)) return false;
+        if (used.size() >= course_store::CourseStore::kMaxTemplates) {
+            error = "too many templates";
+            return false;
+        }
+        uniqueEvents += events.size();
+        if (uniqueEvents > course_store::CourseStore::kMaxTemplateEvents) {
+            error = "too many template events";
+            return false;
+        }
+        used[name] = events;
+    }
+    if (used.empty()) {
+        error = "course has no template references";
+        return false;
+    }
+
+    course_store::CourseStore store;
+    const bool published = store.hasCalendar();
+    course_store::CalendarState cal;
+    std::uint32_t source = 0;
+    if (published) {
+        if (!ensureDraft(cal, source, error)) return false;
+    } else {
+        source = store.loadBootstrapGeneration();
+        if (source != 0 && !store.generationExists(source)) source = 0;
+    }
+
+    std::uint32_t built = 0;
+    if (!store.createGeneration(built, error)) return false;
+    std::string ignored;
+    if (!store.writeTemplates(built, used, error)) {
+        store.deleteGeneration(built, ignored);
+        return false;
+    }
+    for (std::size_t i = 0; i < doc.days.size(); ++i) {
+        const std::uint8_t index = static_cast<std::uint8_t>(i);
+        if (isReference[i]) {
+            if (!store.putDayReference(built, index, referenceName[i], error)) {
+                store.deleteGeneration(built, ignored);
+                return false;
+            }
+            continue;
+        }
+        course::Day dayData;
+        if (!parseDaySlice(data, doc, i, dayData, error) ||
+            !store.saveDayAtomic(built, index, dayData, error)) {
+            store.deleteGeneration(built, ignored);
+            return false;
+        }
+    }
+    if (!store.finishCompactGeneration(built,
+                                       static_cast<std::uint8_t>(doc.days.size()),
+                                       doc.name, error)) {
+        store.deleteGeneration(built, ignored);
+        return false;
+    }
+    return commitEditingGeneration(published, built, cal, source, error);
+}
+
+bool importCourseCompact(const char* data, std::size_t size, std::string& error) {
+    error.clear();
+    try {
+        return importCompactBody(data, size, error);
+    } catch (const std::bad_alloc&) {
+        error = "not enough memory to import this course";
+        return false;
+    } catch (...) {
+        error = "import failed";
+        return false;
+    }
+}
+
+bool importCourseCompact(const std::string& json, std::string& error) {
+    return importCourseCompact(json.data(), json.size(), error);
 }
 
 bool importCourse(const std::string& json, std::string& error) {

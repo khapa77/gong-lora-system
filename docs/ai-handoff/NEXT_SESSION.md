@@ -205,3 +205,15 @@ pre-скриптом `scripts/gzip_web.py`.
 - Память: prepareTemplates — пик 39 КБ / резидентно 4,8 КБ (4×12 событий);
   пик 101 КБ / 12,1 КБ (4×32 события). При этапе E нужен guard по largest free block
   и вызов prepare в точках смены поколения до публикации дня.
+
+## 8. Этап B (компактная запись) выполнен
+
+- `course_store`: `writeCompactGeneration`, `applyCompactCourse`, `saveCompactDraft`,
+  `putDayReference`, `finishCompactGeneration`. Только используемые шаблоны; лимиты по
+  уникальным событиям.
+- `course_editor::importCourseCompact` — не подключён к HTTP: до этапа E штатный импорт
+  и Apply продолжают писать развёрнутые поколения.
+- Измерено: 14 дней / 40 уникальных событий / 140 вхождений — 15 130 Б → 5 779 Б (0,38×),
+  пик импорта 42 КБ, резидентных данных нет.
+- Тесты: store 368/368, editor 546, course 578, scheduler 130, active_day 275,
+  emergency 58; ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 86.8 % (1 364 957 Б).

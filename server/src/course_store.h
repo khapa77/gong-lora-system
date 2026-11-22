@@ -154,6 +154,31 @@ public:
                         const std::map<std::string, std::vector<course::Event> >& templates,
                         std::string& error);
 
+    // ── Compact (template) generation writing — stage B ───────────────────
+    // Writes one generation whose unique templates live once in templates.json
+    // and whose days are references unless they carry individual events.
+    // The generation is written and validated before anything references it.
+    //
+    // NOT part of the operational path: until stage E loads the template cache
+    // at boot / Apply / Activate, the scheduler cannot execute such a
+    // generation, so nothing here is called by the web handlers or the
+    // scheduler. Compact storage is reachable from tests only.
+    bool writeCompactGeneration(const course::Course& course,
+                                std::uint32_t& outGeneration, std::string& error);
+    bool applyCompactCourse(const course::Course& course,
+                            std::uint32_t& newGeneration,
+                            CalendarState& outState, std::string& error);
+    // Streaming building blocks for a compact generation: the caller writes
+    // templates, then the days one at a time, and finishes with meta.
+    bool putDayReference(std::uint32_t generation, std::uint8_t day,
+                         const std::string& templateName, std::string& error);
+    bool finishCompactGeneration(std::uint32_t generation, std::uint8_t length,
+                                 const std::string& name, std::string& error);
+
+    bool saveCompactDraft(const course::Course& course,
+                          std::uint32_t& draftGeneration,
+                          CalendarState& outState, std::string& error);
+
     // Loads the template set of `generation` into the cache. Returns true and
     // leaves the cache usable only on complete success. A different generation
     // always invalidates the previous entries first.

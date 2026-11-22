@@ -1667,6 +1667,250 @@ std::uint32_t CourseStore::cachedTemplateGeneration() const {
     return cache.loaded ? cache.generation : 0;
 }
 
+namespace {
+
+// A day reference is tiny: the events live once in templates.json. The
+// generation id is stamped in so loadDay() can reject a file moved between
+// generations.
+std::string makeDayReferenceJson(std::uint32_t generation,
+                                 const std::string& templateName) {
+    return "{\"format\":\"gong-course\",\"version\":2,\"name\":\"day\",\"generation\":" +
+           std::to_string(generation) + ",\"course_length\":1,\"days\":[{\"template\":\"" +
+           escapeText(templateName) + "\"}]}";
+}
+
+// Collects the templates that are actually referenced by the days. Unused
+// definitions are not stored: the on-flash size must follow the course, not
+// the file it came from.
+bool referencedTemplates(const course::Course& course,
+                         std::map<std::string, std::vector<course::Event> >& out,
+                         std::size_t& uniqueEvents, std::string& error) {
+    out.clear();
+    uniqueEvents = 0;
+    for (std::size_t i = 0; i < course.days.size(); ++i) {
+        const course::Day& day = course.days[i];
+        if (day.hasOwnEvents) continue;
+        if (day.templateName.empty()) {
+            error = "day has neither template nor events";
+            return false;
+        }
+        if (out.find(day.templateName) != out.end()) continue;
+        std::map<std::string, std::vector<course::Event> >::const_iterator it =
+            course.templates.find(day.templateName);
+        if (it == course.templates.end()) {
+            error = "unknown template: " + day.templateName;
+            return false;
+        }
+        if (out.size() >= CourseStore::kMaxTemplates) {
+            error = "too many templates";
+            return false;
+        }
+        uniqueEvents += it->second.size();
+        if (uniqueEvents > CourseStore::kMaxTemplateEvents) {
+            error = "too many template events";
+            return false;
+        }
+        out[it->first] = it->second;
+    }
+    return true;
+}
+
+}  // namespace
+
+bool CourseStore::writeCompactGeneration(const course::Course& course,
+                                         std::uint32_t& outGeneration,
+                                         std::string& error) {
+    error.clear();
+    outGeneration = 0;
+    if (!course::validate(course, error)) return false;
+    if (course.days.empty() || course.days.size() > course::kMaxDays) {
+        error = "course length out of range";
+        return false;
+    }
+
+    std::map<std::string, std::vector<course::Event> > templates;
+    std::size_t uniqueEvents = 0;
+    if (!referencedTemplates(course, templates, uniqueEvents, error)) return false;
+    if (templates.empty()) {
+        // Nothing to deduplicate: the caller must use applyCourse().
+        error = "course has no template references";
+        return false;
+    }
+
+    std::uint32_t generation = 0;
+    if (!createGeneration(generation, error)) return false;
+
+    // templates.json first, days next, meta last: an interrupted build can
+    // never look like a complete generation.
+    if (!writeTemplates(generation, templates, error)) {
+        std::string scratch;
+        deleteGeneration(generation, scratch);
+        return false;
+    }
+    for (std::size_t i = 0; i < course.days.size(); ++i) {
+        const course::Day& day = course.days[i];
+        const std::uint8_t index = static_cast<std::uint8_t>(i);
+        const bool ok = day.hasOwnEvents
+                            ? saveDayAtomic(generation, index, day, error)
+                            : putDayReference(generation, index, day.templateName, error);
+        if (!ok) {
+            std::string scratch;
+            deleteGeneration(generation, scratch);
+            return false;
+        }
+    }
+
+    if (!finishCompactGeneration(generation,
+                                static_cast<std::uint8_t>(course.days.size()),
+                                course.name, error)) {
+        std::string scratch;
+        deleteGeneration(generation, scratch);
+        return false;
+    }
+    error.clear();
+    outGeneration = generation;
+    return true;
+}
+
+bool CourseStore::putDayReference(std::uint32_t generation, std::uint8_t day,
+                                  const std::string& templateName,
+                                  std::string& error) {
+    error.clear();
+    if (generation == 0 || day >= course::kMaxDays) {
+        error = "day index out of range";
+        return false;
+    }
+    if (templateName.empty()) {
+        error = "template name must not be empty";
+        return false;
+    }
+    if (templateName.size() > kMaxTemplateNameBytes) {
+        error = "template name too long";
+        return false;
+    }
+    return writeAtomic(dayBase(generation, day),
+                       makeDayReferenceJson(generation, templateName), error);
+}
+
+bool CourseStore::finishCompactGeneration(std::uint32_t generation,
+                                          std::uint8_t length,
+                                          const std::string& name,
+                                          std::string& error) {
+    error.clear();
+    if (generation == 0) {
+        error = "invalid generation";
+        return false;
+    }
+    if (length == 0 || length > course::kMaxDays) {
+        error = "course length out of range";
+        return false;
+    }
+    CourseMeta meta;
+    meta.generation = generation;
+    meta.course_length = length;
+    meta.name = name;
+    meta.layout = kLayoutTemplates;
+    const std::string metaJson = makeMetaJson(meta, error);
+    if (metaJson.empty() || !writeAtomic(metaBase(generation), metaJson, error)) {
+        return false;
+    }
+    // Validates the layout marker, the template set and every day reference
+    // against this generation only.
+    return validateGeneration(generation, length, error);
+}
+
+bool CourseStore::applyCompactCourse(const course::Course& course,
+                                     std::uint32_t& newGeneration,
+                                     CalendarState& outState,
+                                     std::string& error) {
+    error.clear();
+    CalendarState oldState;
+    bool hasOld = false;
+    if (!readCalendarIfPresent(oldState, hasOld, error)) return false;
+
+    std::uint32_t generation = 0;
+    if (!writeCompactGeneration(course, generation, error)) return false;
+
+    CourseMeta meta;
+    if (!loadMeta(generation, meta, error)) return false;
+
+    // Same publish semantics as applyCourse(): APPLIED, no activation date,
+    // no running flag, no automatic activation.
+    CalendarState next;
+    next.active_generation = generation;
+    next.draft_generation = generation;
+    next.activation_date = 0;
+    next.day_index = 0;
+    next.course_length = meta.course_length;
+    next.flags = kApplied;
+    next.failure_count = 0;
+    if (!saveCalendar(next, error)) {
+        std::string scratch;
+        deleteGeneration(generation, scratch);
+        return false;
+    }
+
+    if (hasOld) {
+        if (oldState.active_generation > 0 &&
+            oldState.active_generation != generation) {
+            std::string scratch;
+            deleteGeneration(oldState.active_generation, scratch);
+        }
+        if (oldState.draft_generation > 0 &&
+            oldState.draft_generation != generation &&
+            oldState.draft_generation != oldState.active_generation) {
+            std::string scratch;
+            deleteGeneration(oldState.draft_generation, scratch);
+        }
+    }
+    error.clear();
+    newGeneration = generation;
+    outState = next;
+    return true;
+}
+
+bool CourseStore::saveCompactDraft(const course::Course& course,
+                                   std::uint32_t& draftGeneration,
+                                   CalendarState& outState,
+                                   std::string& error) {
+    error.clear();
+    CalendarState oldState;
+    bool hasOld = false;
+    if (!readCalendarIfPresent(oldState, hasOld, error)) return false;
+
+    std::uint32_t generation = 0;
+    if (!writeCompactGeneration(course, generation, error)) return false;
+
+    CourseMeta meta;
+    if (!loadMeta(generation, meta, error)) return false;
+
+    CalendarState next = oldState;
+    next.draft_generation = generation;
+    if (!hasOld) {
+        next.active_generation = 0;
+        next.activation_date = 0;
+        next.day_index = 0;
+        next.course_length = meta.course_length;
+        next.flags = 0;
+        next.failure_count = 0;
+    }
+    if (!saveCalendar(next, error)) {
+        std::string scratch;
+        deleteGeneration(generation, scratch);
+        return false;
+    }
+    if (hasOld && oldState.draft_generation > 0 &&
+        oldState.draft_generation != generation &&
+        oldState.draft_generation != oldState.active_generation) {
+        std::string scratch;
+        deleteGeneration(oldState.draft_generation, scratch);
+    }
+    error.clear();
+    draftGeneration = generation;
+    outState = next;
+    return true;
+}
+
 bool CourseStore::loadLastFire(LastFire& out, std::string& error) {
     error.clear();
     Preferences prefs;

@@ -844,6 +844,298 @@ void templates_clone_keeps_layout() {
     check(day.events.size() == 3, "clone lost the template events");
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Stage B: compact (template) generation writing. Not part of the operational
+// path; exercised directly here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::map<std::string, std::vector<course::Event> > templateEvents(int count,
+                                                                  const std::string& tag) {
+    std::map<std::string, std::vector<course::Event> > set;
+    std::vector<course::Event> list;
+    for (int i = 0; i < count; ++i) {
+        list.push_back(event(5 + i % 18, (i * 3) % 60, tag + " " + std::to_string(i),
+                             static_cast<std::uint32_t>(i + 1)));
+    }
+    set["x"] = list;
+    return set;
+}
+
+course::Course makeTemplateCourse(int days, int perTemplate, int templateCount) {
+    course::Course course;
+    course.name = "compact course";
+    for (int t = 0; t < templateCount; ++t) {
+        const std::string name = "t" + std::to_string(t);
+        course.templates[name] = templateEvents(perTemplate, name)["x"];
+    }
+    for (int d = 0; d < days; ++d) {
+        course::Day day;
+        day.templateName = "t" + std::to_string(d % templateCount);
+        day.hasOwnEvents = false;
+        course.days.push_back(day);
+    }
+    return course;
+}
+
+std::size_t generationBytes(std::uint32_t generation) {
+    const std::string prefix = "/course/g" + std::to_string(generation) + "/";
+    std::size_t total = 0;
+    for (std::map<std::string, std::string>::const_iterator it = host::files().begin();
+         it != host::files().end(); ++it) {
+        if (it->first.compare(0, prefix.size(), prefix) == 0) total += it->second.size();
+    }
+    return total;
+}
+
+void compact_write_links_repeated_days() {
+    resetHost();
+    course_store::CourseStore store;
+    std::uint32_t generation = 0;
+    std::string error;
+    const course::Course course = makeTemplateCourse(14, 10, 3);
+    check(store.writeCompactGeneration(course, generation, error),
+          "compact write failed: " + error);
+    course_store::CourseMeta meta;
+    check(store.loadMeta(generation, meta, error), "meta: " + error);
+    check(meta.layout == course_store::kLayoutTemplates, "layout marker missing");
+    check(host::files().find(templatesPath(generation)) != host::files().end(),
+          "templates.json missing");
+    // Every day is a reference: no day file may carry an event array.
+    for (int d = 0; d < 14; ++d) {
+        char name[8];
+        std::snprintf(name, sizeof(name), "d%02u", static_cast<unsigned>(d));
+        const std::string path =
+            "/course/g" + std::to_string(generation) + "/" + name + ".json";
+        check(host::files().find(path) != host::files().end(),
+              std::string("missing day file ") + name);
+        check(host::files()[path].find("\"events\"") == std::string::npos,
+              std::string("day ") + name + " was materialised");
+        check(host::files()[path].size() < 200,
+              std::string("day ") + name + " is larger than a reference");
+    }
+    check(store.prepareTemplates(generation, error), "prepare: " + error);
+    check(store.cachedTemplateCount() == 3, "unique template count");
+    check(store.cachedTemplateEvents() == 30, "unique event count");
+    course::Day day;
+    check(store.loadDay(generation, 13, day, error), "loadDay: " + error);
+    check(day.events.size() == 10, "resolved event count");
+    check(day.events[0].description == "t1 0", "wrong template for day 13");
+}
+
+void compact_apply_states_and_sizes() {
+    resetHost();
+    course_store::CourseStore store;
+    std::uint32_t expanded = 0;
+    course_store::CalendarState cal;
+    std::string error;
+    // A realistic 14-day operator course: 4 templates, 136 occurrences.
+    course::Course expandedCourse = makeTemplateCourse(14, 10, 4);
+    expandedCourse.days[5].hasOwnEvents = true;
+    expandedCourse.days[5].templateName.clear();
+    expandedCourse.days[5].events.push_back(event(21, 15, "own", 99));
+    check(store.applyCourse(expandedCourse, expanded, cal, error),
+          "expanded apply failed: " + error);
+    const std::size_t expandedBytes = generationBytes(expanded);
+    check(store.prepareTemplates(expanded, error), "prepare expanded: " + error);
+    course::Day check0;
+    check(store.loadDay(expanded, 0, check0, error), "expanded day: " + error);
+    check(check0.events.size() == 10, "expanded day event count");
+
+    std::uint32_t compact = 0;
+    course_store::CalendarState state;
+    check(store.applyCompactCourse(expandedCourse, compact, state, error),
+          "compact apply failed: " + error);
+    const std::size_t compactBytes = generationBytes(compact);
+    std::cout << "  expanded=" << expandedBytes << "B compact=" << compactBytes
+              << "B days=" << expandedCourse.days.size() << "\n";
+    check(compactBytes < expandedBytes, "compact storage is not smaller");
+
+    check(state.flags == course_store::kApplied, "compact apply must be APPLIED");
+    check((state.flags & course_store::kRunning) == 0,
+          "compact apply must not be RUNNING");
+    check(state.activation_date == 0, "compact apply must not set activation_date");
+    check(state.active_generation == compact, "active generation not switched");
+    check(state.course_length == 14, "course length");
+
+    // The old generation is reclaimed and the new one resolves through its own
+    // cache only.
+    check(!store.generationExists(expanded), "old generation was kept");
+    check(store.prepareTemplates(compact, error), "prepare compact: " + error);
+    check(store.cachedTemplateGeneration() == compact, "cache generation");
+    course::Day day;
+    check(store.loadDay(compact, 0, day, error), "compact day: " + error);
+    check(day.events.size() == 10, "compact day events");
+    check(store.loadDay(compact, 5, day, error), "compact own day: " + error);
+    check(day.events.size() == 1 && day.events[0].description == "own",
+          "individually edited day was replaced by the template");
+}
+
+void compact_lengths() {
+    const int lengths[] = {1, 10, 14, 20, 47};
+    for (std::size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+        resetHost();
+        course_store::CourseStore store;
+        std::uint32_t generation = 0;
+        course_store::CalendarState state;
+        std::string error;
+        const course::Course course = makeTemplateCourse(lengths[i], 6, 2);
+        check(store.applyCompactCourse(course, generation, state, error),
+              "apply " + std::to_string(lengths[i]) + " days: " + error);
+        check(state.course_length == lengths[i], "length mismatch");
+        check(store.prepareTemplates(generation, error), "prepare failed");
+        course::Day last;
+        check(store.loadDay(generation, static_cast<std::uint8_t>(lengths[i] - 1), last,
+                            error),
+              "last day load failed: " + error);
+        check(last.events.size() == 6, "last day events");
+    }
+}
+
+void compact_rejects_full_events() {
+    resetHost();
+    course_store::CourseStore store;
+    std::uint32_t generation = 0;
+    std::string error;
+    check(!store.writeCompactGeneration(makeCourse(3), generation, error),
+          "a course without references must not use the compact writer");
+    check(error.find("no template references") != std::string::npos,
+          "unclear rejection: " + error);
+    check(generation == 0, "a rejected write must not report a generation");
+}
+
+void compact_limits() {
+    resetHost();
+    course_store::CourseStore store;
+    std::string error;
+    std::uint32_t generation = 0;
+
+    // 33 distinct referenced templates.
+    course::Course many;
+    many.name = "many";
+    for (int t = 0; t < 33; ++t) {
+        const std::string name = "t" + std::to_string(t);
+        many.templates[name] = templateEvents(1, name)["x"];
+        course::Day day;
+        day.templateName = name;
+        many.days.push_back(day);
+    }
+    check(!store.writeCompactGeneration(many, generation, error),
+          "33 templates must be refused");
+
+    // 288 unique events across templates (more than the 256 budget).
+    course::Course heavy;
+    heavy.name = "heavy";
+    for (int t = 0; t < 9; ++t) {
+        const std::string name = "t" + std::to_string(t);
+        std::vector<course::Event> list;
+        for (int e = 0; e < 32; ++e) {
+            list.push_back(event(5 + e, 0, "e", static_cast<std::uint32_t>(e + 1)));
+        }
+        heavy.templates[name] = list;
+        course::Day day;
+        day.templateName = name;
+        heavy.days.push_back(day);
+    }
+    check(!store.writeCompactGeneration(heavy, generation, error),
+          "288 unique template events must be refused");
+}
+
+void compact_failures_keep_published_course() {
+    resetHost();
+    course_store::CourseStore store;
+    std::uint32_t published = 0;
+    course_store::CalendarState cal;
+    std::string error;
+    check(store.applyCourse(makeCourse(4), published, cal, error),
+          "baseline apply failed: " + error);
+    const std::string publishedMeta =
+        host::files()["/course/g" + std::to_string(published) + "/meta.json"];
+    const auto filesBefore = host::files();
+
+    // 1. LittleFS refuses the template file: nothing may change.
+    host::fs().failWrite = true;
+    host::fs().path = "/course/g" + std::to_string(published + 1) + "/templates.tmp";
+    std::uint32_t candidate = 0;
+    check(!store.applyCompactCourse(makeTemplateCourse(14, 10, 3), candidate, cal, error),
+          "a failed template write must fail the apply");
+    host::fs().failWrite = false;
+    host::fs().path.clear();
+
+    // 2. NVS refuses the calendar write after the generation was written.
+    host::nvs().inject("set", "course_state", host::Action::ErrorBefore);
+    check(!store.applyCompactCourse(makeTemplateCourse(14, 10, 3), candidate, cal, error),
+          "a failed NVS write must fail the apply");
+    host::nvs().fault = host::Fault();
+
+    check(host::files()["/course/g" + std::to_string(published) + "/meta.json"] ==
+              publishedMeta,
+          "the published generation was modified");
+    course_store::CalendarState after;
+    check(store.loadCalendar(after, error), "calendar unreadable: " + error);
+    check(after.active_generation == published, "calendar switched on failure");
+    check(after.flags == course_store::kApplied, "flags changed on failure");
+    check(store.validateGeneration(published, 4, error),
+          "the published course no longer validates: " + error);
+    // No half-written generation may be referenced.
+    check(!store.generationExists(published + 1) ||
+              host::files().find(templatesPath(published + 1)) == host::files().end(),
+          "a partial compact generation survived the failure");
+    (void)filesBefore;
+}
+
+void compact_roundtrip_and_clone() {
+    resetHost();
+    course_store::CourseStore store;
+    std::uint32_t generation = 0;
+    std::string error;
+    const course::Course course = makeTemplateCourse(6, 8, 2);
+    check(store.writeCompactGeneration(course, generation, error),
+          "write failed: " + error);
+    check(store.prepareTemplates(generation, error), "prepare failed: " + error);
+    for (int d = 0; d < 6; ++d) {
+        course::Day day;
+        check(store.loadDay(generation, static_cast<std::uint8_t>(d), day, error),
+              "loadDay failed: " + error);
+        std::vector<course::Event> expected;
+        check(course::resolvedEvents(course, static_cast<std::size_t>(d), expected, error),
+              "resolvedEvents: " + error);
+        check(day.events.size() == expected.size(), "event count mismatch");
+        bool same = day.events.size() == expected.size();
+        for (std::size_t i = 0; same && i < expected.size(); ++i) {
+            same = day.events[i].hour == expected[i].hour &&
+                   day.events[i].minute == expected[i].minute &&
+                   day.events[i].description == expected[i].description;
+        }
+        check(same, "round-trip changed the day");
+    }
+    std::uint32_t clone = 0;
+    check(store.cloneGeneration(generation, clone, error), "clone: " + error);
+    check(host::files().find(templatesPath(clone)) != host::files().end(),
+          "clone lost templates.json");
+    check(store.prepareTemplates(clone, error), "prepare clone: " + error);
+    course::Day day;
+    check(store.loadDay(clone, 4, day, error), "clone day: " + error);
+    check(day.events.size() == 8, "clone day events");
+    check(store.cachedTemplateGeneration() == clone, "clone cache generation");
+}
+
+void compact_draft_does_not_publish() {
+    resetHost();
+    course_store::CourseStore store;
+    std::uint32_t draft = 0;
+    course_store::CalendarState state;
+    std::string error;
+    check(store.saveCompactDraft(makeTemplateCourse(5, 4, 2), draft, state, error),
+          "compact draft failed: " + error);
+    check(state.active_generation == 0, "a draft must not become active");
+    check(state.draft_generation == draft, "draft pointer missing");
+    check((state.flags & course_store::kApplied) == 0, "draft must not be APPLIED");
+    check(store.hasCalendar(), "draft calendar missing");
+    course::Day day;
+    check(store.prepareTemplates(draft, error), "prepare draft: " + error);
+    check(store.loadDay(draft, 0, day, error), "draft day: " + error);
+}
+
 int main() {
     runGroup("calendar_roundtrip", calendar_roundtrip);
     runGroup("calendar_crc_corruption", calendar_crc_corruption);
@@ -889,6 +1181,17 @@ int main() {
     runGroup("templates_delete_generation", templates_delete_generation);
     runGroup("templates_limits", templates_limits);
     runGroup("templates_clone_keeps_layout", templates_clone_keeps_layout);
+
+    // Stage B: compact generation writing (not wired into the operational path).
+    runGroup("compact_write_links_repeated_days", compact_write_links_repeated_days);
+    runGroup("compact_apply_states_and_sizes", compact_apply_states_and_sizes);
+    runGroup("compact_lengths", compact_lengths);
+    runGroup("compact_rejects_full_events", compact_rejects_full_events);
+    runGroup("compact_limits", compact_limits);
+    runGroup("compact_failures_keep_published_course",
+             compact_failures_keep_published_course);
+    runGroup("compact_roundtrip_and_clone", compact_roundtrip_and_clone);
+    runGroup("compact_draft_does_not_publish", compact_draft_does_not_publish);
 
     std::cout << "PASS=" << g_pass << " FAIL=" << g_fail << "\n";
     return g_fail == 0 ? 0 : 1;

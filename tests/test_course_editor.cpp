@@ -1127,6 +1127,141 @@ void testPublishedCourseIgnoresBootstrap() {
 
 }  // namespace
 
+// An operator-shaped v1 document: unique templates plus calendar references.
+std::string compactCourseJsonV1(int days, int templateCount, int perTemplate) {
+    std::string doc = "{\"format\":\"gong-course\",\"version\":1,\"name\":\"Gong #2\",\"templates\":{";
+    for (int t = 0; t < templateCount; ++t) {
+        if (t) doc += ',';
+        doc += "\"t" + std::to_string(t) + "\":[";
+        for (int e = 0; e < perTemplate; ++e) {
+            if (e) doc += ',';
+            doc += "{\"id\":" + std::to_string(e + 1) + ",\"hour\":" +
+                   std::to_string(5 + e % 18) + ",\"min\":" + std::to_string(e * 5) +
+                   ",\"track\":1,\"loop\":1,\"vol\":20,\"en\":true,\"desc\":\"Практика " +
+                   std::to_string(t) + "-" + std::to_string(e) + "\"}";
+        }
+        doc += "]";
+    }
+    doc += "},\"days\":[";
+    for (int d = 0; d < days; ++d) {
+        if (d) doc += ',';
+        doc += "\"t" + std::to_string(d % templateCount) + "\"";
+    }
+    doc += "]}";
+    return doc;
+}
+
+void testCompactImport() {
+    resetHost();
+    std::string error;
+    const std::string doc = compactCourseJsonV1(14, 3, 8);
+    check(course_editor::importCourseCompact(doc, error),
+          "compact import failed: " + error);
+
+    course_store::CourseStore store;
+    const std::uint32_t draft = store.loadBootstrapGeneration();
+    check(draft != 0, "bootstrap draft missing");
+    course_store::CourseMeta meta;
+    check(store.loadMeta(draft, meta, error), "meta: " + error);
+    check(meta.layout == course_store::kLayoutTemplates,
+          "compact import did not mark the generation as tpl1");
+    check(meta.course_length == 14, "compact import length");
+    check(host::files().find("/course/g" + std::to_string(draft) + "/templates.json") !=
+              host::files().end(),
+          "compact import wrote no templates.json");
+    for (int d = 0; d < 14; ++d) {
+        char name[8];
+        std::snprintf(name, sizeof(name), "d%02u", static_cast<unsigned>(d));
+        const std::string path =
+            "/course/g" + std::to_string(draft) + "/" + name + ".json";
+        check(host::files()[path].find("\"events\"") == std::string::npos,
+              std::string("day ") + name + " was materialised");
+    }
+
+    // Unique vs calendar occurrences: 3 templates x 8 events, 14 references.
+    check(store.prepareTemplates(draft, error), "prepare: " + error);
+    check(store.cachedTemplateCount() == 3, "unique template count");
+    check(store.cachedTemplateEvents() == 24, "unique event count");
+    course::Day day;
+    check(store.loadDay(draft, 13, day, error), "loadDay: " + error);
+    check(day.events.size() == 8, "resolved event count");
+    check(day.events[0].description == "Практика 1-0", "wrong template resolved");
+
+    course_store::CalendarState state;
+    check(store.applyDraft(draft, state, error), "applyDraft: " + error);
+    check(state.flags == course_store::kApplied, "apply must leave the course APPLIED");
+    check((state.flags & course_store::kRunning) == 0, "apply must not run the course");
+    check(state.activation_date == 0, "apply must not set an activation date");
+
+    // The same document written through the operational import must stay
+    // expanded: stage B does not change what the device stores today.
+    resetHost();
+    check(course_editor::importCourse(doc, error), "operational import failed: " + error);
+    course_store::CourseStore store2;
+    const std::uint32_t operational = store2.loadBootstrapGeneration();
+    check(operational != 0, "operational draft missing");
+    course_store::CourseMeta operationalMeta;
+    check(store2.loadMeta(operational, operationalMeta, error), "operational meta: " + error);
+    check(operationalMeta.layout == course_store::kLayoutExpanded,
+          "the operational import started writing tpl1 generations");
+    check(host::files().find("/course/g" + std::to_string(operational) +
+                             "/templates.json") == host::files().end(),
+          "the operational import wrote templates.json");
+}
+
+void testCompactImportRejectsExpanded() {
+    resetHost();
+    std::string error;
+    const std::string expanded = bigCourseJsonV2(4, 5, "v2 full events");
+    check(!course_editor::importCourseCompact(expanded, error),
+          "compact import must refuse a course without references");
+    check(error.find("no template references") != std::string::npos,
+          "unclear rejection: " + error);
+    check(course_store::CourseStore().loadBootstrapGeneration() == 0,
+          "a rejected compact import left a generation behind");
+
+    check(course_editor::importCourse(expanded, error), "v2 import failed: " + error);
+    course_store::CourseStore store;
+    course_store::CourseMeta meta;
+    const std::uint32_t draft = store.loadBootstrapGeneration();
+    check(store.loadMeta(draft, meta, error), "meta: " + error);
+    check(meta.layout == course_store::kLayoutExpanded, "v2 import changed layout");
+}
+
+void testCompactImportFailureKeepsCourse() {
+    resetHost();
+    std::string error;
+    // Publish a normal expanded course first.
+    check(course_editor::importCourse(bigCourseJsonV2(4, 4, "baseline"), error),
+          "baseline import failed: " + error);
+    course_store::CourseStore store;
+    const std::uint32_t baseline = store.loadBootstrapGeneration();
+    check(baseline != 0, "baseline draft missing");
+    check(course_editor::applyDraft(error), "apply baseline failed: " + error);
+    course_store::CalendarState before;
+    check(store.loadCalendar(before, error), "calendar: " + error);
+
+    // The compact import fails while writing the template set.
+    // Every write fails from here on, whichever generation the import picks.
+    host::fs().path.clear();
+    host::fs().failWrite = true;
+    const std::string doc = compactCourseJsonV1(6, 2, 4);
+    check(!course_editor::importCourseCompact(doc, error),
+          "a failed compact import must report an error");
+    host::fs().failWrite = false;
+    host::fs().path.clear();
+
+    course_store::CalendarState after;
+    check(store.loadCalendar(after, error), "calendar after failure: " + error);
+    check(after.active_generation == before.active_generation,
+          "the published course changed on a failed import");
+    check(after.draft_generation == before.draft_generation,
+          "the draft pointer changed on a failed import");
+    check(after.flags == before.flags, "flags changed on a failed import");
+    check(store.validateGeneration(before.active_generation, before.course_length, error),
+          "the published course no longer validates: " + error);
+}
+
 int main() {
     runGroup("empty store", testEmptyStore);
     runGroup("initial reference course", testInitialReferenceCourse);
@@ -1152,6 +1287,9 @@ int main() {
     runGroup("json inspection", testInspectCourse);
     runGroup("import replaces course", testImportReplacesCourse);
     runGroup("export source", testExportSource);
+    runGroup("compact import", testCompactImport);
+    runGroup("compact import rejects expanded", testCompactImportRejectsExpanded);
+    runGroup("compact import failure keeps course", testCompactImportFailureKeepsCourse);
     runGroup("operator sized course", testOperatorSizedCourse);
     runGroup("heap budget", testHeapBudget);
     runGroup("published course ignores bootstrap", testPublishedCourseIgnoresBootstrap);

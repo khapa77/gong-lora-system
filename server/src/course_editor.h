@@ -78,6 +78,14 @@ bool setPreset(std::uint8_t days, std::string& error);
 
 bool renameCourse(const std::string& name, std::string& error);
 
+// Stage B: imports a template course into a compact generation (templates once,
+// days as references). Deliberately NOT wired into any HTTP route: the
+// scheduler cannot execute a template generation until stage E loads the
+// template cache at boot / Apply / Activate, so the operational import keeps
+// using the expanded writer above.
+bool importCourseCompact(const char* data, std::size_t size, std::string& error);
+bool importCourseCompact(const std::string& json, std::string& error);
+
 // Imports a v1/v2 course JSON into the draft. The active course is untouched.
 // Same bounded-memory strategy as inspectCourse(): one day is parsed and
 // written at a time.
