@@ -1318,6 +1318,20 @@ function ceRenderStatus(d, err) {
   if (d.course_mode) flags.push('COURSE');
   const dirty = d.draft_dirty ? ' · черновик изменён' : '';
   const fails = d.failure_count ? ' · сбоев: ' + d.failure_count : '';
+  if (!d.has_course) {
+    if (!d.draft_generation) {
+      el.textContent = 'Курс не опубликован. Выберите пресет или импортируйте JSON — ' +
+        'черновик не влияет на звонки до Apply.';
+      return;
+    }
+    el.textContent = 'Черновик (не опубликован): ' + (d.name || '—') +
+      ' · дней: ' + d.length +
+      ' · поколение черновика: ' + d.draft_generation +
+      ' — нажмите Apply, чтобы опубликовать.';
+    const namePre = document.getElementById('ceName');
+    if (namePre && document.activeElement !== namePre) namePre.value = d.name || '';
+    return;
+  }
   el.textContent = 'Курс: ' + (d.name || '—') +
     ' · дней: ' + d.length +
     ' · активное поколение: ' + d.active_generation +
@@ -1427,6 +1441,7 @@ async function ceDiscard() {
 
 async function ceActivate() {
   if (!ceMeta) return;
+  if (!ceMeta.has_course) { toast('Сначала опубликуйте черновик (Apply)', 'err'); return; }
   if (!confirm('Активировать день ' + pad(ceDay) + ' как текущее расписание? Текущий MP3 будет остановлен.')) return;
   const d = await postJSON('/api/course/activate?i=' + ceDay, {});
   if (d && d.ok) { toast('День ' + pad(ceDay) + ' активирован', 'ok'); await ceLoad(); await loadSchedules(); await loadDaysStatus(); }

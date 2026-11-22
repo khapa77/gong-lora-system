@@ -18,6 +18,7 @@ namespace {
 const char* kCourseDir = "/course";
 const char* kNamespace = "gong";
 const char* kCalendarKey = "course_state";
+const char* kBootstrapKey = "course_bootstrap";
 const char* kLastFireKey = "last_fire";
 const char* kMetaBase = "meta";
 
@@ -540,6 +541,37 @@ bool CourseStore::hasCalendar() {
     const bool present = prefs.isKey(kCalendarKey);
     prefs.end();
     return present;
+}
+
+std::uint32_t CourseStore::loadBootstrapGeneration() {
+    Preferences prefs;
+    if (!prefs.begin(kNamespace, true)) return 0;
+    const std::uint32_t generation = prefs.getUInt(kBootstrapKey, 0);
+    prefs.end();
+    return generation;
+}
+
+bool CourseStore::saveBootstrapGeneration(std::uint32_t generation,
+                                          std::string& error) {
+    error.clear();
+    Preferences prefs;
+    if (!prefs.begin(kNamespace, false)) {
+        error = "cannot open NVS";
+        return false;
+    }
+    bool ok = true;
+    if (generation == 0) {
+        // remove() reports false for an absent key; clearing nothing is fine.
+        if (prefs.isKey(kBootstrapKey)) ok = prefs.remove(kBootstrapKey);
+    } else {
+        ok = prefs.putUInt(kBootstrapKey, generation) == sizeof(generation);
+    }
+    prefs.end();
+    if (!ok) {
+        error = "bootstrap pointer write failed";
+        return false;
+    }
+    return true;
 }
 
 bool CourseStore::loadCalendar(CalendarState& out, std::string& error) {

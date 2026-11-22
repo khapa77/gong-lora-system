@@ -2,7 +2,11 @@
 
 Актуальный документ. Предыдущий `docs/ai-handoff/SESSION_STATE.md` описывает архитектуру до утверждения циклической модели и считается историческим.
 
-Вторая сессия 2026-11-22: этап 5 доведён до полного PASS host-тестов, ASan/UBSan и PlatformIO build, закоммичен локально (без push, hooks отключены через `-c core.hooksPath=/dev/null`). Этап 6 не начат.
+Вторая сессия 2026-11-22: этап 5 доведён до полного PASS host-тестов, ASan/UBSan и PlatformIO build, закоммичен локально (`4eba3e1`, без push, hooks отключены через `-c core.hooksPath=/dev/null`).
+
+Третья сессия 2026-11-22: исправлен первый запуск Course Editor на устройстве с legacy-расписанием
+(bootstrap-черновик без `course_state`, атомарный первый Apply, первенство курса при загрузке).
+Этап 6 не начат.
 
 ## 1. Git
 
@@ -98,24 +102,39 @@
 
 Добавлена проверка диапазонов и типов; отсутствующий или некорректный индекс не превращается в день 0. Существующие маршруты редактора событий не изменены.
 
+### 3.4a. Bootstrap первого запуска (третья сессия)
+
+- Пока `course_state` не создан, черновик хранится в NVS-ключе `course_bootstrap`
+  (`CourseStore::loadBootstrapGeneration()/saveBootstrapGeneration()`), календарь не пишется.
+- `course_editor`: пресеты 1..47 и импорт создают bootstrap-поколение; чтение/правка дня,
+  вставка, удаление, очистка, переименование и экспорт работают от него; `info()` возвращает
+  `hasCourse=false` и параметры черновика.
+- `applyDraft()` без календаря публикует bootstrap-поколение одной записью `course_state`
+  (`active=draft=N`, `APPLIED`, `activation_date=0`) и очищает bootstrap-указатель.
+- `sched_setup()` вызывает `courseTryBoot()` при наличии `course_state` **или** пустом legacy-состоянии;
+  для APPLIED-курса legacy-RAM очищается. Устройства без `course_state` работают по-старому.
+- `ensureInitialCourse()` не публикует эталон, если есть bootstrap-черновик.
+- `POST /api/course/activate` без опубликованного курса отвечает `apply the draft first`.
+- `GET /api/course/meta` дополнен полями `has_draft` и `bootstrap`; буфер JSON увеличен до 1 КБ.
+
 ### 3.5. Web GUI
 
 В `server/web/index.html` добавлена карточка Course Editor: просмотр дней, выбор дня, вставка/удаление/копирование, очистка, пресеты, переименование, импорт/экспорт, Apply, Discard, Activate. Существующая карточка Schedule и её редактор событий сохранены.
 
 ## 4. Результаты проверок
 
-Подтверждено фактическим запуском во второй сессии 2026-11-22 (после всех правок):
+Подтверждено фактическим запуском в третьей сессии 2026-11-22 (после всех правок bootstrap):
 
-- `tests/run_course_editor_tests.py` — 191 checks, 0 FAIL.
-- То же с ASan/UBSan — 191 checks, 0 FAIL.
+- `tests/run_course_editor_tests.py` — 346 checks, 0 FAIL.
+- То же с ASan/UBSan — 346 checks, 0 FAIL.
 - `tests/run_course_tests.py` — 570 PASS, 0 FAIL.
 - `tests/run_course_store_tests.py` — 108 PASS, 0 FAIL.
 - `tests/run_course_scheduler_tests.py` — 90 checks, 0 FAIL; с ASan/UBSan — 90, 0 FAIL.
 - `tests/run_emergency_tests.py` — 58 checks, 0 FAIL; с ASan/UBSan — 58, 0 FAIL.
-- `tests/run_active_day_state_tests.py` — 269 PASS, 0 FAIL; с UBSan — 269 PASS, 0 FAIL.
-  Было 7 FAIL (T02 — 5, T03 — 2); закрыто гейтом `courseLegacyConfirmedAbsent()`, старые тесты не менялись.
-- PlatformIO build (`pio run -e esp32dev`) — SUCCESS: RAM 20.9%, Flash 85.2%. Прошивка не заливалась.
-- Мутационная проверка гейта сидирования: 13 падений при принудительном `return true`.
+- `tests/run_active_day_state_tests.py` — 271 PASS, 0 FAIL; с UBSan — 271 PASS, 0 FAIL.
+- PlatformIO build (`pio run -e esp32dev`) — SUCCESS: RAM 20.9%, Flash 85.3%. Прошивка не заливалась.
+- Мутационные проверки: гейт сидирования (13 падений) и первенство курса при загрузке
+  (`T03/bootstrap_course_takes_over_and_survives_reboot` падает при старом условии).
 
 **Не подтверждено:**
 

@@ -509,6 +509,240 @@ void testExportFault() {
     check(course_editor::beginExport(error), "a new export can start after an abort");
 }
 
+bool hasCalendar() {
+    course_store::CourseStore store;
+    return store.hasCalendar();
+}
+
+std::uint32_t bootstrapGeneration() {
+    course_store::CourseStore store;
+    return store.loadBootstrapGeneration();
+}
+
+bool calendarKeyPresent() {
+    return host::nvs().visible.count("gong/course_state") != 0;
+}
+
+// Clean install: no course_state record at all (only legacy dayNN.conf may be
+// present on the device). The editor must still be usable.
+void testBootstrapWithoutCourse() {
+    resetHost();
+    std::string error;
+    course_editor::Info info;
+    check(course_editor::info(info, error), "info succeeds without a course");
+    check(!info.hasCourse, "no published course yet");
+    check(info.draftGeneration == 0, "no draft generation yet");
+    check(info.length == 0, "no length yet");
+
+    std::string day;
+    check(!course_editor::dayJson(0, day, error), "day read needs a draft or course");
+    check(!course_editor::saveDay(0, kOneEventDay, error), "day write needs a course");
+    check(!course_editor::insertDay(0, false, error), "insert needs a course");
+    check(!course_editor::deleteDay(0, error), "delete needs a course");
+    check(!course_editor::applyDraft(error), "apply needs a draft");
+    check(!course_editor::discardDraft(error), "discard needs a draft");
+    check(!hasCalendar(), "failed actions created no calendar");
+    check(!calendarKeyPresent(), "failed actions wrote no course_state key");
+
+    check(course_editor::setPreset(14, error), "preset 14 works without a course");
+    check(!hasCalendar(), "preset does not publish a calendar");
+    check(!calendarKeyPresent(), "preset writes no course_state key");
+    check(bootstrapGeneration() != 0, "preset records the bootstrap draft");
+
+    check(course_editor::info(info, error), "info after bootstrap preset");
+    check(!info.hasCourse, "bootstrap draft is not a published course");
+    check(info.draftGeneration == bootstrapGeneration(), "draft generation reported");
+    check(info.length == 14, "bootstrap preset has 14 days");
+    check(info.draftDirty, "bootstrap draft counts as dirty");
+
+    std::string day0;
+    std::string day13;
+    check(course_editor::dayJson(0, day0, error), "bootstrap day 0 readable");
+    check(day0.find("Arrival") != std::string::npos, "bootstrap day 0 is arrival");
+    check(course_editor::dayJson(13, day13, error), "bootstrap day 13 readable");
+    check(day13.find("Service breakfast") != std::string::npos,
+          "bootstrap day 13 is the service copy");
+
+    check(course_editor::saveDay(0, kOneEventDay, error), "bootstrap day editable");
+    check(course_editor::dayJson(0, day0, error) && day0.find("Wake-up") != std::string::npos,
+          "bootstrap day 0 edit stored");
+    check(course_editor::insertDay(1, false, error), "bootstrap insert works");
+    check(course_editor::info(info, error) && info.length == 15, "bootstrap insert grew the draft");
+    check(course_editor::deleteDay(1, error), "bootstrap delete works");
+    check(course_editor::info(info, error) && info.length == 14, "bootstrap delete shrank the draft");
+    check(course_editor::renameCourse("Bootstrap", error), "bootstrap rename works");
+    check(course_editor::info(info, error) && info.name == "Bootstrap", "bootstrap name stored");
+    check(!hasCalendar(), "editing the bootstrap draft never publishes a calendar");
+}
+
+// The first Apply publishes the bootstrap generation as the active course with
+// an APPLIED binding, and the draft pointer stays consistent across a reboot.
+void testBootstrapApply() {
+    resetHost();
+    std::string error;
+    check(course_editor::setPreset(3, error), "bootstrap preset 3");
+    const std::uint32_t draft = bootstrapGeneration();
+    check(draft != 0, "bootstrap generation recorded");
+
+    check(course_editor::applyDraft(error), "first apply publishes the draft");
+    check(hasCalendar(), "apply creates the calendar");
+    check(calendarKeyPresent(), "apply writes course_state");
+    check(bootstrapGeneration() == 0, "bootstrap pointer cleared after apply");
+
+    const course_store::CalendarState after = calendar();
+    check(after.active_generation == draft, "published generation is the bootstrap draft");
+    check(after.draft_generation == draft, "draft equals active after apply");
+    check(after.course_length == 3, "published length 3");
+    check(after.flags == course_store::kApplied, "binding is APPLIED, not RUNNING");
+    check(after.activation_date == 0, "no activation date after publish");
+    check(after.day_index == 0, "day index reset after publish");
+
+    course_editor::Info info;
+    check(course_editor::info(info, error), "info after first apply");
+    check(info.hasCourse, "course present after first apply");
+    check(!info.draftDirty, "draft clean after first apply");
+    check(info.length == 3, "active length 3");
+
+    // Reboot: only the NVS durable copy and LittleFS survive.
+    host::nvs().reboot();
+    check(course_editor::info(info, error), "info survives a reboot");
+    check(info.hasCourse && info.length == 3, "course survives a reboot");
+    std::string day0;
+    check(course_editor::dayJson(0, day0, error), "day readable after reboot");
+    check(hasCalendar(), "calendar still present after reboot");
+
+    // A second apply of the already published course keeps the binding APPLIED.
+    check(course_editor::applyDraft(error), "second apply is accepted");
+    const course_store::CalendarState second = calendar();
+    check(second.active_generation == draft, "second apply keeps the generation");
+    check(second.flags == course_store::kApplied, "second apply keeps APPLIED");
+}
+
+// A clean install must be able to import a course before the first publish.
+void testBootstrapImport() {
+    resetHost();
+    std::string error;
+    const std::string v1 =
+        "{\"format\":\"gong-course\",\"version\":1,\"name\":\"clean import\","
+        "\"days\":[[{\"id\":1,\"hour\":4,\"min\":0,\"track\":1,\"loop\":1,"
+        "\"vol\":5,\"en\":true,\"desc\":\"V1\"}]]}";
+    check(course_editor::importCourse(v1, error), "import works without a course");
+    check(!hasCalendar(), "import alone does not publish");
+    course_editor::Info info;
+    check(course_editor::info(info, error), "info after import");
+    check(!info.hasCourse && info.length == 1, "imported draft is unpublished, 1 day");
+    check(info.name == "clean import", "imported name kept");
+
+    check(course_editor::applyDraft(error), "apply imported draft");
+    check(course_editor::info(info, error), "info after apply");
+    check(info.hasCourse && info.length == 1, "imported course published");
+    check(info.name == "clean import", "published name kept");
+    check(calendar().flags == course_store::kApplied, "imported course is APPLIED");
+}
+
+// Failures on a clean install must leave no calendar and keep the draft.
+void testBootstrapFailures() {
+    resetHost();
+    std::string error;
+    check(course_editor::setPreset(3, error), "bootstrap preset 3");
+    const std::uint32_t draft = bootstrapGeneration();
+
+    host::nvs().inject("set", "course_state", host::Action::ErrorBefore);
+    check(!course_editor::applyDraft(error), "apply reports a failed calendar write");
+    host::nvs().fault.armed = false;
+    check(!error.empty(), "apply keeps the NVS error text");
+    check(!hasCalendar(), "failed apply created no calendar");
+    check(bootstrapGeneration() == draft, "failed apply keeps the bootstrap draft");
+    course_editor::Info info;
+    check(course_editor::info(info, error), "info after failed apply");
+    check(info.length == 3 && !info.hasCourse, "draft still editable after failed apply");
+    check(course_editor::applyDraft(error), "apply succeeds once NVS works again");
+    check(hasCalendar(), "calendar created on the retry");
+
+    resetHost();
+    host::fs().failWrite = true;
+    host::fs().path = "/course/g1/meta.tmp";
+    check(!course_editor::setPreset(3, error), "preset reports a failed meta write");
+    host::fs().failWrite = false;
+    host::fs().path.clear();
+    check(!hasCalendar(), "failed preset created no calendar");
+    check(bootstrapGeneration() == 0, "failed preset recorded no draft");
+    check(course_editor::info(info, error) && !info.hasCourse && info.length == 0,
+          "failed preset leaves the editor empty");
+
+    resetHost();
+    check(course_editor::setPreset(3, error), "bootstrap preset for the corrupt case");
+    const std::uint32_t corrupt = bootstrapGeneration();
+    host::files()[generationPath(corrupt, "meta.json")] = "{\"corrupt\":true}";
+    check(!course_editor::info(info, error), "info fails on a corrupt bootstrap meta");
+    check(!course_editor::applyDraft(error), "apply refuses a corrupt bootstrap draft");
+    check(!hasCalendar(), "corrupt draft published nothing");
+
+    resetHost();
+    check(course_editor::setPreset(3, error), "bootstrap preset for the missing case");
+    course_store::CourseStore store;
+    check(store.saveBootstrapGeneration(99, error), "pointer moved to a missing generation");
+    check(course_editor::info(info, error), "info survives a dangling pointer");
+    check(!info.hasCourse && info.draftGeneration == 0, "dangling pointer reports no draft");
+    check(!course_editor::applyDraft(error), "apply refuses a dangling pointer");
+}
+
+void testBootstrapDiscardAndSeedGuard() {
+    resetHost();
+    std::string error;
+    check(course_editor::setPreset(3, error), "bootstrap preset 3");
+    const std::uint32_t draft = bootstrapGeneration();
+    check(host::files().count(generationPath(draft, "meta.json")) == 1,
+          "bootstrap generation written");
+
+    check(!course_editor::ensureInitialCourse(error), "auto-seed refuses a pending draft");
+    check(!hasCalendar(), "auto-seed did not publish over the draft");
+    course_editor::Info info;
+    check(course_editor::info(info, error), "draft survives the refused auto-seed");
+    check(info.draftGeneration == draft && info.length == 3, "draft unchanged");
+
+    check(course_editor::discardDraft(error), "bootstrap draft discarded");
+    check(!hasCalendar(), "discard created no calendar");
+    check(bootstrapGeneration() == 0, "discard cleared the pointer");
+    check(host::files().count(generationPath(draft, "meta.json")) == 0,
+          "discard removed the generation files");
+    check(course_editor::info(info, error) && !info.hasCourse && info.draftGeneration == 0,
+          "editor empty after discard");
+    check(!course_editor::discardDraft(error), "second discard reports nothing to drop");
+}
+
+// Every preset the GUI offers must work on a clean install.
+void testBootstrapPresets() {
+    const int lengths[] = {3, 10, 14, 20, 30, 45};
+    for (int length : lengths) {
+        resetHost();
+        std::string error;
+        check(course_editor::setPreset(static_cast<std::uint8_t>(length), error),
+              "bootstrap preset " + std::to_string(length) + " failed: " + error);
+        course_editor::Info info;
+        check(course_editor::info(info, error), "info after bootstrap preset");
+        check(info.length == length, "bootstrap preset length " + std::to_string(length));
+        check(!info.hasCourse, "bootstrap preset did not publish");
+        check(!hasCalendar(), "bootstrap preset wrote a calendar");
+        check(course_editor::applyDraft(error), "apply bootstrap preset " + std::to_string(length));
+        check(course_editor::info(info, error) && info.hasCourse && info.length == length,
+              "published preset length " + std::to_string(length));
+        check(calendar().flags == course_store::kApplied, "published preset is APPLIED");
+    }
+}
+
+// A published course must keep using its own draft pointer, never the bootstrap.
+void testPublishedCourseIgnoresBootstrap() {
+    resetHost();
+    std::string error;
+    check(course_editor::ensureInitialCourse(error), "reference course published");
+    check(course_editor::setPreset(3, error), "draft preset on a published course");
+    check(bootstrapGeneration() == 0, "published course never uses the bootstrap key");
+    check(course_editor::applyDraft(error), "apply published draft");
+    check(bootstrapGeneration() == 0, "apply keeps the bootstrap key unused");
+    check(hasCalendar(), "published course still has its calendar");
+}
+
 }  // namespace
 
 int main() {
@@ -526,6 +760,13 @@ int main() {
     runGroup("apply nvs failure", testApplyNvsFailure);
     runGroup("corrupt draft generation", testCorruptDraftGeneration);
     runGroup("export fault", testExportFault);
+    runGroup("bootstrap without course", testBootstrapWithoutCourse);
+    runGroup("bootstrap apply", testBootstrapApply);
+    runGroup("bootstrap import", testBootstrapImport);
+    runGroup("bootstrap failures", testBootstrapFailures);
+    runGroup("bootstrap presets", testBootstrapPresets);
+    runGroup("bootstrap discard and seed guard", testBootstrapDiscardAndSeedGuard);
+    runGroup("published course ignores bootstrap", testPublishedCourseIgnoresBootstrap);
 
     std::cout << "\n" << g_pass << " checks passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;

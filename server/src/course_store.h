@@ -110,6 +110,13 @@ public:
     bool setPendingGeneration(std::uint32_t generation, std::string& error);
     bool reclaimPendingGeneration(std::string& error);
 
+    // Bootstrap draft. Before the first Apply there is no calendar, so the
+    // draft generation cannot be referenced from course_state. It is recorded
+    // in its own NVS key instead; nothing executes from it and no calendar is
+    // created until the operator applies the draft.
+    std::uint32_t loadBootstrapGeneration();
+    bool saveBootstrapGeneration(std::uint32_t generation, std::string& error);
+
     // Repairs interrupted file replacements and removes stale .tmp/.bak files.
     bool recover(std::string& error);
 

@@ -773,6 +773,9 @@ static void handleCourseDiscard() {
 static void handleCourseActivate() {
     int day = 0;
     if (!courseDayParam(day)) return;
+    // Before the first Apply there is no course: activating here would fall
+    // through to the legacy day files, which is not what the editor offers.
+    if (!sched_courseEnabled()) { sendErr("apply the draft first"); return; }
     if (day >= sched_dayCount()) { sendErr("invalid day"); return; }
     if (sched_activateDay(static_cast<uint8_t>(day))) sendOK();
     else sendErr("activation failed");

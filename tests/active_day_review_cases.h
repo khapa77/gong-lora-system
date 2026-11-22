@@ -275,6 +275,59 @@ static void registerReviewCases(std::vector<Test>& list) {
         require(!courseMode,"course was seeded over the legacy gong.conf seed file");
         require(!host::files().count("/course/g1/meta.json"),"legacy seed boot wrote a course generation");
     });
+    // A device upgraded from the legacy scheduler: legacy files and a legacy
+    // active day exist, but no course has ever been published. The operator
+    // publishes a course from the Web GUI; the course must take over at once
+    // and must still own execution after a reboot, even before Activate.
+    addCase(list,"T03","bootstrap_course_takes_over_and_survives_reboot",[]() {
+        sched_setup();
+        require(!courseMode,"fixture unexpectedly started in course mode");
+        require(sched_isRunning() && activeDay==0,"legacy Day 00 did not start");
+        std::string err;
+        require(course_editor::setPreset(14,err),std::string("clean-install preset failed: ")+err);
+        require(!courseStore.hasCalendar(),"preset published a calendar");
+        require(sched_courseApply(),std::string("apply failed: ")+sched_courseError().c_str());
+        require(courseMode && !sched_isRunning(),"applied course must stay inactive");
+        host::clock()=at(16,4,0,10); sched_check();
+        require(audioCalls==0,"a gong fired before Activate");
+
+        host::nvs().reboot(); resetRam();
+        host::clock()=at(16,4,0,20); sched_setup();
+        require(courseMode,"reboot fell back to the legacy schedule");
+        require(!sched_isRunning(),"APPLIED course is running after reboot");
+        require(activeDay==-1,"legacy day was restored into RAM");
+        sched_check();
+        require(audioCalls==0,"a gong fired after reboot before Activate");
+
+        require(sched_activateDay(0),"activation after reboot failed");
+        require(sched_isRunning() && activeDay==0,"activation did not bind day 0");
+        host::clock()=at(16,19,45); sched_check();
+        require(audioCalls==1,"arrival gong did not fire after activation");
+        for (int day=0;day<DAY_COUNT;++day) {
+            char path[16]; dayPath(day,path);
+            require(host::files().count(path)==1,"legacy day file was deleted");
+        }
+    });
+    // The opposite compatibility guarantee: preparing a draft on a legacy device
+    // must not change what rings until the operator applies it.
+    addCase(list,"T03","unpublished_draft_keeps_legacy_running",[]() {
+        sched_setup();
+        require(sched_isRunning() && activeDay==0,"legacy Day 00 did not start");
+        std::string err;
+        require(course_editor::setPreset(14,err),std::string("clean-install preset failed: ")+err);
+        course_editor::Info info;
+        require(course_editor::info(info,err) && info.draftGeneration!=0,"draft not recorded");
+        require(!courseStore.hasCalendar(),"preset published a calendar");
+
+        host::nvs().reboot(); resetRam(); sched_setup();
+        require(!courseMode,"an unpublished draft changed the legacy behaviour");
+        require(sched_isRunning() && activeDay==0,"legacy Day 00 did not reload");
+        host::clock()=at(16,4,0,5); sched_check();
+        require(audioCalls==1,"legacy gong stopped before the course was applied");
+        require(course_editor::info(info,err) && info.draftGeneration!=0,
+                "draft lost across a reboot");
+        require(!courseStore.hasCalendar(),"draft published itself");
+    });
     addCase(list,"T08","course_reload_success_stays_running",[]() {
         readyActive(); stageReplacementCourse(); String error;
         require(sched_commitCourse(error) && !sched_hasError() && sched_isRunning(),"successful course reload stopped scheduler");

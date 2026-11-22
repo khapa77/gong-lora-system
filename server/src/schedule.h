@@ -96,3 +96,4 @@ bool sched_courseDiscardDraft();
 bool sched_courseExportBegin();
 bool sched_courseExportNext(String& chunk, bool& done);
 const String& sched_courseError();
+bool sched_courseEnabled();   // a published course owns execution

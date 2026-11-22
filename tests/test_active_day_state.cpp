@@ -70,6 +70,12 @@ static void resetRam() {
     schedPendingSave=false; lastFireTs=0; lastFiredKey=-1;
     activeStore=active_day::Store(DAY_COUNT); executionRunning=false; publishedActive=0;
     lastFiredMillis=0; lastTimeLog=0; firePrefs=Preferences();
+    // Every RAM mirror of the course state is lost on a reboot too.
+    courseMode=false; courseRunning=false; courseSuspended=false;
+    courseDayValid=false; courseDay=0; courseLength=0; courseGeneration=0;
+    courseTransitionPending=false;
+    courseCal=course_store::CalendarState();
+    courseLastFire=course_store::LastFire(); courseLastFireValid=false;
     onScheduleTrigger=audioCallback;
 }
 static void fixture() {

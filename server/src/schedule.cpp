@@ -388,6 +388,15 @@ static bool courseTryBoot() {
         } else {
             courseSuspend("boot retry failed", emergency::kBootFailed);
         }
+    } else {
+        // Published but not bound: nothing may ring until an explicit Activate.
+        // The legacy loader may have left its own day in RAM on a device that
+        // was upgraded from the old scheduler; drop it so no stale entry can be
+        // executed or written back by the legacy paths.
+        count = 0;
+        for (unsigned i = 0; i < MAX_SCHEDULES; ++i) entries[i] = ScheduleEntry{};
+        activeDay = -1;
+        activeDate = "";
     }
     return true;
 }
@@ -819,10 +828,16 @@ void sched_setup() {
     lastFireTs = firePrefs.getUInt("lastfire", 0);
 
     loadActiveDay();
-    // A course_state record takes precedence over the legacy active-day key.
-    // It is only consulted when the legacy path found no active day, so
-    // existing installations and the legacy host tests keep their behavior.
-    if (activeStore.status() == active_day::Status::Empty && courseTryBoot()) {
+    // A published course takes precedence over the legacy active-day key: once
+    // an operator has applied a course, the legacy schedule must never play
+    // again after a reboot — including while the course is APPLIED and not yet
+    // activated. Devices without a course_state record keep the legacy path,
+    // so existing installations are unaffected. courseTryBoot() also seeds the
+    // reference course, which is only allowed when the legacy state is empty
+    // and the filesystem confirms that no legacy schedule exists.
+    const bool coursePublished = courseStore.hasCalendar();
+    if ((coursePublished || activeStore.status() == active_day::Status::Empty) &&
+        courseTryBoot()) {
         logPrintf("[COURSE] mode active, day %d, %d entries, running=%d\n",
                   activeDay, count, courseRunning ? 1 : 0);
         return;
@@ -1220,6 +1235,9 @@ bool sched_hasError() {
     return scheduleFileState != ScheduleFileState::Ready || activeStore.status() != active_day::Status::Ready;
 }
 uint8_t sched_dayCount() { return courseMode ? courseLength : (uint8_t)DAY_COUNT; }
+// True once a published course owns execution. The Course Editor's Activate
+// must not fall through to the legacy day files before that.
+bool sched_courseEnabled() { return courseMode; }
 
 active_day::Status sched_persistenceStatus() { return activeStore.status(); }
 bool sched_isRunning() { return schedulerReady(); }
@@ -1603,9 +1621,14 @@ bool sched_courseInfoJSON(String& out) {
     course_editor::Info info;
     std::string err;
     if (!course_editor::info(info, err)) return courseFail(err);
-    DynamicJsonDocument doc(640);
+    // 1 KB: state keys plus the course name, which may be up to 64 bytes.
+    DynamicJsonDocument doc(1024);
     JsonObject root = doc.to<JsonObject>();
     root["has_course"] = info.hasCourse;
+    // has_draft is true while an unpublished bootstrap draft exists too, so the
+    // GUI can offer Apply before the first publish.
+    root["has_draft"] = info.draftGeneration != 0;
+    root["bootstrap"] = !info.hasCourse && info.draftGeneration != 0;
     root["active_generation"] = info.activeGeneration;
     root["draft_generation"] = info.draftGeneration;
     root["draft_dirty"] = info.draftDirty;

@@ -158,6 +158,111 @@ bool readMeta(std::uint32_t generation, course_store::CourseMeta& meta,
     return store.loadMeta(generation, meta, error);
 }
 
+// The generation the operator is editing. With a published course that is its
+// private draft; before the first Apply it is the bootstrap draft recorded in
+// its own NVS key, because course_state does not exist yet.
+bool editingGeneration(std::uint32_t& generation, bool& published,
+                       std::string& error) {
+    error.clear();
+    course_store::CourseStore store;
+    if (!store.hasCalendar()) {
+        published = false;
+        const std::uint32_t bootstrap = store.loadBootstrapGeneration();
+        if (bootstrap == 0 || !store.generationExists(bootstrap)) {
+            error = "no course has been published";
+            return false;
+        }
+        generation = bootstrap;
+        return true;
+    }
+    published = true;
+    course_store::CalendarState cal;
+    if (!loadCalendar(cal, error)) return false;
+    return readGeneration(cal, generation, error);
+}
+
+// A generation that may be written to. With a published course that is always
+// a private draft generation (copy-on-write on the first edit), so the active
+// generation is never modified in place. Before the first Apply the bootstrap
+// generation is already private and is used as is.
+bool ensureEditableGeneration(course_store::CalendarState& cal,
+                              std::uint32_t& generation, bool& published,
+                              std::string& error) {
+    error.clear();
+    course_store::CourseStore store;
+    if (store.hasCalendar()) {
+        published = true;
+        return ensureDraft(cal, generation, error);
+    }
+    return editingGeneration(generation, published, error);
+}
+
+// Publishes a freshly built generation as the bootstrap draft. The NVS pointer
+// is written last, so an interrupted build leaves only an unreferenced
+// generation and no calendar at all.
+bool commitBootstrap(std::uint32_t built, std::uint32_t previous,
+                     std::string& error) {
+    course_store::CourseStore store;
+    if (!store.saveBootstrapGeneration(built, error)) {
+        std::string ignored;
+        store.deleteGeneration(built, ignored);
+        return false;
+    }
+    if (previous != 0 && previous != built) {
+        std::string ignored;
+        store.deleteGeneration(previous, ignored);
+    }
+    return true;
+}
+
+// Builds a complete generation from a resolved course and publishes its meta
+// last. Used by the presets and by import, both before and after the first
+// Apply. Returns false with any partially written generation removed.
+bool buildGeneration(const course::Course& source, std::uint32_t& built,
+                     std::string& error) {
+    course_store::CourseStore store;
+    if (!store.createGeneration(built, error)) return false;
+    const std::uint8_t length = static_cast<std::uint8_t>(source.days.size());
+    for (std::uint8_t i = 0; i < length; ++i) {
+        course::Day dayData;
+        dayData.hasOwnEvents = true;
+        if (!course::resolvedEvents(source, i, dayData.events, error)) {
+            std::string ignored;
+            store.deleteGeneration(built, ignored);
+            return false;
+        }
+        if (!store.saveDayAtomic(built, i, dayData, error)) {
+            std::string ignored;
+            store.deleteGeneration(built, ignored);
+            return false;
+        }
+    }
+    course_store::CourseMeta meta;
+    meta.generation = built;
+    meta.course_length = length;
+    meta.name = source.name;
+    if (!store.saveMeta(meta, error)) {
+        std::string ignored;
+        store.deleteGeneration(built, ignored);
+        return false;
+    }
+    if (!store.validateGeneration(built, length, error)) {
+        std::string ignored;
+        store.deleteGeneration(built, ignored);
+        return false;
+    }
+    return true;
+}
+
+// Either commits the built generation as a published draft or as the bootstrap
+// draft, depending on whether a course has been published already.
+bool commitEditingGeneration(bool published, std::uint32_t built,
+                             course_store::CalendarState& cal,
+                             std::uint32_t source, std::string& error) {
+    if (published) return commitDraft(cal, built, source, error);
+    return commitBootstrap(built, source, error);
+}
+
 // Builds an empty day (no events) for presets and "insert without copy".
 course::Day emptyDay() {
     course::Day day;
@@ -198,7 +303,17 @@ bool info(Info& out, std::string& error) {
     error.clear();
     course_store::CourseStore store;
     if (!store.hasCalendar()) {
+        // No published course yet. A bootstrap draft may still exist; report
+        // it so the editor can be used before the first Apply.
         out = Info();
+        const std::uint32_t bootstrap = store.loadBootstrapGeneration();
+        if (bootstrap == 0 || !store.generationExists(bootstrap)) return true;
+        course_store::CourseMeta meta;
+        if (!readMeta(bootstrap, meta, error)) return false;
+        out.draftGeneration = bootstrap;
+        out.length = meta.course_length;
+        out.name = meta.name;
+        out.draftDirty = true;
         return true;
     }
     course_store::CalendarState cal;
@@ -223,9 +338,9 @@ bool info(Info& out, std::string& error) {
 
 bool dayJson(std::uint8_t day, std::string& out, std::string& error) {
     error.clear();
-    course_store::CalendarState cal;
     std::uint32_t generation = 0;
-    if (!readGeneration(cal, generation, error)) return false;
+    bool published = false;
+    if (!editingGeneration(generation, published, error)) return false;
     course_store::CourseMeta meta;
     if (!readMeta(generation, meta, error)) return false;
     if (day >= meta.course_length) {
@@ -244,7 +359,8 @@ bool saveDay(std::uint8_t day, const std::string& json, std::string& error) {
     error.clear();
     course_store::CalendarState cal;
     std::uint32_t generation = 0;
-    if (!ensureDraft(cal, generation, error)) return false;
+    bool published = false;
+    if (!ensureEditableGeneration(cal, generation, published, error)) return false;
     course_store::CourseMeta meta;
     if (!readMeta(generation, meta, error)) return false;
     if (day >= meta.course_length) {
@@ -301,7 +417,8 @@ bool saveDay(std::uint8_t day, const std::string& json, std::string& error) {
 bool clearDay(std::uint8_t day, std::string& error) {
     course_store::CalendarState cal;
     std::uint32_t generation = 0;
-    if (!ensureDraft(cal, generation, error)) return false;
+    bool published = false;
+    if (!ensureEditableGeneration(cal, generation, published, error)) return false;
     course_store::CourseMeta meta;
     if (!readMeta(generation, meta, error)) return false;
     if (day >= meta.course_length) {
@@ -316,7 +433,8 @@ bool insertDay(std::uint8_t day, bool copyEvents, std::string& error) {
     error.clear();
     course_store::CalendarState cal;
     std::uint32_t source = 0;
-    if (!ensureDraft(cal, source, error)) return false;
+    bool published = false;
+    if (!ensureEditableGeneration(cal, source, published, error)) return false;
     course_store::CourseMeta meta;
     if (!readMeta(source, meta, error)) return false;
     if (day > meta.course_length) {
@@ -377,14 +495,15 @@ bool insertDay(std::uint8_t day, bool copyEvents, std::string& error) {
         store.deleteGeneration(built, ignored);
         return false;
     }
-    return commitDraft(cal, built, source, error);
+    return commitEditingGeneration(published, built, cal, source, error);
 }
 
 bool deleteDay(std::uint8_t day, std::string& error) {
     error.clear();
     course_store::CalendarState cal;
     std::uint32_t source = 0;
-    if (!ensureDraft(cal, source, error)) return false;
+    bool published = false;
+    if (!ensureEditableGeneration(cal, source, published, error)) return false;
     course_store::CourseMeta meta;
     if (!readMeta(source, meta, error)) return false;
     if (day >= meta.course_length) {
@@ -427,7 +546,7 @@ bool deleteDay(std::uint8_t day, std::string& error) {
         store.deleteGeneration(built, ignored);
         return false;
     }
-    return commitDraft(cal, built, source, error);
+    return commitEditingGeneration(published, built, cal, source, error);
 }
 
 bool setPreset(std::uint8_t days, std::string& error) {
@@ -436,9 +555,18 @@ bool setPreset(std::uint8_t days, std::string& error) {
         error = "course length out of range";
         return false;
     }
+    course_store::CourseStore store;
+    const bool published = store.hasCalendar();
     course_store::CalendarState cal;
     std::uint32_t source = 0;
-    if (!ensureDraft(cal, source, error)) return false;
+    if (published) {
+        if (!ensureDraft(cal, source, error)) return false;
+    } else {
+        // Nothing to inherit: the preset becomes the bootstrap draft and no
+        // calendar is written until Apply.
+        source = store.loadBootstrapGeneration();
+        if (source != 0 && !store.generationExists(source)) source = 0;
+    }
 
     course::Course preset;
     if (days == 14) {
@@ -452,45 +580,17 @@ bool setPreset(std::uint8_t days, std::string& error) {
     }
     if (!course::validate(preset, error)) return false;
 
-    course_store::CourseStore store;
     std::uint32_t built = 0;
-    if (!store.createGeneration(built, error)) return false;
-    for (std::uint8_t i = 0; i < days; ++i) {
-        course::Day dayData;
-        dayData.hasOwnEvents = true;
-        if (!course::resolvedEvents(preset, i, dayData.events, error)) {
-            std::string ignored;
-            store.deleteGeneration(built, ignored);
-            return false;
-        }
-        if (!store.saveDayAtomic(built, i, dayData, error)) {
-            std::string ignored;
-            store.deleteGeneration(built, ignored);
-            return false;
-        }
-    }
-    course_store::CourseMeta meta;
-    meta.generation = built;
-    meta.course_length = days;
-    meta.name = preset.name;
-    if (!store.saveMeta(meta, error)) {
-        std::string ignored;
-        store.deleteGeneration(built, ignored);
-        return false;
-    }
-    if (!store.validateGeneration(built, days, error)) {
-        std::string ignored;
-        store.deleteGeneration(built, ignored);
-        return false;
-    }
-    return commitDraft(cal, built, source, error);
+    if (!buildGeneration(preset, built, error)) return false;
+    return commitEditingGeneration(published, built, cal, source, error);
 }
 
 bool renameCourse(const std::string& name, std::string& error) {
     error.clear();
     course_store::CalendarState cal;
     std::uint32_t generation = 0;
-    if (!ensureDraft(cal, generation, error)) return false;
+    bool published = false;
+    if (!ensureEditableGeneration(cal, generation, published, error)) return false;
     course_store::CourseMeta meta;
     if (!readMeta(generation, meta, error)) return false;
     meta.name = name;
@@ -504,48 +604,58 @@ bool importCourse(const std::string& json, std::string& error) {
     if (!course::fromJson(json, imported, error)) return false;
     if (!course::validate(imported, error)) return false;
 
+    course_store::CourseStore store;
+    const bool published = store.hasCalendar();
     course_store::CalendarState cal;
     std::uint32_t source = 0;
-    if (!ensureDraft(cal, source, error)) return false;
+    if (published) {
+        if (!ensureDraft(cal, source, error)) return false;
+    } else {
+        // A clean install: the imported course becomes the bootstrap draft.
+        source = store.loadBootstrapGeneration();
+        if (source != 0 && !store.generationExists(source)) source = 0;
+    }
 
-    course_store::CourseStore store;
     std::uint32_t built = 0;
-    if (!store.createGeneration(built, error)) return false;
-    const std::uint8_t length = static_cast<std::uint8_t>(imported.days.size());
-    for (std::uint8_t i = 0; i < length; ++i) {
-        course::Day dayData;
-        dayData.hasOwnEvents = true;
-        if (!course::resolvedEvents(imported, i, dayData.events, error)) {
-            std::string ignored;
-            store.deleteGeneration(built, ignored);
-            return false;
-        }
-        if (!store.saveDayAtomic(built, i, dayData, error)) {
-            std::string ignored;
-            store.deleteGeneration(built, ignored);
-            return false;
-        }
-    }
-    course_store::CourseMeta meta;
-    meta.generation = built;
-    meta.course_length = length;
-    meta.name = imported.name;
-    if (!store.saveMeta(meta, error)) {
-        std::string ignored;
-        store.deleteGeneration(built, ignored);
-        return false;
-    }
-    if (!store.validateGeneration(built, length, error)) {
-        std::string ignored;
-        store.deleteGeneration(built, ignored);
-        return false;
-    }
-    return commitDraft(cal, built, source, error);
+    if (!buildGeneration(imported, built, error)) return false;
+    return commitEditingGeneration(published, built, cal, source, error);
 }
 
 bool applyDraft(std::string& error) {
     error.clear();
     course_store::CourseStore store;
+    if (!store.hasCalendar()) {
+        // First Apply on a clean install: publish the bootstrap draft as
+        // generation N with an APPLIED binding. The calendar is one NVS blob,
+        // so the switch is a single atomic record and nothing rings until an
+        // explicit Activate.
+        const std::uint32_t bootstrap = store.loadBootstrapGeneration();
+        if (bootstrap == 0 || !store.generationExists(bootstrap)) {
+            error = "no draft course to apply";
+            return false;
+        }
+        course_store::CourseMeta meta;
+        if (!readMeta(bootstrap, meta, error)) return false;
+        if (!store.validateGeneration(bootstrap, meta.course_length, error)) {
+            return false;
+        }
+        course_store::CalendarState next;
+        next.active_generation = bootstrap;
+        next.draft_generation = bootstrap;
+        next.activation_date = 0;
+        next.day_index = 0;
+        next.course_length = meta.course_length;
+        next.flags = course_store::kApplied;
+        next.failure_count = 0;
+        if (!store.saveCalendar(next, error)) return false;
+        std::string ignored;
+        if (!store.saveBootstrapGeneration(0, ignored)) {
+            // The pointer is ignored once the calendar exists; a leftover
+            // value cannot resurrect the draft.
+            error.clear();
+        }
+        return true;
+    }
     course_store::CalendarState cal;
     if (!loadCalendar(cal, error)) return false;
     if (cal.active_generation == 0) {
@@ -592,6 +702,19 @@ bool applyDraft(std::string& error) {
 bool discardDraft(std::string& error) {
     error.clear();
     course_store::CourseStore store;
+    if (!store.hasCalendar()) {
+        // Only a bootstrap draft can exist here. Dropping it leaves the device
+        // exactly as it was: no calendar, legacy behaviour untouched.
+        const std::uint32_t bootstrap = store.loadBootstrapGeneration();
+        if (bootstrap == 0) {
+            error = "no draft course to discard";
+            return false;
+        }
+        if (!store.saveBootstrapGeneration(0, error)) return false;
+        std::string ignored;
+        store.deleteGeneration(bootstrap, ignored);
+        return true;
+    }
     course_store::CalendarState cal;
     if (!loadCalendar(cal, error)) return false;
     if (cal.active_generation == 0) {
@@ -617,6 +740,12 @@ bool ensureInitialCourse(std::string& error) {
         error = "course already present";
         return false;
     }
+    if (store.loadBootstrapGeneration() != 0) {
+        // The operator is preparing a course on this device. Publishing the
+        // reference course over it would silently discard their draft.
+        error = "a draft course is already pending";
+        return false;
+    }
     course::Course reference = course::makeReferenceCourse();
     if (!course::validate(reference, error)) return false;
     std::uint32_t generation = 0;
@@ -630,9 +759,9 @@ bool beginExport(std::string& error) {
     error.clear();
     ExportState& state = exportState();
     state.active = false;
-    course_store::CalendarState cal;
     std::uint32_t generation = 0;
-    if (!readGeneration(cal, generation, error)) return false;
+    bool published = false;
+    if (!editingGeneration(generation, published, error)) return false;
     course_store::CourseMeta meta;
     if (!readMeta(generation, meta, error)) return false;
     state.active = true;
