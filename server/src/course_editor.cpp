@@ -852,12 +852,21 @@ course::Day emptyDay() {
 // 47-day course never has to exist as one string.
 struct ExportState {
     bool active;
+    // layout = kLayoutTemplates: emit the compact v1 form (unique templates plus
+    // day references) instead of the expanded v2 days.
+    bool compact;
+    // 0 = header not sent yet, 1 = streaming templates, 2 = streaming days,
+    // 3 = closing chunk.
+    std::uint8_t phase;
     std::uint32_t generation;
     std::uint8_t length;
-    std::uint8_t next;
+    std::uint8_t next;      // expanded: day index; compact: template fragments sent
+    std::uint8_t day;       // compact: day index
     std::string name;
+    std::vector<std::string> templateNames;
 
-    ExportState() : active(false), generation(0), length(0), next(0) {}
+    ExportState() : active(false), compact(false), phase(0), generation(0), length(0),
+                    next(0), day(0) {}
 };
 
 ExportState& exportState() {
@@ -1580,15 +1589,12 @@ bool ensureInitialCourse(std::string& error) {
     return true;
 }
 
-bool beginExport(ExportSource source, std::string& error) {
-    error.clear();
-    ExportState& state = exportState();
-    state.active = false;
-    std::uint32_t generation = 0;
+// Resolves the generation to export without touching the template cache: an
+// export must not disturb a running course or invalidate a loaded set.
+static bool exportGeneration(ExportSource source, std::uint32_t& generation,
+                             std::string& error) {
     course_store::CourseStore store;
     if (source == kExportActive && store.hasCalendar()) {
-        // The operator asked for what is actually published right now, not for
-        // a draft that has been imported but not applied.
         course_store::CalendarState cal;
         if (!loadCalendar(cal, error)) return false;
         if (cal.active_generation == 0 || !store.generationExists(cal.active_generation)) {
@@ -1596,17 +1602,49 @@ bool beginExport(ExportSource source, std::string& error) {
             return false;
         }
         generation = cal.active_generation;
-    } else {
-        bool published = false;
-        if (!editingGeneration(generation, published, error)) return false;
+        return true;
     }
+    if (!store.hasCalendar()) {
+        const std::uint32_t bootstrap = store.loadBootstrapGeneration();
+        if (bootstrap == 0 || !store.generationExists(bootstrap)) {
+            error = "no course has been published";
+            return false;
+        }
+        generation = bootstrap;
+        return true;
+    }
+    course_store::CalendarState cal;
+    if (!loadCalendar(cal, error)) return false;
+    return readGeneration(cal, generation, error);
+}
+
+bool beginExport(ExportSource source, std::string& error) {
+    error.clear();
+    ExportState& state = exportState();
+    state.active = false;
+    state.templateNames.clear();
+    std::uint32_t generation = 0;
+    course_store::CourseStore store;
+    if (!exportGeneration(source, generation, error)) return false;
     course_store::CourseMeta meta;
     if (!readMeta(generation, meta, error)) return false;
     state.active = true;
+    state.compact = meta.layout == course_store::kLayoutTemplates;
+    state.phase = 0;
     state.generation = generation;
     state.length = meta.course_length;
     state.next = 0;
+    state.day = 0;
     state.name = meta.name;
+    if (state.compact) {
+        // Fail here rather than halfway through the response when the template
+        // file is unreadable.
+        if (!store.openTemplateExport(generation, error) ||
+            !store.templateExportNames(state.templateNames)) {
+            state.active = false;
+            return false;
+        }
+    }
     return true;
 }
 
@@ -1619,6 +1657,71 @@ bool nextExportChunk(std::string& chunk, bool& done, std::string& error) {
         return false;
     }
     course_store::CourseStore store;
+
+    // ── Compact layout: v1 with one templates section and day references ──
+    if (state.compact) {
+        if (state.phase == 0) {
+            chunk = "{\"format\":\"gong-course\",\"version\":1,\"name\":\"";
+            chunk += escapeJsonText(state.name);
+            chunk += "\",\"templates\":{";
+            state.phase = 1;
+            return true;
+        }
+        if (state.phase == 1) {
+            bool done = false;
+            std::string fragment;
+            if (!store.nextTemplateExportChunk(fragment, done, error)) return false;
+            if (done) {
+                chunk = "},\"days\":[";
+                state.phase = 2;
+                return true;
+            }
+            if (state.next > 0) chunk += ',';
+            ++state.next;
+            chunk += fragment;
+            return true;
+        }
+        if (state.phase == 2) {
+            const std::uint8_t day = state.day;
+            if (day < state.length) {
+                bool isReference = false;
+                std::string templateName;
+                std::vector<course::Event> events;
+                if (!store.loadDayDescriptor(state.generation, day, isReference,
+                                             templateName, events, error)) {
+                    return false;
+                }
+                if (day > 0) chunk += ',';
+                if (isReference) {
+                    bool known = false;
+                    for (std::size_t i = 0; i < state.templateNames.size(); ++i) {
+                        if (state.templateNames[i] == templateName) {
+                            known = true;
+                            break;
+                        }
+                    }
+                    if (!known) {
+                        error = "day " + std::to_string(day) +
+                                " references a missing template: " + templateName;
+                        state.active = false;
+                        return false;
+                    }
+                    chunk += '"';
+                    chunk += escapeJsonText(templateName);
+                    chunk += '"';
+                } else {
+                    appendEvents(chunk, events);
+                }
+                ++state.day;
+                return true;
+            }
+            chunk = "]}";
+            state.active = false;
+            done = true;
+            return true;
+        }
+    }
+
     if (state.next == 0) {
         chunk = "{\"format\":\"gong-course\",\"version\":2,\"name\":\"";
         // Reuse the model's escaping by round-tripping the name through a

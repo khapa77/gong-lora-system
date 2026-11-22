@@ -1911,6 +1911,129 @@ bool CourseStore::saveCompactDraft(const course::Course& course,
     return true;
 }
 
+namespace {
+
+// Export cursor over templates.json. It parses the file with the same rules as
+// the cache loader but keeps nothing: the template cache is left untouched, a
+// day edit or a running course is not disturbed, and only one raw file plus one
+// fragment is alive at a time.
+struct TemplateExportState {
+    bool active;
+    std::string raw;
+    std::vector<TemplateSlice> slices;
+    std::size_t next;
+
+    TemplateExportState() : active(false), next(0) {}
+};
+
+TemplateExportState& templateExport() {
+    static TemplateExportState state;
+    return state;
+}
+
+void clearTemplateExport() {
+    TemplateExportState& state = templateExport();
+    state.active = false;
+    state.raw.clear();
+    state.raw.shrink_to_fit();
+    state.slices.clear();
+    state.slices.shrink_to_fit();
+    state.next = 0;
+}
+
+}  // namespace
+
+bool CourseStore::templateExportNames(std::vector<std::string>& out) const {
+    out.clear();
+    const TemplateExportState& state = templateExport();
+    if (!state.active) return false;
+    for (std::size_t i = 0; i < state.slices.size(); ++i) {
+        out.push_back(state.slices[i].name);
+    }
+    return true;
+}
+
+bool CourseStore::loadDayDescriptor(std::uint32_t generation, std::uint8_t day,
+                                    bool& isReference, std::string& templateName,
+                                    std::vector<course::Event>& events,
+                                    std::string& error) {
+    error.clear();
+    isReference = false;
+    templateName.clear();
+    events.clear();
+    if (generation == 0 || day >= course::kMaxDays) {
+        error = "day index out of range";
+        return false;
+    }
+    std::string json;
+    if (!readFileWithCrc(dayBase(generation, day) + ".json", json, error)) return false;
+    course::Course one;
+    if (!course::fromJsonUnresolved(json, one, error)) return false;
+    if (one.generation != generation) {
+        error = "day generation mismatch";
+        return false;
+    }
+    if (one.days.size() != 1) {
+        error = "day file must contain one day";
+        return false;
+    }
+    const course::Day& parsed = one.days[0];
+    if (parsed.hasOwnEvents) {
+        events = parsed.events;
+        return true;
+    }
+    if (parsed.templateName.empty()) {
+        error = "day has neither template nor events";
+        return false;
+    }
+    isReference = true;
+    templateName = parsed.templateName;
+    return true;
+}
+
+bool CourseStore::openTemplateExport(std::uint32_t generation, std::string& error) {
+    error.clear();
+    clearTemplateExport();
+    if (generation == 0) {
+        error = "invalid generation";
+        return false;
+    }
+    TemplateExportState& state = templateExport();
+    if (!readFileWithCrc(templateBase(generation) + ".json", state.raw, error)) return false;
+    TemplateScanner scanner(state.raw);
+    if (!scanner.scan(state.slices, error)) {
+        clearTemplateExport();
+        return false;
+    }
+    state.next = 0;
+    state.active = true;
+    return true;
+}
+
+bool CourseStore::nextTemplateExportChunk(std::string& chunk, bool& done,
+                                          std::string& error) {
+    error.clear();
+    done = false;
+    chunk.clear();
+    TemplateExportState& state = templateExport();
+    if (!state.active) {
+        error = "template export not started";
+        return false;
+    }
+    if (state.next >= state.slices.size()) {
+        clearTemplateExport();
+        done = true;
+        return true;
+    }
+    const TemplateSlice& slice = state.slices[state.next++];
+    chunk.reserve(slice.name.size() + slice.length + 8);
+    chunk += '"';
+    chunk += escapeText(slice.name);
+    chunk += "\":";
+    chunk.append(state.raw, slice.begin, slice.length);
+    return true;
+}
+
 bool CourseStore::loadLastFire(LastFire& out, std::string& error) {
     error.clear();
     Preferences prefs;

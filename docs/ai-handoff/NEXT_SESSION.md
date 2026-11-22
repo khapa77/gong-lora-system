@@ -228,3 +228,14 @@ pre-скриптом `scripts/gzip_web.py`.
 - Тесты: store 458, editor 567, scheduler 154, course 578, active_day 275, emergency 58;
   ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 86.8 % (1 365 185 Б).
 - Память COW: store 15 КБ, editor saveDay (с клоном черновика) 41 КБ.
+
+## 10. Этап D (компактный экспорт) выполнен
+
+- `CourseStore`: `loadDayDescriptor`, `openTemplateExport`/`nextTemplateExportChunk`,
+  `templateExportNames` — экспорт без разрешения ссылок и без затрагивания кэша.
+- `course_editor`: v1-экспорт для `layout=tpl1` (templates + ссылки/свои события),
+  прежний v2 для `expanded`; `exportGeneration()` не подготавливает кэш.
+- Размеры: 14 дней — 1 546 Б против 5 884 Б развёрнуто (3,8×); худший случай 47 дней /
+  256 уникальных событий — 25 155 Б, 58 чанков, макс. чанк 3 106 Б, пик 73 КБ.
+- Тесты: editor 727, store 458, scheduler 154, course 578, active_day 275, emergency 58;
+  ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 87.0 % (1 367 941 Б).

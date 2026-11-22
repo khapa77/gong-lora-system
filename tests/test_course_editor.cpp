@@ -1341,6 +1341,409 @@ void testCopyOnWriteDay() {
     check(untouched.events.size() == 3, "clearing one day emptied another");
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Stage D: compact JSON export (templates once, days as references).
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::string collectExport(course_editor::ExportSource source, std::string& error,
+                         std::size_t* maxChunk = nullptr,
+                         std::size_t* chunkCount = nullptr) {
+    std::string out;
+    if (!course_editor::beginExport(source, error)) return std::string();
+    for (;;) {
+        std::string chunk;
+        bool done = false;
+        if (!course_editor::nextExportChunk(chunk, done, error)) return std::string();
+        out += chunk;
+        if (maxChunk != nullptr && chunk.size() > *maxChunk) *maxChunk = chunk.size();
+        if (chunkCount != nullptr) ++*chunkCount;
+        if (done) break;
+    }
+    return out;
+}
+
+// 14 days, 3 shared templates and one individually edited day.
+course::Course compactSource(std::string name) {
+    course::Course course;
+    course.name = name;
+    for (int t = 0; t < 3; ++t) {
+        for (int e = 0; e < 4; ++e) {
+            course::Event ev;
+            ev.id = static_cast<std::uint32_t>(e + 1);
+            ev.hour = static_cast<std::uint8_t>(6 + e);
+            ev.minute = static_cast<std::uint8_t>(10 * t);
+            ev.track = static_cast<std::uint8_t>(1 + t);
+            ev.loop = 1;
+            ev.volume = 10;
+            ev.enabled = true;
+            ev.description = "Шаблон " + std::to_string(t) + " событие " + std::to_string(e);
+            course.templates["t" + std::to_string(t)].push_back(ev);
+        }
+    }
+    for (int d = 0; d < 14; ++d) {
+        course::Day day;
+        if (d == 5) {
+            day.hasOwnEvents = true;
+            course::Event ev;
+            ev.id = 1;
+            ev.hour = 21;
+            ev.minute = 15;
+            ev.track = 1;
+            ev.loop = 1;
+            ev.volume = 10;
+            ev.enabled = false;
+            ev.description = "Индивидуальный день";
+            day.events.push_back(ev);
+        } else {
+            day.templateName = "t" + std::to_string(d % 3);
+        }
+        course.days.push_back(day);
+    }
+    return course;
+}
+
+void testCompactExportShape() {
+    resetHost();
+    std::string error;
+    course::Course source = compactSource("Gong #2");
+    course_store::CourseStore store;
+    std::uint32_t generation = 0;
+    course_store::CalendarState state;
+    check(store.applyCompactCourse(source, generation, state, error),
+          "compact apply failed: " + error);
+
+    const std::size_t beforeCache = store.cachedTemplateGeneration();
+    const auto filesBefore = host::files();
+    course_store::CalendarState calendarBefore;
+    check(store.loadCalendar(calendarBefore, error), "calendar before failed");
+
+    const std::string json = collectExport(course_editor::kExportActive, error);
+    check(!json.empty(), "export failed: " + error);
+    std::cout << "  compact export bytes=" << json.size() << " days="
+              << static_cast<int>(source.days.size()) << "\n";
+    check(json.find("\"version\":1") != std::string::npos, "export is not version 1");
+    check(json.find("\"templates\":") != std::string::npos, "export has no templates");
+    check(json.find("\"days\":[") != std::string::npos, "export has no days");
+    // Reference days stay references: they appear as quoted template names.
+    check(json.find("\"t1\"") != std::string::npos, "a day reference is missing");
+    check(json.find("\"Индивидуальный день\"") != std::string::npos,
+          "the individual day was lost");
+    check(json.find("\"en\":false") != std::string::npos,
+          "a disabled event lost its flag");
+    check(json.find("Шаблон 0") != std::string::npos, "Cyrillic text was damaged");
+    // Each template body must exist exactly once (not expanded per day).
+    std::size_t occurrences = 0;
+    for (std::size_t pos = json.find("\"t0\":");
+         pos != std::string::npos; pos = json.find("\"t0\":", pos + 1)) {
+        ++occurrences;
+    }
+    check(occurrences == 1, "template t0 was expanded more than once");
+
+    // The exported document must be accepted by the strict parser.
+    course::Course parsed;
+    check(course::fromJson(json, parsed, error), "export does not parse: " + error);
+    check(parsed.days.size() == 14, "exported length");
+    check(parsed.templates.size() == 3, "exported template count");
+    for (std::size_t d = 0; d < source.days.size(); ++d) {
+        std::vector<course::Event> expected;
+        std::vector<course::Event> actual;
+        check(course::resolvedEvents(source, d, expected, error), "source resolve");
+        check(course::resolvedEvents(parsed, d, actual, error), "export resolve");
+        bool same = expected.size() == actual.size();
+        for (std::size_t i = 0; same && i < expected.size(); ++i) {
+            same = expected[i].hour == actual[i].hour &&
+                   expected[i].minute == actual[i].minute &&
+                   expected[i].track == actual[i].track &&
+                   expected[i].loop == actual[i].loop &&
+                   expected[i].volume == actual[i].volume &&
+                   expected[i].enabled == actual[i].enabled &&
+                   expected[i].description == actual[i].description;
+        }
+        check(same, "day " + std::to_string(d) + " changed in the export");
+    }
+
+    // Export must not change state of any kind.
+    check(store.cachedTemplateGeneration() == beforeCache, "export changed the template cache");
+    check(host::files() == filesBefore, "export changed LittleFS");
+    course_store::CalendarState calendarAfter;
+    check(store.loadCalendar(calendarAfter, error), "calendar after failed");
+    check(calendarAfter.active_generation == calendarBefore.active_generation &&
+              calendarAfter.flags == calendarBefore.flags &&
+              calendarAfter.activation_date == calendarBefore.activation_date,
+          "export changed the calendar");
+}
+
+void testCompactExportAfterEdit() {
+    resetHost();
+    std::string error;
+    course::Course source = compactSource("edited");
+    course_store::CourseStore store;
+    std::uint32_t generation = 0;
+    course_store::CalendarState state;
+    check(store.applyCompactCourse(source, generation, state, error),
+          "apply failed: " + error);
+
+    // Copy-on-write edit of a reference day (draft generation).
+    check(course_editor::saveDay(
+              2,
+              "[{\"id\":7,\"hour\":12,\"min\":5,\"track\":2,\"loop\":3,\"vol\":20,"
+              "\"en\":false,\"desc\":\"Правка дня\"}]",
+              error),
+          "saveDay failed: " + error);
+
+    const std::string active = collectExport(course_editor::kExportActive, error);
+    check(!active.empty(), "active export failed: " + error);
+    check(active.find("\"Правка дня\"") == std::string::npos,
+          "the published export contains an unapplied draft edit");
+
+    const std::string draft = collectExport(course_editor::kExportDraft, error);
+    check(!draft.empty(), "draft export failed: " + error);
+    check(draft.find("\"Правка дня\"") != std::string::npos,
+          "the draft export lost the individual edit");
+    check(draft.find("\"en\":false") != std::string::npos, "the edit lost en=false");
+
+    course::Course parsed;
+    check(course::fromJson(draft, parsed, error), "draft export does not parse: " + error);
+    std::vector<course::Event> day2;
+    check(course::resolvedEvents(parsed, 2, day2, error), "resolve day 2 failed");
+    check(day2.size() == 1 && day2[0].description == "Правка дня",
+          "the edited day is not an individual day in the export");
+    std::vector<course::Event> day1;
+    check(course::resolvedEvents(parsed, 1, day1, error), "resolve day 1 failed");
+    check(day1.size() == 4, "another day was expanded or lost");
+    check(parsed.days[1].templateName == "t1", "day 1 is no longer a reference");
+}
+
+void testCompactExportRoundTrip() {
+    resetHost();
+    std::string error;
+    course::Course source = compactSource("round trip");
+    course_store::CourseStore store;
+    std::uint32_t generation = 0;
+    course_store::CalendarState state;
+    check(store.applyCompactCourse(source, generation, state, error),
+          "apply failed: " + error);
+
+    const std::string exported = collectExport(course_editor::kExportActive, error);
+    check(!exported.empty(), "export failed: " + error);
+
+    // Re-import through the compact path, apply, export again and compare.
+    resetHost();
+    course_store::CourseStore store2;
+    check(course_editor::importCourseCompact(exported, error),
+          "re-import failed: " + error);
+    check(course_editor::applyDraft(error), "apply draft failed: " + error);
+    const std::string again = collectExport(course_editor::kExportActive, error);
+    check(!again.empty(), "second export failed: " + error);
+
+    course::Course first;
+    course::Course second;
+    check(course::fromJson(exported, first, error), "first parse: " + error);
+    check(course::fromJson(again, second, error), "second parse: " + error);
+    check(first.days.size() == second.days.size(), "round trip changed the length");
+    for (std::size_t d = 0; d < first.days.size(); ++d) {
+        std::vector<course::Event> a;
+        std::vector<course::Event> b;
+        check(course::resolvedEvents(first, d, a, error), "resolve a");
+        check(course::resolvedEvents(second, d, b, error), "resolve b");
+        bool same = a.size() == b.size();
+        for (std::size_t i = 0; same && i < a.size(); ++i) {
+            same = a[i].hour == b[i].hour && a[i].minute == b[i].minute &&
+                   a[i].track == b[i].track && a[i].loop == b[i].loop &&
+                   a[i].volume == b[i].volume && a[i].enabled == b[i].enabled &&
+                   a[i].description == b[i].description;
+        }
+        check(same, "round trip changed day " + std::to_string(d));
+    }
+    check(store2.generationExists(0) == false, "sanity");
+}
+
+void testCompactExportFailures() {
+    // Missing template file.
+    resetHost();
+    std::string error;
+    course::Course source = compactSource("broken");
+    course_store::CourseStore store;
+    std::uint32_t generation = 0;
+    course_store::CalendarState state;
+    check(store.applyCompactCourse(source, generation, state, error),
+          "apply failed: " + error);
+    host::files().erase("/course/g" + std::to_string(generation) + "/templates.json");
+    error.clear();
+    std::string json = collectExport(course_editor::kExportActive, error);
+    check(json.empty(), "export with a missing templates file must fail");
+    check(error.find("templates") != std::string::npos ||
+              error.find("cannot open") != std::string::npos,
+          "unclear error: " + error);
+
+    // Corrupt template body (valid CRC, broken JSON).
+    resetHost();
+    std::string error2;
+    check(store.applyCompactCourse(source, generation, state, error2),
+          "apply failed again: " + error2);
+    std::string& raw = host::files()["/course/g" + std::to_string(generation) +
+                                     "/templates.json"];
+    const std::size_t newline = raw.find('\n');
+    std::string body = "{\"format\":\"gong-course-templates\",\"version\":1,"
+                       "\"templates\":{\"t0\":[{\"id\":1,\"hour\":99}]}}";
+    char header[32];
+    std::snprintf(header, sizeof(header), "CRC32 %08lx\n",
+                  static_cast<unsigned long>(course_store::CourseStore::crc32(body)));
+    raw = std::string(header) + body;
+    error2.clear();
+    json = collectExport(course_editor::kExportActive, error2);
+    check(json.empty(), "export with a broken template body must fail");
+    (void)newline;
+
+    // A day that references a template the file does not define.
+    resetHost();
+    std::string error3;
+    check(store.applyCompactCourse(source, generation, state, error3),
+          "apply failed once more: " + error3);
+    {
+        std::string& dayRaw = host::files()["/course/g" + std::to_string(generation) +
+                                            "/d00.json"];
+        const std::size_t nl = dayRaw.find('\n');
+        const std::string dayJson =
+            "{\"format\":\"gong-course\",\"version\":2,\"name\":\"day\",\"generation\":" +
+            std::to_string(generation) +
+            ",\"course_length\":1,\"days\":[{\"template\":\"ghost\"}]}";
+        std::snprintf(header, sizeof(header), "CRC32 %08lx\n",
+                      static_cast<unsigned long>(course_store::CourseStore::crc32(dayJson)));
+        dayRaw = std::string(header) + dayJson;
+        (void)nl;
+    }
+    error3.clear();
+    json = collectExport(course_editor::kExportActive, error3);
+    check(json.empty(), "export with a missing template reference must fail");
+    check(error3.find("missing template") != std::string::npos, "unclear error: " + error3);
+}
+
+void testExpandedExportUnchanged() {
+    resetHost();
+    std::string error;
+    course::Course course;
+    course.name = "expanded";
+    for (int d = 0; d < 3; ++d) {
+        course::Day day;
+        day.hasOwnEvents = true;
+        course::Event ev;
+        ev.id = 1;
+        ev.hour = 4;
+        ev.minute = 0;
+        ev.track = 1;
+        ev.loop = 1;
+        ev.volume = 10;
+        ev.enabled = true;
+        ev.description = "day " + std::to_string(d);
+        day.events.push_back(ev);
+        course.days.push_back(day);
+    }
+    course_store::CourseStore store;
+    std::uint32_t generation = 0;
+    course_store::CalendarState state;
+    check(store.applyCourse(course, generation, state, error), "apply failed: " + error);
+
+    const std::string json = collectExport(course_editor::kExportActive, error);
+    check(!json.empty(), "export failed: " + error);
+    check(json.find("\"version\":2") != std::string::npos, "expanded export changed version");
+    check(json.find("\"templates\"") == std::string::npos,
+          "expanded export gained a templates section");
+    check(json.find("\"days\":[{\"events\":") != std::string::npos,
+          "expanded export changed the day shape");
+    course::Course parsed;
+    check(course::fromJson(json, parsed, error), "expanded export does not parse: " + error);
+    check(parsed.days.size() == 3, "expanded export length");
+}
+
+
+// The compact export must stay inside the heap of a device without PSRAM: the
+// whole document is never built, and one template is one chunk.
+void testCompactExportMemory() {
+#ifndef HOST_SANITIZED
+    resetHost();
+    std::string error;
+    course::Course course;
+    course.name = "big";
+    for (int t = 0; t < 8; ++t) {
+        for (int e = 0; e < 32; ++e) {
+            course::Event ev;
+            ev.id = static_cast<std::uint32_t>(e + 1);
+            ev.hour = static_cast<std::uint8_t>(5 + e % 18);
+            ev.minute = static_cast<std::uint8_t>((e * 3) % 60);
+            ev.track = 1;
+            ev.loop = 1;
+            ev.volume = 10;
+            ev.enabled = true;
+            ev.description = "Практика " + std::to_string(t) + "-" + std::to_string(e);
+            course.templates["t" + std::to_string(t)].push_back(ev);
+        }
+    }
+    for (int d = 0; d < 47; ++d) {
+        course::Day day;
+        day.templateName = "t" + std::to_string(d % 8);
+        course.days.push_back(day);
+    }
+    course_store::CourseStore store;
+    std::uint32_t generation = 0;
+    course_store::CalendarState state;
+    check(store.applyCompactCourse(course, generation, state, error),
+          "apply failed: " + error);
+
+    host::heapBudgetReset(96 * 1024);
+    std::size_t maxChunk = 0;
+    std::size_t chunks = 0;
+    const std::string json =
+        collectExport(course_editor::kExportActive, error, &maxChunk, &chunks);
+    const std::size_t peak = host::heapBudget().peak;
+    host::heapBudgetReset(0);
+    check(!json.empty(), "export under a heap budget failed: " + error);
+    std::cout << "  export peak=" << peak / 1024 << "KB chunks=" << chunks
+              << " maxChunk=" << maxChunk << "B bytes=" << json.size() << "B\n";
+    check(peak < 96 * 1024, "the export exceeded the device-sized heap budget");
+    check(maxChunk < 16 * 1024, "a single export chunk is too large");
+    check(chunks > 47, "the export was not streamed day by day");
+#endif
+}
+
+void testCompactExportLengths() {
+    const int lengths[] = {1, 10, 20, 47};
+    for (std::size_t n = 0; n < sizeof(lengths) / sizeof(lengths[0]); ++n) {
+        resetHost();
+        std::string error;
+        course::Course course;
+        course.name = "len";
+        for (int e = 0; e < 3; ++e) {
+            course::Event ev;
+            ev.id = static_cast<std::uint32_t>(e + 1);
+            ev.hour = static_cast<std::uint8_t>(7 + e);
+            ev.minute = 0;
+            ev.track = 1;
+            ev.loop = 1;
+            ev.volume = 10;
+            ev.enabled = true;
+            ev.description = "общее " + std::to_string(e);
+            course.templates["only"].push_back(ev);
+        }
+        for (int d = 0; d < lengths[n]; ++d) {
+            course::Day day;
+            day.templateName = "only";
+            course.days.push_back(day);
+        }
+        course_store::CourseStore store;
+        std::uint32_t generation = 0;
+        course_store::CalendarState state;
+        check(store.applyCompactCourse(course, generation, state, error),
+              "apply failed: " + error);
+        const std::string json = collectExport(course_editor::kExportActive, error);
+        check(!json.empty(), "export failed for length " + std::to_string(lengths[n]));
+        course::Course parsed;
+        check(course::fromJson(json, parsed, error),
+              "parse failed for length " + std::to_string(lengths[n]) + ": " + error);
+        check(static_cast<int>(parsed.days.size()) == lengths[n], "exported length mismatch");
+    }
+}
+
 int main() {
     runGroup("empty store", testEmptyStore);
     runGroup("initial reference course", testInitialReferenceCourse);
@@ -1370,6 +1773,13 @@ int main() {
     runGroup("compact import rejects expanded", testCompactImportRejectsExpanded);
     runGroup("compact import failure keeps course", testCompactImportFailureKeepsCourse);
     runGroup("copy-on-write day", testCopyOnWriteDay);
+    runGroup("compact export", testCompactExportShape);
+    runGroup("compact export after edit", testCompactExportAfterEdit);
+    runGroup("compact export round trip", testCompactExportRoundTrip);
+    runGroup("compact export failures", testCompactExportFailures);
+    runGroup("expanded export unchanged", testExpandedExportUnchanged);
+    runGroup("compact export lengths", testCompactExportLengths);
+    runGroup("compact export memory", testCompactExportMemory);
     runGroup("operator sized course", testOperatorSizedCourse);
     runGroup("heap budget", testHeapBudget);
     runGroup("published course ignores bootstrap", testPublishedCourseIgnoresBootstrap);

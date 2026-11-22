@@ -189,6 +189,21 @@ public:
     std::size_t cachedTemplateEvents() const;
     std::uint32_t cachedTemplateGeneration() const;
 
+    // ── Export helpers (stage D) ──────────────────────────────────────────
+    // loadDayDescriptor() reads one day file without resolving a template
+    // reference, so an export can tell "reference" from "own events" without
+    // loading (or invalidating) the template cache.
+    bool loadDayDescriptor(std::uint32_t generation, std::uint8_t day,
+                           bool& isReference, std::string& templateName,
+                           std::vector<course::Event>& events, std::string& error);
+
+    // Streams templates.json one template per chunk. Independent of the cache;
+    // a corrupt or missing file is reported instead of being half-exported.
+    bool openTemplateExport(std::uint32_t generation, std::string& error);
+    bool nextTemplateExportChunk(std::string& chunk, bool& done, std::string& error);
+    // Names available in the opened template file (for reference validation).
+    bool templateExportNames(std::vector<std::string>& out) const;
+
     bool loadLastFire(LastFire& out, std::string& error);
     bool saveLastFire(const LastFire& value, std::string& error);
     bool clearLastFire(std::string& error);
