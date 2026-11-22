@@ -124,7 +124,14 @@ static void control_unbound_date_without_time() {
     require(liveIs(3,""),"an unbound legacy date must stay unbound without valid time");
 }
 static void control_first_boot() {
-    sched_setup(); require(liveIs(0,"2026-11-16"),"genuinely empty state should activate Day 00");
+    // A fresh JSON-driven installation waits for a course; the legacy day files
+    // that ship in the LittleFS image must not start playing by themselves.
+    const auto files=host::files();
+    sched_setup();
+    require(sched_waitingForCourse() && !courseMode && activeDay==-1 && count==0 && !sched_isRunning(),
+            "empty state did not wait for a JSON course");
+    require(audioCalls==0 && host::files()==files && host::nvs().writes==0,
+            "waiting boot rang or changed storage");
 }
 static void control_successful_switch() {
     legacy(); sched_setup(); host::clock()=at(17);

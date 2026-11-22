@@ -101,3 +101,6 @@ bool sched_courseExportBegin(bool activeOnly);
 bool sched_courseExportNext(String& chunk, bool& done);
 const String& sched_courseError();
 bool sched_courseEnabled();   // a published course owns execution
+// "course" | "legacy" | "waiting" — the mode the device is actually executing.
+const char* sched_runMode();
+bool sched_waitingForCourse();

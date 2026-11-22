@@ -93,7 +93,12 @@ static void registerA021Tests(std::vector<Test>& list) {
     });
 
     addCase(list,"T03","first_boot_marker_order",[]() {
-        sched_setup(); require(liveIs(0,"2026-11-16") && durable("active_schema"),"first boot failed");
+        // Boot leaves a fresh device waiting; the operator activation is what
+        // writes the legacy binding, so the marker order is checked there.
+        sched_setup();
+        require(sched_waitingForCourse() && !sched_isRunning(),"fresh boot did not wait");
+        require(sched_activateDay(0),"explicit legacy activation failed");
+        require(liveIs(0,"2026-11-16") && durable("active_schema"),"first activation failed");
         const auto& trace=host::nvs().trace;
         const auto marker=std::find(trace.begin(),trace.end(),"commit:active_schema");
         const auto active=std::find(trace.begin(),trace.end(),"set:active");
@@ -102,11 +107,18 @@ static void registerA021Tests(std::vector<Test>& list) {
     });
     addCase(list,"T03","first_boot_seed",[]() {
         host::files()[SCHEDULE_FILE]=host::files()["/day03.conf"]; host::files().erase("/day00.conf");
-        sched_setup(); require(activeDay==0 && count==1 && entries[0].description=="day3","first boot lost seed");
+        sched_setup();
+        require(sched_waitingForCourse() && !host::files().count("/day00.conf"),
+                "fresh boot seeded a day file by itself");
+        require(sched_activateDay(0) && activeDay==0 && count==1 &&
+                entries[0].description=="day3","explicit activation lost the seed");
     });
     addCase(list,"T03","prepare_failure_before_marker",[]() {
         host::files()["/day00.conf"]="bad"; sched_setup();
-        require(host::nvs().writes==0 && count==0 && !sched_isRunning(),"failed preparation wrote/published");
+        require(sched_waitingForCourse() && host::nvs().writes==0 && count==0 && !sched_isRunning(),
+                "fresh boot wrote/published");
+        require(!sched_activateDay(0) && host::nvs().writes==0 && count==0,
+                "failed activation wrote/published");
     });
 
     for (const std::string mode : {"missing_date","empty_date","file","file_missing_date"}) addCase(list,"T04",mode,[mode]() {

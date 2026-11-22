@@ -5,6 +5,7 @@
 
 #include "LittleFS.h"
 #include "Preferences.h"
+#include "allocation.h"
 #include "nvs.h"
 
 #include <cstdlib>
@@ -12,6 +13,47 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+extern "C" { bool gong_allocation_forbidden = false; }
+
+// Heap metering for this suite. The device has no PSRAM, so the memory tests
+// cap the C++ heap and expect the code to fail with an error, never to abort.
+// A sanitizer runtime provides its own operator new, so the accounting is only
+// compiled into the regular build.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_UNDEFINED__)
+#define HOST_SANITIZED 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(undefined_behavior_sanitizer)
+#define HOST_SANITIZED 1
+#endif
+#endif
+#ifndef HOST_SANITIZED
+namespace {
+const std::size_t kAllocHeader = 16;
+}
+void* operator new(std::size_t n) {
+    if (host::forbidAllocation()) std::abort();
+    const std::size_t total = n + kAllocHeader;
+    if (!host::heapBudgetCharge(total)) throw std::bad_alloc();
+    void* raw = std::malloc(total ? total : kAllocHeader);
+    if (!raw) {
+        host::heapBudgetRelease(total);
+        throw std::bad_alloc();
+    }
+    *static_cast<std::size_t*>(raw) = n;
+    return static_cast<char*>(raw) + kAllocHeader;
+}
+void operator delete(void* p) noexcept {
+    if (!p) return;
+    char* raw = static_cast<char*>(p) - kAllocHeader;
+    host::heapBudgetRelease(*reinterpret_cast<std::size_t*>(raw) + kAllocHeader);
+    std::free(raw);
+}
+void operator delete(void* p, std::size_t) noexcept { ::operator delete(p); }
+void* operator new[](std::size_t n) { return ::operator new(n); }
+void operator delete[](void* p) noexcept { ::operator delete(p); }
+void operator delete[](void* p, std::size_t) noexcept { ::operator delete(p); }
+#endif
 
 namespace {
 
@@ -869,6 +911,22 @@ void testImportReplacesCourse() {
     check(course_editor::applyDraft(error), "v2 apply");
     check(calendar().course_length == 14, "v2 course published with 14 days");
 
+    // v1 with a shared template name per day (the original operator format).
+    course_editor::Inspection inspection;
+    const std::string v1t =
+        "{\"format\":\"gong-course\",\"version\":1,\"name\":\"v1 templates\","
+        "\"templates\":{\"p\":[{\"id\":1,\"hour\":5,\"min\":0,\"track\":1,\"loop\":1,"
+        "\"vol\":10,\"en\":true,\"desc\":\"Практика\"}]},"
+        "\"days\":[\"p\",\"p\",[]]}";
+    check(course_editor::inspectCourse(v1t, inspection, error), "v1 template JSON accepted");
+    check(inspection.version == 1 && inspection.length == 3, "v1 template shape");
+    check(inspection.events == 2, "v1 template events counted per reference");
+    check(course_editor::importCourse(v1t, error), "v1 template import works");
+    check(course_editor::applyDraft(error), "v1 template apply works");
+    std::string tplDay;
+    check(course_editor::dayJson(0, tplDay, error), "v1 template day readable");
+    check(tplDay.find("Практика") != std::string::npos, "v1 template day keeps its events");
+
     // A second import replaces the pending draft instead of stacking drafts.
     course_editor::Info info;
     check(course_editor::importCourse(daysJsonV1(5, "second"), error), "second import");
@@ -896,6 +954,163 @@ void testExportSource() {
     check(ok, "draft export completes");
     check(draft.find("\"course_length\":3") != std::string::npos,
           "draft export contains the 3-day draft");
+}
+
+// Operator-sized course: `days` days, `perDay` events each, Cyrillic text.
+std::string bigCourseJsonV2(int days, int perDay, const std::string& name) {
+    std::string json;
+    json.reserve(static_cast<std::size_t>(days) * 24 + static_cast<std::size_t>(perDay) * 150 + 512);
+    json += "{\"format\":\"gong-course\",\"version\":2,\"name\":\"";
+    json += name;
+    json += "\",\"days\":[";
+    char buf[256];
+    for (int d = 0; d < days; ++d) {
+        if (d) json += ',';
+        json += "{\"events\":[";
+        for (int e = 0; e < perDay; ++e) {
+            if (e) json += ',';
+            std::snprintf(buf, sizeof(buf),
+                          "{\"id\":%d,\"hour\":%d,\"min\":%d,\"track\":1,\"loop\":1,\"vol\":20,"
+                          "\"en\":true,\"desc\":\"Практика: утренний гонг номер %d — тишина и внимание\"}",
+                          e + 1, 5 + (e / 60) % 18, e % 60, e + 1);
+            json += buf;
+        }
+        json += "]}";
+    }
+    json += "],\"course_length\":";
+    json += std::to_string(days);
+    json += "}";
+    return json;
+}
+
+std::string bigCourseJsonV1(int days, int perDay, const std::string& name) {
+    std::string json;
+    json.reserve(static_cast<std::size_t>(days) * static_cast<std::size_t>(perDay) * 130 + 512);
+    json += "{\"format\":\"gong-course\",\"version\":1,\"name\":\"";
+    json += name;
+    json += "\",\"days\":[";
+    char buf[256];
+    for (int d = 0; d < days; ++d) {
+        if (d) json += ',';
+        json += '[';
+        for (int e = 0; e < perDay; ++e) {
+            if (e) json += ',';
+            std::snprintf(buf, sizeof(buf),
+                          "{\"id\":%d,\"hour\":%d,\"min\":%d,\"track\":1,\"loop\":1,\"vol\":20,"
+                          "\"en\":true,\"desc\":\"День %d, гонг %d — практика\"}",
+                          e + 1, 4 + (e / 60) % 18, e % 60, d, e + 1);
+            json += buf;
+        }
+        json += ']';
+    }
+    json += "]}";
+    return json;
+}
+
+// A real operator file (hundreds of events, Cyrillic) must validate, import and
+// publish through the bounded path, and survive a reboot.
+void testOperatorSizedCourse() {
+    resetHost();
+    std::string error;
+    const std::string v2 = bigCourseJsonV2(8, 32, "Курс на 8 дней");
+    check(v2.size() > 30000, "operator v2 file is realistically large");
+    course_editor::Inspection inspection;
+    check(course_editor::inspectCourse(v2, inspection, error), "big v2 validates: " + error);
+    check(inspection.length == 8, "big v2 reports 8 days");
+    check(inspection.events == 256, "big v2 reports 256 events");
+    check(inspection.version == 2, "big v2 reports format 2");
+    check(inspection.name == "Курс на 8 дней", "big v2 keeps the Cyrillic name");
+
+    check(course_editor::importCourse(v2, error), "big v2 imports: " + error);
+    check(course_editor::applyDraft(error), "big v2 applies: " + error);
+    course_editor::Info info;
+    check(course_editor::info(info, error), "info after big apply");
+    check(info.hasCourse && info.length == 8, "big v2 published with 8 days");
+    check(calendar().flags == course_store::kApplied, "big v2 is APPLIED");
+
+    std::string day;
+    check(course_editor::dayJson(7, day, error), "last day readable");
+    check(day.find("Практика") != std::string::npos, "Cyrillic description stored");
+    check(day.find("\\u") == std::string::npos, "descriptions are stored as UTF-8, not escapes");
+
+    // Reboot: only NVS and LittleFS survive.
+    host::nvs().reboot();
+    check(course_editor::info(info, error), "info survives the reboot");
+    check(info.hasCourse && info.length == 8, "course survives the reboot");
+    check(calendar().flags == course_store::kApplied, "still APPLIED after reboot");
+
+    resetHost();
+    const std::string v1 = bigCourseJsonV1(10, 12, "Курс v1");
+    check(course_editor::inspectCourse(v1, inspection, error), "big v1 validates: " + error);
+    check(inspection.version == 1 && inspection.length == 10, "big v1 shape");
+    check(course_editor::importCourse(v1, error), "big v1 imports");
+    check(course_editor::applyDraft(error), "big v1 applies");
+    check(course_editor::info(info, error) && info.length == 10, "big v1 published");
+}
+
+// The device has no PSRAM: the bounded path must stay well under a small heap,
+// while the whole-document tree path (the old crash) cannot.
+void testHeapBudget() {
+    resetHost();
+    std::string error;
+    const std::string big = bigCourseJsonV2(8, 32, "Курс на 8 дней");
+    course_editor::Inspection inspection;
+
+#ifndef HOST_SANITIZED
+    // Control: the pre-fix path needs a whole-document tree and dies under the
+    // budget a no-PSRAM ESP32 can offer.
+    host::heapBudgetReset(96 * 1024);
+    bool treeThrew = false;
+    try {
+        course::Course parsed;
+        std::string treeError;
+        (void)course::fromJson(big, parsed, treeError);
+    } catch (const std::bad_alloc&) {
+        treeThrew = true;
+    }
+    check(treeThrew, "whole-document parse exceeds a device-sized heap (old crash path)");
+
+    // The bounded path validates the same file without the tree.
+    host::heapBudgetReset(96 * 1024);
+    const bool inspected =
+        course_editor::inspectCourse(big, inspection, error);
+    const std::size_t peak = host::heapBudget().peak;
+    std::cout << "  heap peak for validation: " << (peak / 1024) << " KB of 96 KB\n";
+    check(inspected, "bounded validation fits the device-sized heap: " + error);
+    check(inspection.events == 256, "bounded validation still counts every event");
+    // One day with 32 events is parsed at a time; that working set (one day's
+    // tree plus the wrapper) is what the guard below budgets for.
+    check(peak < 96 * 1024, "bounded validation stays inside the device-sized heap");
+
+    // Too little memory: a normal error, never an escaping exception.
+    host::heapBudgetReset(6 * 1024);
+    bool threw = false;
+    bool ok = false;
+    try {
+        ok = course_editor::inspectCourse(big, inspection, error);
+    } catch (...) {
+        threw = true;
+    }
+    check(!threw, "tight heap does not throw out of inspectCourse");
+    check(!ok, "tight heap is reported as a validation failure");
+    check(error.find("memory") != std::string::npos, "error says memory: " + error);
+    host::heapBudgetReset(0);
+#else
+    // A sanitizer runtime owns operator new, so the budget model is not
+    // available here; the bounded path itself is still exercised below.
+    check(course_editor::inspectCourse(big, inspection, error), "bounded validation with a sanitizer");
+    check(inspection.events == 256, "bounded validation counts every event");
+#endif
+
+    // Import and Apply on the same file still work (the host FS model keeps the
+    // course in RAM, so it is given a realistic budget rather than a tiny one).
+    host::heapBudgetReset(1024 * 1024);
+    const bool imported = course_editor::importCourse(big, error);
+    const bool applied = imported && course_editor::applyDraft(error);
+    check(imported, "big import succeeds: " + error);
+    check(applied, "big apply succeeds: " + error);
+    check(calendar().course_length == 8, "big course published");
+    host::heapBudgetReset(0);
 }
 
 // A published course must keep using its own draft pointer, never the bootstrap.
@@ -937,6 +1152,8 @@ int main() {
     runGroup("json inspection", testInspectCourse);
     runGroup("import replaces course", testImportReplacesCourse);
     runGroup("export source", testExportSource);
+    runGroup("operator sized course", testOperatorSizedCourse);
+    runGroup("heap budget", testHeapBudget);
     runGroup("published course ignores bootstrap", testPublishedCourseIgnoresBootstrap);
 
     std::cout << "\n" << g_pass << " checks passed, " << g_fail << " failed\n";

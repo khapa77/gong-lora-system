@@ -27,6 +27,14 @@ struct Inspection {
 
 // Parses and validates a v1/v2 course JSON. Pure: no files, no NVS, no RAM
 // state is touched, so it can be called while a course is running.
+//
+// The pointer/length form is the one the device uses: the document is scanned
+// once for the byte range of every day (and template) and each range is parsed
+// on its own through the course model, so a whole-document tree (hundreds of
+// KB on a no-PSRAM ESP32) is never built. The std::string overloads do not copy
+// the input either.
+bool inspectCourse(const char* data, std::size_t size, Inspection& out,
+                   std::string& error);
 bool inspectCourse(const std::string& json, Inspection& out, std::string& error);
 
 struct Info {
@@ -71,6 +79,9 @@ bool setPreset(std::uint8_t days, std::string& error);
 bool renameCourse(const std::string& name, std::string& error);
 
 // Imports a v1/v2 course JSON into the draft. The active course is untouched.
+// Same bounded-memory strategy as inspectCourse(): one day is parsed and
+// written at a time.
+bool importCourse(const char* data, std::size_t size, std::string& error);
 bool importCourse(const std::string& json, std::string& error);
 
 // Publishes the draft generation. The active generation is only replaced after

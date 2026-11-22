@@ -64,7 +64,13 @@ static void registerReviewCases(std::vector<Test>& list) {
             if (mode=="day_create_error") {
                 host::files().erase("/day00.conf"); host::fs().failWrite=true; host::fs().path="/day00.conf";
             }
-            const auto files=host::files(); sched_setup(); assertUnknown();
+            const auto files=host::files(); sched_setup();
+            // A fresh device with an ambiguous legacy probe must not execute
+            // anything: either it waits for a JSON course (status Empty) or the
+            // legacy path stays blocked on the unknown state. No Day 00 attempt.
+            require(!courseMode && !sched_isRunning() && activeDay==-1 && count==0 &&
+                    audioCalls==0,
+                    "ambiguous legacy boot executed instead of waiting/blocking");
             require(host::nvs().writes==0 && host::fs().writes==0 && host::files()==files,
                     "unconfirmed absence created/replaced boot files");
         });
@@ -78,9 +84,14 @@ static void registerReviewCases(std::vector<Test>& list) {
         require(liveIs(3,"2026-11-16") && sched_isRunning(),"failed preparation replaced/quarantined consistent live day");
     });
     addCase(list,"T03","confirmed_absent_day_can_be_created",[]() {
+        // A fresh device no longer creates Day 00 by itself; the file is
+        // created only when the operator explicitly activates a legacy day.
         host::files().erase("/day00.conf"); sched_setup();
-        require(sched_isRunning() && activeDay==0 && host::files()["/day00.conf"]=="[]",
-                "confirmed absence no longer allows first boot");
+        require(sched_waitingForCourse() && !sched_isRunning(),
+                "fresh boot executed instead of waiting for a JSON course");
+        require(!host::files().count("/day00.conf"), "fresh boot created a day file");
+        require(sched_activateDay(0) && host::files()["/day00.conf"]=="[]",
+                "explicit legacy activation no longer creates the day");
     });
     addCase(list,"model","stat_distinguishes_absence_error_and_presence",[]() {
         struct stat info;
@@ -265,7 +276,8 @@ static void registerReviewCases(std::vector<Test>& list) {
     addCase(list,"T02","legacy_day_files_block_course_seed",[]() {
         sched_setup();
         require(!courseMode,"course was seeded over an existing legacy installation");
-        require(liveIs(0,"2026-11-16"),"legacy first boot did not activate Day 00");
+        require(sched_waitingForCourse() && !sched_isRunning() && activeDay==-1,
+                "legacy files alone started the legacy schedule");
         require(!host::files().count("/course/g1/meta.json"),"legacy boot wrote a course generation");
     });
     addCase(list,"T02","legacy_gong_seed_blocks_course_seed",[]() {
@@ -280,9 +292,10 @@ static void registerReviewCases(std::vector<Test>& list) {
     // publishes a course from the Web GUI; the course must take over at once
     // and must still own execution after a reboot, even before Activate.
     addCase(list,"T03","bootstrap_course_takes_over_and_survives_reboot",[]() {
+        legacy();                       // an existing installation with a legacy binding
         sched_setup();
         require(!courseMode,"fixture unexpectedly started in course mode");
-        require(sched_isRunning() && activeDay==0,"legacy Day 00 did not start");
+        require(sched_isRunning() && activeDay==3,"legacy binding did not start");
         std::string err;
         require(course_editor::setPreset(14,err),std::string("clean-install preset failed: ")+err);
         require(!courseStore.hasCalendar(),"preset published a calendar");
@@ -328,11 +341,36 @@ static void registerReviewCases(std::vector<Test>& list) {
         host::clock()=at(16,19,45); sched_check();
         require(audioCalls==1,"arrival gong did not fire after activation");
     });
+    // The operator must see which engine actually executes.
+    addCase(list,"T03","fresh_device_reports_waiting_mode",[]() {
+        sched_setup();
+        require(std::string(sched_runMode())=="waiting","run mode is not waiting");
+        require(!sched_courseEnabled() && !sched_isRunning(),"waiting device executes");
+        host::clock()=at(16,4,0,0); sched_check();
+        require(audioCalls==0,"waiting device rang the legacy schedule");
+    });
+    addCase(list,"T03","legacy_binding_reports_legacy_mode",[]() {
+        legacy(); sched_setup();
+        require(std::string(sched_runMode())=="legacy","run mode is not legacy");
+        require(sched_isRunning() && liveIs(3,"2026-11-16"),"legacy binding did not run");
+    });
+    addCase(list,"T03","course_mode_reports_course_and_needs_activate",[]() {
+        host::files().clear(); host::nvs()=host::NvsModel();
+        sched_setup();                       // seeds the reference course, APPLIED
+        require(std::string(sched_runMode())=="course","run mode is not course");
+        require(sched_courseEnabled() && !sched_isRunning(),"APPLIED course executes");
+        host::clock()=at(16,4,0,0); sched_check();
+        require(audioCalls==0,"APPLIED course rang before Activate");
+        require(sched_activateDay(0),"activate failed");
+        host::clock()=at(16,19,45); sched_check();
+        require(audioCalls==1,"activated course did not ring");
+    });
     // The opposite compatibility guarantee: preparing a draft on a legacy device
     // must not change what rings until the operator applies it.
     addCase(list,"T03","unpublished_draft_keeps_legacy_running",[]() {
+        legacy();                       // an existing installation with a legacy binding
         sched_setup();
-        require(sched_isRunning() && activeDay==0,"legacy Day 00 did not start");
+        require(sched_isRunning() && activeDay==3,"legacy binding did not start");
         std::string err;
         require(course_editor::setPreset(14,err),std::string("clean-install preset failed: ")+err);
         course_editor::Info info;
@@ -341,7 +379,7 @@ static void registerReviewCases(std::vector<Test>& list) {
 
         host::nvs().reboot(); resetRam(); sched_setup();
         require(!courseMode,"an unpublished draft changed the legacy behaviour");
-        require(sched_isRunning() && activeDay==0,"legacy Day 00 did not reload");
+        require(sched_isRunning() && activeDay==3,"legacy binding did not reload");
         host::clock()=at(16,4,0,5); sched_check();
         require(audioCalls==1,"legacy gong stopped before the course was applied");
         require(course_editor::info(info,err) && info.draftGeneration!=0,

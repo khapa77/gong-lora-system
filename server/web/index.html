@@ -264,8 +264,8 @@ tr:hover td { background: rgba(79,158,248,.04); }
 
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:16px">
         <span style="color:var(--muted);font-size:.8rem">День для активации:</span>
-        <select id="crActivateDay" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text)"></select>
-        <button class="btn btn-yellow" id="crActivateBtn" onclick="crActivate()">Activate this day</button>
+        <select id="crActivateDay" onchange="crSyncActivate()" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text)"></select>
+        <button class="btn btn-yellow" id="crActivateBtn" onclick="crActivate()" disabled>Activate this day</button>
       </div>
 
       <p style="color:var(--muted);font-size:.78rem;margin-top:10px">
@@ -631,6 +631,8 @@ function applyAlerts(d) {
   if (schedFetchFailed) a.push('⚠️ Устройству не хватило памяти, чтобы отдать расписание — показан файл активного дня. Гонги звонят как обычно.');
   if (d.fs_ok === false) a.push('❌ Файловая система не смонтирована — нет звука и расписания. Залейте данные: <code>pio run -t uploadfs</code>.');
   if (d.sched_error) a.push('❌ Файл активного дня не читается — расписание пустое. Активируйте день заново.');
+  if (d.waiting_for_course) a.push('ℹ️ Курс не опубликован: звонки не выполняются. Загрузите JSON в карточке <b>Courses</b> и нажмите «Опубликовать (Apply)», затем «Activate this day».');
+  else if (d.run_mode === 'legacy') a.push('ℹ️ Работает legacy-расписание (старые файлы дней, без JSON-курса). Чтобы перейти на курс, загрузите JSON в карточке <b>Courses</b>.');
   if (d.emergency) a.push('🛑 Аварийный режим: ' + esc(d.emergency_reason || 'course unavailable') + '. Работает встроенное аварийное расписание. Устраните причину и нажмите <button class="btn btn-yellow btn-sm" onclick="emergencyRetry()">Проверить восстановление</button>.');
   if (!d.time) a.push('❌ Время не установлено — гонги не звучат. Подключите WiFi с интернетом, проверьте батарейку DS3231 или установите время вручную.');
   if (d.crash_count > 0 && d.reset_reason && !/power-on|software|external/.test(d.reset_reason))
@@ -1105,11 +1107,24 @@ function crRenderStatus(d, err) {
   if (d.emergency) flags.push('EMERGENCY');
   flags.push(d.running ? 'RUNNING' : 'APPLIED');
   const day = d.day_index >= 0 ? ' · активный день ' + pad(d.day_index) : '';
+  const mode = d.run_mode ? ' · режим: ' + d.run_mode : '';
   el.textContent = 'Курс: ' + (d.name || '—') +
     ' · дней: ' + d.length +
     ' · поколение: ' + d.active_generation +
-    ' · ' + flags.join(' / ') + day +
+    ' · ' + flags.join(' / ') + day + mode +
     (d.draft_dirty ? ' · черновик не опубликован' : '');
+}
+
+// Activate is only usable with a published course and a valid day index; the
+// server re-checks both, but the button must never invite an invalid action.
+function crSyncActivate() {
+  const sel = document.getElementById('crActivateDay');
+  const btn = document.getElementById('crActivateBtn');
+  if (!btn) return;
+  const i = sel ? Number(sel.value) : NaN;
+  const valid = !!crMeta && crMeta.has_course &&
+    Number.isInteger(i) && i >= 0 && i < crMeta.length && !!sel && sel.value !== '';
+  btn.disabled = !valid;
 }
 
 function crRenderDays(d) {
@@ -1124,6 +1139,7 @@ function crRenderDays(d) {
     if (keep !== '' && Number(keep) < n) sel.value = keep;
   }
   if (btn) btn.disabled = !n;
+  crSyncActivate();
 }
 
 async function crPick(input) {

@@ -531,6 +531,40 @@ static void test_replace_course_different_length() {
     check(activeDay == 0, "new 20-day course wraps 19 -> 00");
 }
 
+// A fresh JSON-driven installation ships legacy day files but has no course and
+// no legacy binding: it must wait silently instead of playing Day 00.
+static void test_no_course_waits() {
+    freshEnvironment();
+    host::files()["/day00.conf"] = "[]";   // part of the flashed LittleFS image
+    host::clock() = atDate(2026, 11, 22, 4, 0);
+    sched_setup();
+    check(std::string(sched_runMode()) == "waiting", "run mode is not waiting");
+    check(!sched_courseEnabled(), "no published course is reported as enabled");
+    check(!sched_isRunning(), "waiting device reports running");
+    check(activeDay == -1, "waiting device has an active day");
+    sched_check();
+    check(audioCalls == 0, "waiting device rang the legacy schedule");
+}
+
+// A published course is APPLIED until the operator activates a day.
+static void test_published_course_needs_manual_activation() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22);
+    check(applyCourse(makeCourse(10)), "apply 10-day course");
+    sched_setup();
+    check(std::string(sched_runMode()) == "course", "run mode is not course");
+    check(sched_courseEnabled(), "published course is not enabled");
+    check(!courseRunning, "APPLIED course is running");
+    host::clock() = atDate(2026, 11, 22, 4, 0);
+    sched_check();
+    check(audioCalls == 0, "APPLIED course rang before Activate");
+    check(sched_activateDay(9), "activate day 9");
+    check(std::string(sched_runMode()) == "course", "run mode changed after activation");
+    host::clock() = atDate(2026, 11, 23, 4, 0);
+    sched_check();
+    check(audioCalls == 1, "activated course did not ring on the wrapped day 0");
+}
+
 // ---- runner --------------------------------------------------------------
 struct TestCase { const char* name; void (*fn)(); };
 
@@ -560,6 +594,8 @@ int main() {
         {"wrap_20_day_course", test_wrap_20_day_course},
         {"reboot_midcourse_keeps_day", test_reboot_midcourse_keeps_day},
         {"replace_course_different_length", test_replace_course_different_length},
+        {"no_course_waits", test_no_course_waits},
+        {"published_course_needs_manual_activation", test_published_course_needs_manual_activation},
     };
     for (const TestCase& t : tests) {
         const int before = failures;

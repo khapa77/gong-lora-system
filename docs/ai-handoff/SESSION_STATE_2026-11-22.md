@@ -129,6 +129,19 @@ GUI упрощён до одной карточки Courses: JSON v1/v2 -> `POST
 `beginExport(kExportActive|kExportDraft)`, `sched_courseInspect()`, `sched_courseExportBegin(activeOnly)`.
 Кнопка Activate из Schedule убрана — активация только в Courses.
 
+### 3.4c. Bounded JSON и режим ожидания (пятая сессия)
+
+- `course_editor.cpp`: сканер документа (диапазоны дней/шаблонов) + разбор одного дня за раз;
+  `inspectCourse/importCourse(const char*, size_t)` без копии документа; `bad_alloc` -> ошибка.
+  Лимиты: 47 дней, 64 шаблона, имя 128 Б, имя шаблона 32 Б, день 8 КБ, глубина 32.
+- `webhandler`: `courseMemoryOk()`, try/catch вокруг validate/import/apply, heap-диагностика
+  (free, largest block, stack high-water mark) в лог и в ответ validate.
+- `sched_setup`: без курса и без legacy-привязки — режим `waiting`, без звонков и без активации Day 00.
+  Legacy-привязка (`active`/`aday`) сохраняет прежнее поведение.
+- API: `run_mode` (`course`/`legacy`/`waiting`), `waiting_for_course`, `course_active` в
+  `/api/status` и `/api/course/status`.
+- GUI: Activate `disabled` до публикации/валидного дня, серверная проверка сохранена.
+
 ### 3.5. Web GUI
 
 В `server/web/index.html` добавлена карточка Course Editor: просмотр дней, выбор дня, вставка/удаление/копирование, очистка, пресеты, переименование, импорт/экспорт, Apply, Discard, Activate. Существующая карточка Schedule и её редактор событий сохранены.
@@ -137,14 +150,14 @@ GUI упрощён до одной карточки Courses: JSON v1/v2 -> `POST
 
 Подтверждено фактическим запуском в третьей сессии 2026-11-22 (после всех правок bootstrap):
 
-- `tests/run_course_editor_tests.py` — 456 checks, 0 FAIL.
-- То же с ASan/UBSan — 456 checks, 0 FAIL.
+- `tests/run_course_editor_tests.py` — 495 checks, 0 FAIL.
+- То же с ASan/UBSan — 490 checks, 0 FAIL (heap budget не измеряется под sanitizer).
 - `tests/run_course_tests.py` — 578 PASS, 0 FAIL.
 - `tests/run_course_store_tests.py` — 130 PASS, 0 FAIL (включая лимит NVS 15 символов).
-- `tests/run_course_scheduler_tests.py` — 117 checks, 0 FAIL; с ASan/UBSan — 117, 0 FAIL.
+- `tests/run_course_scheduler_tests.py` — 130 checks, 0 FAIL; с ASan/UBSan — 130, 0 FAIL.
 - `tests/run_emergency_tests.py` — 58 checks, 0 FAIL; с ASan/UBSan — 58, 0 FAIL.
-- `tests/run_active_day_state_tests.py` — 272 PASS, 0 FAIL; с UBSan — 272 PASS, 0 FAIL.
-- PlatformIO build (`pio run -e esp32dev`) — SUCCESS: RAM 20.9%, Flash 85.2% (1340773 B). Прошивка не заливалась.
+- `tests/run_active_day_state_tests.py` — 275 PASS, 0 FAIL; с UBSan — 275 PASS, 0 FAIL.
+- PlatformIO build (`pio run -e esp32dev`) — SUCCESS: RAM 20.9%, Flash 86.1% (1354221 B). Прошивка не заливалась.
 - `node --check` извлечённого JS из `server/web/index.html` — OK.
 - Мутационные проверки: гейт сидирования (13 падений) и первенство курса при загрузке
   (`T03/bootstrap_course_takes_over_and_survives_reboot` падает при старом условии).

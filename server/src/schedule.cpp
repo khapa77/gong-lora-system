@@ -55,6 +55,9 @@ static active_day::Source loadedSource = active_day::Source::Error;
 // legacy path is kept unchanged for existing installations and host tests.
 static bool courseMode = false;
 static bool courseRunning = false;
+// No published course and no legacy NVS binding: the device is waiting for a
+// JSON course and must not ring anything (fresh JSON-driven installation).
+static bool waitingForCourse = false;
 static bool courseRecoveryCheck();
 static bool courseSuspended = false;
 static bool courseDayValid = false;
@@ -824,6 +827,7 @@ void sched_setup() {
         logPrintf("[SCHED] EMERGENCY active, skipping normal course load\n");
         return;
     }
+    waitingForCourse = false;
     if (!firePrefs.begin("gong", false)) { activeStore.unknown(); return; }
     lastFireTs = firePrefs.getUInt("lastfire", 0);
 
@@ -843,8 +847,14 @@ void sched_setup() {
         return;
     }
     if (activeStore.status() == active_day::Status::Empty) {
-        logPrintf("[SCHED] No active day set — auto-activating Day 00\n");
-        sched_activateDay(0);
+        // No published course and no legacy binding: this is a fresh JSON-driven
+        // installation (the LittleFS image ships dayNN.conf, but nothing has
+        // ever been activated). Nothing may ring — the device waits for the
+        // operator to import and apply a JSON course. Auto-activating Day 00
+        // here is what made a new device play the legacy schedule by itself.
+        waitingForCourse = true;
+        logPrintf("[SCHED] no published course and no legacy binding — waiting for JSON\n");
+        return;
     }
     if (schedulerReady()) dropStaged();
     logPrintf("[SCHED] Day %02d, %d entries.\n", activeDay, count);
@@ -1239,6 +1249,18 @@ uint8_t sched_dayCount() { return courseMode ? courseLength : (uint8_t)DAY_COUNT
 // must not fall through to the legacy day files before that.
 bool sched_courseEnabled() { return courseMode; }
 
+// Actual execution mode, so the operator never has to guess:
+//   "course"  — a published JSON course owns execution (APPLIED or RUNNING);
+//   "legacy"  — an existing installation with a legacy NVS binding;
+//   "waiting" — no course and no legacy binding: nothing will ring.
+const char* sched_runMode() {
+    if (courseMode) return "course";
+    if (waitingForCourse) return "waiting";
+    return "legacy";
+}
+
+bool sched_waitingForCourse() { return waitingForCourse; }
+
 active_day::Status sched_persistenceStatus() { return activeStore.status(); }
 bool sched_isRunning() { return schedulerReady(); }
 
@@ -1621,8 +1643,8 @@ bool sched_courseInfoJSON(String& out) {
     course_editor::Info info;
     std::string err;
     if (!course_editor::info(info, err)) return courseFail(err);
-    // 1 KB: state keys plus the course name, which may be up to 64 bytes.
-    DynamicJsonDocument doc(1024);
+    // 1.25 KB: state keys, execution mode plus the course name.
+    DynamicJsonDocument doc(1280);
     JsonObject root = doc.to<JsonObject>();
     root["has_course"] = info.hasCourse;
     // has_draft is true while an unpublished bootstrap draft exists too, so the
@@ -1643,6 +1665,9 @@ bool sched_courseInfoJSON(String& out) {
     root["emergency"] = emergency::isActive();
     root["day_index"] = activeDay >= 0 ? activeDay : -1;
     root["scheduler_ready"] = schedulerReady();
+    // The operator must be able to tell legacy execution from a JSON course.
+    root["run_mode"] = sched_runMode();
+    root["waiting_for_course"] = waitingForCourse;
     String body;
     serializeJson(doc, body);
     out = body;
@@ -1709,7 +1734,7 @@ bool sched_courseRename(const String& name) {
 bool sched_courseImport(const String& json) {
     schedCourseError = "";
     std::string err;
-    if (!course_editor::importCourse(json.c_str(), err)) return courseFail(err);
+    if (!course_editor::importCourse(json.c_str(), json.length(), err)) return courseFail(err);
     courseReloadCalendar();
     return true;
 }
@@ -1732,6 +1757,7 @@ bool sched_courseApply() {
     courseReloadCalendar();
     sys_lock();
     courseMode = true;
+    waitingForCourse = false;
     courseGeneration = courseCal.active_generation;
     courseLength = courseCal.course_length;
     courseRunning = false;
@@ -1755,7 +1781,7 @@ bool sched_courseInspect(const String& json, uint8_t& days, uint16_t& events,
     schedCourseError = "";
     course_editor::Inspection inspection;
     std::string err;
-    if (!course_editor::inspectCourse(json.c_str(), inspection, err)) return courseFail(err);
+    if (!course_editor::inspectCourse(json.c_str(), json.length(), inspection, err)) return courseFail(err);
     days = inspection.length;
     events = inspection.events;
     version = inspection.version;

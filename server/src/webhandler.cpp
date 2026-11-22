@@ -1,4 +1,7 @@
 #include "webhandler.h"
+
+#include <esp_heap_caps.h>
+#include <new>
 #include "config.h"
 #include "sysstate.h"
 #include "schedule.h"
@@ -49,12 +52,61 @@ static void reply(int code, const char* type, const String& body) {
     respBody = body;
 }
 static void sendJSON(int code, const String& body) { reply(code, "application/json", body); }
+
 static void sendOK() { sendJSON(200, "{\"ok\":true}"); }
 static void sendErr(const char* msg) {
     String s = "{\"ok\":false,\"err\":\"";
     s += msg;
     s += "\"}";
     sendJSON(400, s);
+}
+
+// -------------------------------------------------------
+// Course import memory guard. The device has no PSRAM, so the HTTP body is the
+// dominant allocation (WebServer keeps it, arg() hands back one copy) and the
+// bounded importer adds one day at a time. Refusing early with a JSON error is
+// always better than letting operator new() throw and hit abort().
+// -------------------------------------------------------
+struct HeapSnapshot {
+    uint32_t freeHeap;
+    uint32_t largestBlock;
+};
+
+static HeapSnapshot heapSnapshot() {
+    HeapSnapshot snapshot;
+    snapshot.freeHeap = (uint32_t)ESP.getFreeHeap();
+    snapshot.largestBlock = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    return snapshot;
+}
+
+static void logHeap(const char* stage, const HeapSnapshot& before,
+                    const HeapSnapshot& after) {
+    logPrintf("[WEB] %s heap free %u->%u, largest %u->%u, stack hw %u\n",
+              stage,
+              (unsigned)before.freeHeap, (unsigned)after.freeHeap,
+              (unsigned)before.largestBlock, (unsigned)after.largestBlock,
+              (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+}
+
+// Largest accepted course JSON. The bounded importer keeps one day in RAM, but
+// the body itself is still a String (twice), so this is a policy limit too.
+static const size_t COURSE_JSON_MAX_BYTES = 49152;
+
+// Two body copies (WebServer storage + arg()) plus one day's working set. A
+// 32-event day parses to ~78 KB of JSON nodes on the host, so the headroom is
+// sized for that worst case; anything bigger is refused with a clear message
+// instead of aborting.
+static bool courseMemoryOk(size_t bodyLength, const char* what) {
+    const HeapSnapshot now = heapSnapshot();
+    const size_t need = bodyLength * 2 + 80 * 1024;
+    if (now.freeHeap < need || now.largestBlock < bodyLength + 8 * 1024) {
+        char msg[112];
+        snprintf(msg, sizeof(msg), "not enough memory to %s this file (%u bytes free, %u largest)",
+                 what, (unsigned)now.freeHeap, (unsigned)now.largestBlock);
+        sendErr(msg);
+        return false;
+    }
+    return true;
 }
 
 // -------------------------------------------------------
@@ -450,7 +502,7 @@ static void handleTimeSet() {
 // schedule/days/wifi/auth into one response for the UI's poll loop.
 // -------------------------------------------------------
 static String statusJSON() {
-    DynamicJsonDocument doc(768);
+    DynamicJsonDocument doc(1152);
     doc["mode"]   = WiFi.status() == WL_CONNECTED ? "AP+STA" : "AP";
     doc["ip"]     = wifi_apIP();
     doc["ssid"]   = device_ssid();
@@ -477,6 +529,11 @@ static String statusJSON() {
     doc["ntp_age"]     = time_ntpAgeSec();    // s since last NTP sync, -1 = never
     doc["active_day"]  = sched_getActiveDay();
     doc["day_count"]   = sched_dayCount();
+    // Which engine actually executes: a published JSON course, a legacy
+    // installation, or nothing at all (fresh device waiting for a JSON course).
+    doc["run_mode"]         = sched_runMode();
+    doc["waiting_for_course"] = sched_waitingForCourse();
+    doc["course_active"]  = sched_courseEnabled();
     // Health — anything here that is false/true-bad means gongs may not ring.
     doc["fs_ok"]        = sys_fsOk();
     doc["sched_error"]  = sched_hasError();
@@ -760,8 +817,24 @@ static void handleCourseRename() {
     sendOK();
 }
 
+// Runs one course operation with the heap diagnostics and a hard guarantee
+// that a bad_alloc from any std::string/vector ends as a JSON error instead of
+// std::terminate()/abort().
 static void handleCourseApply() {
-    if (!sched_courseApply()) { sendErr(sched_courseError().c_str()); return; }
+    const HeapSnapshot before = heapSnapshot();
+    bool ok = false;
+    try {
+        ok = sched_courseApply();
+    } catch (const std::bad_alloc&) {
+        logHeap("apply failed", before, heapSnapshot());
+        sendErr("not enough memory to publish this course");
+        return;
+    } catch (...) {
+        sendErr("publish failed");
+        return;
+    }
+    logHeap("apply", before, heapSnapshot());
+    if (!ok) { sendErr(sched_courseError().c_str()); return; }
     sendOK();
 }
 
@@ -784,8 +857,24 @@ static void handleCourseActivate() {
 static void handleCourseImport() {
     const String& body = server.arg("plain");
     if (body.length() == 0) { sendErr("empty body"); return; }
-    if (body.length() > 49152) { sendErr("request too large"); return; }
-    if (!sched_courseImport(body)) { sendErr(sched_courseError().c_str()); return; }
+    if (body.length() > COURSE_JSON_MAX_BYTES) { sendErr("request too large"); return; }
+    if (!courseMemoryOk(body.length(), "import")) return;
+    const HeapSnapshot before = heapSnapshot();
+    bool ok = false;
+    try {
+        // Pointer + length: sched_courseImport passes it straight through, so
+        // no std::string copy of the whole document is made.
+        ok = sched_courseImport(body);
+    } catch (const std::bad_alloc&) {
+        logHeap("import failed", before, heapSnapshot());
+        sendErr("not enough memory to import this file");
+        return;
+    } catch (...) {
+        sendErr("import failed");
+        return;
+    }
+    logHeap("import", before, heapSnapshot());
+    if (!ok) { sendErr(sched_courseError().c_str()); return; }
     sendOK();
 }
 
@@ -794,21 +883,38 @@ static void handleCourseImport() {
 static void handleCourseValidate() {
     const String& body = server.arg("plain");
     if (body.length() == 0) { sendErr("empty body"); return; }
-    if (body.length() > 49152) { sendErr("request too large"); return; }
+    if (body.length() > COURSE_JSON_MAX_BYTES) { sendErr("request too large"); return; }
+    if (!courseMemoryOk(body.length(), "validate")) return;
+    const HeapSnapshot before = heapSnapshot();
     uint8_t days = 0;
     uint16_t events = 0;
     uint8_t version = 0;
     String name;
-    if (!sched_courseInspect(body, days, events, version, name)) {
-        sendErr(sched_courseError().c_str());
+    bool ok = false;
+    try {
+        // Bounded scan: the document is never parsed into one tree, so a large
+        // file cannot exhaust the heap here.
+        ok = sched_courseInspect(body, days, events, version, name);
+    } catch (const std::bad_alloc&) {
+        logHeap("validate failed", before, heapSnapshot());
+        sendErr("not enough memory to validate this file");
+        return;
+    } catch (...) {
+        sendErr("validation failed");
         return;
     }
-    DynamicJsonDocument doc(384 + name.length());
+    const HeapSnapshot after = heapSnapshot();
+    logHeap("validate", before, after);
+    if (!ok) { sendErr(sched_courseError().c_str()); return; }
+
+    DynamicJsonDocument doc(448 + name.length());
     doc["ok"] = true;
     doc["name"] = name;
     doc["days"] = days;
     doc["events"] = events;
     doc["version"] = version;
+    doc["heap_free"] = after.freeHeap;
+    doc["heap_largest"] = after.largestBlock;
     String out;
     serializeJson(doc, out);
     sendJSON(200, out);
