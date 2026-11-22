@@ -92,13 +92,15 @@ static void logHeap(const char* stage, const HeapSnapshot& before,
 // the body itself is still a String (twice), so this is a policy limit too.
 static const size_t COURSE_JSON_MAX_BYTES = 49152;
 
-// Two body copies (WebServer storage + arg()) plus one day's working set. A
-// 32-event day parses to ~78 KB of JSON nodes on the host, so the headroom is
-// sized for that worst case; anything bigger is refused with a clear message
-// instead of aborting.
+// Two body copies (WebServer storage + arg()) plus the bounded working set.
+// Measured on the host after stage E: validating a 47-day / 256-event course
+// peaks at 8-10 KB and importing it (two body copies included) stays around
+// 8 KB above the body, so 24 KB of headroom is generous. This is a real
+// allocation check, not a percentage of static RAM: it refuses only files that
+// cannot fit, and returns a JSON error instead of aborting.
 static bool courseMemoryOk(size_t bodyLength, const char* what) {
     const HeapSnapshot now = heapSnapshot();
-    const size_t need = bodyLength * 2 + 80 * 1024;
+    const size_t need = bodyLength * 2 + 24 * 1024;
     if (now.freeHeap < need || now.largestBlock < bodyLength + 8 * 1024) {
         char msg[112];
         snprintf(msg, sizeof(msg), "not enough memory to %s this file (%u bytes free, %u largest)",

@@ -1382,6 +1382,35 @@ void cow_expanded_generation_unchanged() {
     check(reloaded.events.size() == 2, "expanded day edit did not persist");
 }
 
+// ── Stage F audit regressions ───────────────────────────────────────────────
+
+// Writing another generation's templates must not evict the running one.
+void audit_active_templates_survive_draft_write() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 3, "practice", 4, error), "seed 1 failed: " + error);
+    course_store::CourseStore store;
+    check(store.prepareActiveTemplates(1, error), "prepare active failed: " + error);
+    check(store.cachedTemplateGeneration() == 1, "active slot tag");
+
+    // A different course is written (new generation 2).
+    check(seedTemplateGeneration(2, 2, "other", 2, error), "seed 2 failed: " + error);
+    check(store.cachedTemplateGeneration() == 1,
+          "writing another generation evicted the active template set");
+    course::Day day;
+    check(store.loadDay(1, 0, day, error), "running generation no longer resolves: " + error);
+    check(day.events.size() == 4, "running generation lost its events");
+
+    // The new generation loads into the draft slot and resolves independently.
+    check(store.prepareTemplates(2, error), "prepare draft failed: " + error);
+    course::Day other;
+    check(store.loadDay(2, 0, other, error), "draft generation failed: " + error);
+    check(other.events.size() == 2, "draft generation events");
+    check(store.cachedTemplateGeneration() == 1,
+          "the draft load evicted the active slot");
+}
+
+
 int main() {
     runGroup("calendar_roundtrip", calendar_roundtrip);
     runGroup("calendar_crc_corruption", calendar_crc_corruption);
@@ -1448,6 +1477,10 @@ int main() {
     runGroup("cow_tmp_bak_recovery", cow_tmp_bak_recovery);
     runGroup("cow_cache_generation_after_clone", cow_cache_generation_after_clone);
     runGroup("cow_expanded_generation_unchanged", cow_expanded_generation_unchanged);
+
+    // Stage F audit: a write for another generation must not evict the cache.
+    runGroup("audit_active_templates_survive_draft_write",
+             audit_active_templates_survive_draft_write);
 
     std::cout << "PASS=" << g_pass << " FAIL=" << g_fail << "\n";
     return g_fail == 0 ? 0 : 1;

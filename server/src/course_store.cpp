@@ -1730,6 +1730,20 @@ bool writePartsStreamed(const std::string& base, const CourseStore::RawPart* par
 
 }  // namespace
 
+namespace {
+
+// Writing (or deleting) one generation must only drop *its* cached set. The
+// active slot may belong to another generation that is currently running: an
+// import of a new draft must not force the running course to reload its
+// templates at the next midnight tick.
+void invalidateTemplatesFor(std::uint32_t generation) {
+    if (generation == 0) return;
+    if (templateCache().active.generation == generation) templateCache().active.clear();
+    if (templateCache().draft.generation == generation) templateCache().draft.clear();
+}
+
+}  // namespace
+
 bool CourseStore::writeTemplatesParts(std::uint32_t generation, const RawPart* parts,
                                       std::size_t count, std::string& error) {
     error.clear();
@@ -1743,7 +1757,7 @@ bool CourseStore::writeTemplatesParts(std::uint32_t generation, const RawPart* p
     }
     ensureGenerationDir(generation);
     if (!writePartsStreamed(templateBase(generation), parts, count, error)) return false;
-    invalidateTemplates();
+    invalidateTemplatesFor(generation);
     return true;
 }
 
@@ -1781,8 +1795,8 @@ bool CourseStore::writeTemplates(
     }
     ensureGenerationDir(generation);
     if (!writeAtomic(templateBase(generation), json, error)) return false;
-    // The file changed: whatever was cached is no longer trustworthy.
-    invalidateTemplates();
+    // Only this generation's cached set is stale; a running course keeps its own.
+    invalidateTemplatesFor(generation);
     return true;
 }
 
@@ -1850,6 +1864,7 @@ bool CourseStore::templatesReady(std::uint32_t generation) const {
 }
 
 void CourseStore::invalidateTemplates() { clearTemplateCache(); }
+
 
 std::size_t CourseStore::cachedTemplateCount() const {
     const TemplateSet* set = activeOrDraftSet();

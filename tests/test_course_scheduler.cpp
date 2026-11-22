@@ -881,6 +881,97 @@ static void test_tpl_corrupt_templates_suspends() {
     check((cal.flags & course_store::kSuspended) != 0, "SUSPENDED after corrupt CRC");
 }
 
+// A day file that cannot be read must suspend instead of running wrong events.
+static void test_audit_corrupt_day_suspends() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 3, 0);
+    check(applyCompact(makeTemplateCourse(7, 3, 2)), "apply");
+    sched_setup();
+    check(sched_activateDay(2), "activate day 2");
+    const std::uint32_t gen = courseGeneration;
+    std::string& raw = host::files()["/course/g" + std::to_string(gen) + "/d02.json"];
+    raw = "CRC32 00000000\n{\"format\":\"gong-course\"";
+
+    reboot();
+    check(courseMode, "course mode after corrupt day");
+    check(!courseRunning && !schedulerReady(), "corrupt day must not run");
+    check(audioCalls == 0, "no events from a corrupt day");
+    course_store::CalendarState cal;
+    check(readCalendar(cal), "calendar readable");
+    check((cal.flags & course_store::kSuspended) != 0, "SUSPENDED after a corrupt day");
+    check((cal.flags & course_store::kApplied) != 0, "course still APPLIED");
+}
+
+// The midnight switch must not publish a half-broken next day.
+static void test_audit_midnight_broken_next_day() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 3, 0);
+    check(applyCompact(makeTemplateCourse(7, 3, 2)), "apply");
+    sched_setup();
+    check(sched_activateDay(2), "activate day 2");
+    check(courseRunning, "running day 2");
+    const std::uint32_t gen = courseGeneration;
+    std::string& next = host::files()["/course/g" + std::to_string(gen) + "/d03.json"];
+    next = "CRC32 00000000\nnot json";
+
+    host::clock() = atDate(2026, 11, 23, 3, 0);
+    sched_check();
+    check(!schedulerReady(), "a broken next day must not become active");
+    check(audioCalls == 0, "no calls while the next day is broken");
+    course_store::CalendarState cal;
+    check(readCalendar(cal), "calendar readable");
+    check((cal.flags & course_store::kSuspended) != 0, "SUSPENDED at midnight");
+}
+
+// Calendar semantics for the extremes of the supported range.
+static void test_audit_length_one_and_47() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 3, 0);
+    check(applyCompact(makeTemplateCourse(1, 2, 1)), "apply 1 day");
+    sched_setup();
+    check(sched_activateDay(0), "activate day 0 of 1");
+    host::clock() = atDate(2026, 11, 29, 3, 0);
+    sched_check();
+    check(activeDay == 0, "a 1-day course stays on day 0");
+    check(courseRunning, "1-day course keeps running");
+
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 3, 0);
+    check(applyCompact(makeTemplateCourse(47, 2, 2)), "apply 47 days");
+    sched_setup();
+    check(sched_activateDay(46), "activate day 46 of 47");
+    host::clock() = atDate(2026, 11, 23, 3, 0);
+    sched_check();
+    check(activeDay == 0, "47-day course wraps 46 -> 00");
+}
+
+// A draft import while a course is running must not disturb the schedule.
+static void test_audit_import_during_running() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 3, 0);
+    check(applyCompact(makeTemplateCourse(14, 3, 3)), "apply active");
+    sched_setup();
+    check(sched_activateDay(2), "activate day 2");
+    check(courseRunning && count == 3, "running day 2");
+
+    course::Course other = makeTemplateCourse(10, 5, 2);
+    other.name = "other";
+    std::string buildError;
+    const std::string json = course::toJsonV2(other, false, buildError);
+    check(!json.empty(), "draft JSON build");
+    check(course_editor::importCourseAuto(json, buildError), "draft import");
+
+    // The running generation still resolves, and midnight still advances.
+    check(courseRunning && activeDay == 2 && count == 3, "live day disturbed");
+    host::clock() = atDate(2026, 11, 23, 3, 0);
+    sched_check();
+    check(activeDay == 3, "midnight advance after a draft import");
+    check(count == 3 && schedulerReady(), "next day published after a draft import");
+    host::clock() = atDate(2026, 11, 23, 5, 0);
+    sched_check();
+    check(audioCalls == 1, "schedule stopped ringing after a draft import");
+}
+
 int main() {
     TestCase tests[] = {
         {"boot_applied_no_calls", test_boot_applied_no_calls},
@@ -917,6 +1008,10 @@ int main() {
         {"tpl_republish_other_length", test_tpl_republish_other_length},
         {"tpl_missing_templates_suspends", test_tpl_missing_templates_suspends},
         {"tpl_corrupt_templates_suspends", test_tpl_corrupt_templates_suspends},
+        {"audit_corrupt_day_suspends", test_audit_corrupt_day_suspends},
+        {"audit_midnight_broken_next_day", test_audit_midnight_broken_next_day},
+        {"audit_length_one_and_47", test_audit_length_one_and_47},
+        {"audit_import_during_running", test_audit_import_during_running},
     };
     for (const TestCase& t : tests) {
         const int before = failures;
