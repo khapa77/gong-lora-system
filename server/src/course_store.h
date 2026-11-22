@@ -4,9 +4,25 @@
 #include "course_model.h"
 
 #include <cstdint>
+#include <map>
 #include <string>
+#include <vector>
 
 namespace course_store {
+
+// Generation layouts.
+//   kLayoutExpanded  — every day file carries its own event list (all courses
+//                      published before stage A).
+//   kLayoutTemplates — meta.json says "layout":"tpl1": the unique templates
+//                      live once in templates.json and a day may be a
+//                      reference {"template":"name"}.
+enum : std::uint8_t {
+    kLayoutExpanded = 0,
+    kLayoutTemplates = 1,
+};
+
+// Longest template name accepted in templates.json.
+const std::size_t kMaxTemplateNameBytes = 64;
 
 // Calendar flags. A course may be published (APPLIED) without being bound to a
 // calendar date. RUNNING means the activation date/day binding is valid.
@@ -44,6 +60,10 @@ struct CourseMeta {
     std::uint32_t generation;
     std::uint8_t course_length;
     std::string name;
+    // kLayoutExpanded for every generation written before stage A. Only
+    // kLayoutTemplates generations may contain day references and a
+    // templates.json file.
+    std::uint8_t layout;
 
     CourseMeta();
 };
@@ -119,6 +139,30 @@ public:
 
     // Repairs interrupted file replacements and removes stale .tmp/.bak files.
     bool recover(std::string& error);
+
+    // ── Template set (stage A) ────────────────────────────────────────────
+    // The unique templates of one generation, stored once in templates.json.
+    // The cache is process-wide, strictly tagged with its generation and
+    // fail-closed: a missing file, a CRC error, a broken body or an exhausted
+    // budget leaves it empty, so loadDay() can never serve a partial schedule.
+    static const std::size_t kMaxTemplates = 32;
+    static const std::size_t kMaxTemplateEvents = 256;
+
+    // Writes templates.json for `generation` atomically and invalidates the
+    // cache. The caller sets meta.layout = kLayoutTemplates.
+    bool writeTemplates(std::uint32_t generation,
+                        const std::map<std::string, std::vector<course::Event> >& templates,
+                        std::string& error);
+
+    // Loads the template set of `generation` into the cache. Returns true and
+    // leaves the cache usable only on complete success. A different generation
+    // always invalidates the previous entries first.
+    bool prepareTemplates(std::uint32_t generation, std::string& error);
+    bool templatesReady(std::uint32_t generation) const;
+    void invalidateTemplates();
+    std::size_t cachedTemplateCount() const;
+    std::size_t cachedTemplateEvents() const;
+    std::uint32_t cachedTemplateGeneration() const;
 
     bool loadLastFire(LastFire& out, std::string& error);
     bool saveLastFire(const LastFire& value, std::string& error);

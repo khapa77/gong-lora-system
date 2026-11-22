@@ -688,7 +688,8 @@ bool validateEvent(const Event& event, std::string& error) {
     return true;
 }
 
-bool validate(const Course& course, std::string& error) {
+bool validateImpl(const Course& course, bool allowUnresolvedTemplates,
+                  std::string& error) {
     if (course.days.empty()) return fail(error, "course must contain at least one day");
     if (course.days.size() > kMaxDays) return fail(error, "course has too many days");
     for (std::map<std::string, std::vector<Event> >::const_iterator it =
@@ -698,21 +699,26 @@ bool validate(const Course& course, std::string& error) {
     }
     for (std::size_t i = 0; i < course.days.size(); ++i) {
         const Day& day = course.days[i];
-        if (!day.templateName.empty() &&
-            course.templates.find(day.templateName) == course.templates.end()) {
+        const bool known =
+            course.templates.find(day.templateName) != course.templates.end();
+        if (!day.templateName.empty() && !known && !allowUnresolvedTemplates) {
             return fail(error, "unknown template: " + day.templateName);
         }
         if (day.hasOwnEvents) {
             if (!validateEventList(day.events, error)) return false;
         } else {
             if (day.templateName.empty()) return fail(error, "day has neither template nor events");
-            if (course.templates.find(day.templateName) == course.templates.end()) {
+            if (!known && !allowUnresolvedTemplates) {
                 return fail(error, "unknown template: " + day.templateName);
             }
             if (!day.events.empty()) return fail(error, "template day must not carry events");
         }
     }
     return true;
+}
+
+bool validate(const Course& course, std::string& error) {
+    return validateImpl(course, false, error);
 }
 
 bool resolvedEvents(const Course& course, std::size_t dayIndex,
@@ -842,7 +848,8 @@ bool setEventEnabled(Course& course, std::size_t dayIndex, std::uint32_t id,
     return fail(error, "event id not found");
 }
 
-bool fromJson(const std::string& json, Course& out, std::string& error) {
+bool fromJsonImpl(const std::string& json, Course& out, bool allowUnresolvedTemplates,
+                  std::string& error) {
     JsonValue root;
     JsonParser parser(json);
     if (!parser.parse(root, error)) return false;
@@ -907,9 +914,17 @@ bool fromJson(const std::string& json, Course& out, std::string& error) {
         }
     }
 
-    if (!validate(course, error)) return false;
+    if (!validateImpl(course, allowUnresolvedTemplates, error)) return false;
     out = course;
     return true;
+}
+
+bool fromJson(const std::string& json, Course& out, std::string& error) {
+    return fromJsonImpl(json, out, false, error);
+}
+
+bool fromJsonUnresolved(const std::string& json, Course& out, std::string& error) {
+    return fromJsonImpl(json, out, true, error);
 }
 
 bool formatVersion(const std::string& json, int& out, std::string& error) {
@@ -928,6 +943,36 @@ bool formatVersion(const std::string& json, int& out, std::string& error) {
     if (!readInt(*versionValue, "version", 1, 2, version, error)) return false;
     out = static_cast<int>(version);
     return true;
+}
+
+std::string toJsonTemplates(const std::map<std::string, std::vector<Event> >& templates,
+                            std::size_t& totalEvents, std::string& error) {
+    error.clear();
+    totalEvents = 0;
+    std::string out;
+    out.reserve(96 + templates.size() * 64);
+    out += "{\"format\":\"gong-course-templates\",\"version\":1,\"templates\":{";
+    bool first = true;
+    for (std::map<std::string, std::vector<Event> >::const_iterator it = templates.begin();
+         it != templates.end(); ++it) {
+        if (it->first.empty()) {
+            error = "template name must not be empty";
+            return std::string();
+        }
+        if (!validateEventList(it->second, error)) {
+            error = "template " + it->first + ": " + error;
+            return std::string();
+        }
+        if (!first) out += ',';
+        first = false;
+        out += '"';
+        out += escapeJson(it->first);
+        out += "\":";
+        writeEventArray(out, it->second);
+        totalEvents += it->second.size();
+    }
+    out += "}}";
+    return out;
 }
 
 std::string toJsonV2(const Course& course, bool expandTemplates,

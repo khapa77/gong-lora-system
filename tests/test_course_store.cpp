@@ -6,8 +6,10 @@
 #include "Preferences.h"
 #include "nvs.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -512,6 +514,336 @@ void bootstrap_pointer_roundtrip() {
     check(store.loadBootstrapGeneration() == 0, "failed pointer write stored nothing");
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Stage A: templates.json, the generation-tagged cache and day resolution.
+// ─────────────────────────────────────────────────────────────────────────────
+
+void writeRawFile(const std::string& path, const std::string& json) {
+    char header[32];
+    std::snprintf(header, sizeof(header), "CRC32 %08lx\n",
+                  static_cast<unsigned long>(course_store::CourseStore::crc32(json)));
+    host::files()[path] = std::string(header) + json;
+}
+
+std::string dayRefJson(std::uint32_t generation, const std::string& templateName) {
+    return "{\"format\":\"gong-course\",\"version\":2,\"name\":\"day\",\"generation\":" +
+           std::to_string(generation) + ",\"course_length\":1,\"days\":[{\"template\":\"" +
+           templateName + "\"}]}";
+}
+
+std::map<std::string, std::vector<course::Event> > templateSet(
+    const std::string& name, int events) {
+    std::map<std::string, std::vector<course::Event> > set;
+    std::vector<course::Event> list;
+    for (int i = 0; i < events; ++i) {
+        list.push_back(event(5 + i, 0, "tpl " + std::to_string(i),
+                             static_cast<std::uint32_t>(i + 1)));
+    }
+    set[name] = list;
+    return set;
+}
+
+// Builds a generation exactly as stage B will: templates.json plus reference
+// day files and a meta marker.
+bool seedTemplateGeneration(std::uint32_t generation, int days,
+                            const std::string& templateName, int events,
+                            std::string& error) {
+    course_store::CourseStore store;
+    if (!store.writeTemplates(generation, templateSet(templateName, events), error)) {
+        return false;
+    }
+    course_store::CourseMeta meta;
+    meta.generation = generation;
+    meta.course_length = static_cast<std::uint8_t>(days);
+    meta.name = "template course";
+    meta.layout = course_store::kLayoutTemplates;
+    if (!store.saveMeta(meta, error)) return false;
+    for (int day = 0; day < days; ++day) {
+        char name[8];
+        std::snprintf(name, sizeof(name), "d%02u", static_cast<unsigned>(day));
+        writeRawFile(std::string("/course/g") + std::to_string(generation) + "/" + name +
+                         ".json",
+                     dayRefJson(generation, templateName));
+    }
+    error.clear();
+    return true;
+}
+
+std::string templatesPath(std::uint32_t generation) {
+    return std::string("/course/g") + std::to_string(generation) + "/templates.json";
+}
+
+void templates_expanded_generation_unaffected() {
+    resetHost();
+    course_store::CourseStore store;
+    std::uint32_t generation = 0;
+    course_store::CalendarState state;
+    std::string error;
+    check(store.applyCourse(makeCourse(3), generation, state, error),
+          "apply expanded course failed: " + error);
+    course_store::CourseMeta meta;
+    check(store.loadMeta(generation, meta, error), "loadMeta failed: " + error);
+    check(meta.layout == course_store::kLayoutExpanded,
+          "expanded generation must not report the tpl1 layout");
+    check(host::files().find(templatesPath(generation)) == host::files().end(),
+          "expanded generation wrote a templates file");
+    check(store.prepareTemplates(generation, error),
+          "prepareTemplates on an expanded generation failed: " + error);
+    check(store.cachedTemplateCount() == 0,
+          "expanded generation exposed template entries");
+    check(store.templatesReady(generation), "expanded generation is not marked ready");
+    course::Day day;
+    check(store.loadDay(generation, 1, day, error), "loadDay failed: " + error);
+    check(day.hasOwnEvents && day.events.size() == 1 &&
+              day.events[0].description == "day 1",
+          "expanded day changed shape");
+}
+
+void templates_reference_day_resolves() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 3, "practice", 4, error), "seed failed: " + error);
+    course_store::CourseStore store;
+    check(store.prepareTemplates(1, error), "prepareTemplates failed: " + error);
+    check(store.cachedTemplateCount() == 1, "template count");
+    check(store.cachedTemplateEvents() == 4, "template event count");
+    check(store.cachedTemplateGeneration() == 1, "cache generation tag");
+    course::Day day;
+    check(store.loadDay(1, 2, day, error), "loadDay failed: " + error);
+    check(day.hasOwnEvents, "resolved day is still a reference");
+    check(day.templateName.empty(), "resolved day kept its template name");
+    check(day.events.size() == 4, "resolved event count");
+    check(day.events[0].description == "tpl 0", "resolved payload");
+    const std::string raw = host::files()["/course/g1/d02.json"];
+    check(raw.size() < 160, "a reference day file should stay tiny");
+}
+
+void templates_mixed_generation() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 3, "practice", 4, error), "seed failed: " + error);
+    course_store::CourseStore store;
+    // Day 1 carries its own events (an individually edited day).
+    course::Day own;
+    own.hasOwnEvents = true;
+    own.events.push_back(event(9, 30, "own day", 7));
+    check(store.saveDayAtomic(1, 1, own, error), "own day write failed: " + error);
+    check(store.prepareTemplates(1, error), "prepareTemplates failed: " + error);
+    course::Day ref;
+    course::Day edited;
+    check(store.loadDay(1, 0, ref, error), "reference day failed: " + error);
+    check(store.loadDay(1, 1, edited, error), "own day failed: " + error);
+    check(ref.events.size() == 4, "reference day lost its template events");
+    check(edited.events.size() == 1 && edited.events[0].description == "own day",
+          "own day was overwritten by the template");
+    // Editing the own day again must not leak into the shared template.
+    own.events[0].description = "own day v2";
+    check(store.saveDayAtomic(1, 1, own, error), "own day rewrite failed: " + error);
+    check(store.loadDay(1, 0, ref, error), "reference day reload failed: " + error);
+    check(ref.events.size() == 4 && ref.events[0].description == "tpl 0",
+          "editing one day changed a day that shares the template");
+}
+
+void templates_missing_template() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 2, "practice", 3, error), "seed failed: " + error);
+    writeRawFile("/course/g1/d00.json", dayRefJson(1, "ghost"));
+    course_store::CourseStore store;
+    check(store.prepareTemplates(1, error), "prepareTemplates failed: " + error);
+    course::Day day;
+    error.clear();
+    check(!store.loadDay(1, 0, day, error), "unknown template must not resolve");
+    check(error.find("unknown template") != std::string::npos,
+          "missing template error is unclear: " + error);
+    error.clear();
+    check(!store.validateGeneration(1, 2, error),
+          "generation with a missing template must not validate");
+}
+
+void templates_corrupt_body() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 2, "practice", 3, error), "seed failed: " + error);
+    // Valid CRC, broken JSON: the file must be rejected, not half-parsed.
+    writeRawFile(templatesPath(1), "{\"format\":\"gong-course-templates\",\"version\":1,");
+    course_store::CourseStore store;
+    check(!store.prepareTemplates(1, error), "corrupt templates.json was accepted");
+    check(store.cachedTemplateGeneration() == 0, "failed load left a generation tag");
+    check(store.cachedTemplateCount() == 0, "failed load left templates cached");
+    course::Day day;
+    check(!store.loadDay(1, 0, day, error),
+          "reference day loaded without a usable template set");
+    check(day.events.empty(), "a failed load must not expose events");
+}
+
+void templates_crc_error() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 2, "practice", 3, error), "seed failed: " + error);
+    std::string& raw = host::files()[templatesPath(1)];
+    raw[raw.size() - 2] = (raw[raw.size() - 2] == 'x') ? 'y' : 'x';
+    course_store::CourseStore store;
+    error.clear();
+    check(!store.prepareTemplates(1, error), "CRC error was not detected");
+    check(error.find("CRC") != std::string::npos, "CRC error text: " + error);
+    check(store.cachedTemplateCount() == 0, "CRC failure left templates cached");
+}
+
+void templates_cache_generation_mismatch() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 2, "one", 4, error), "seed 1 failed: " + error);
+    check(seedTemplateGeneration(2, 2, "two", 2, error), "seed 2 failed: " + error);
+    course_store::CourseStore store;
+    check(store.prepareTemplates(1, error), "prepare(1) failed: " + error);
+    course::Day day;
+    error.clear();
+    check(!store.loadDay(2, 0, day, error),
+          "generation 2 was served from generation 1's cache");
+    check(error.find("not loaded") != std::string::npos,
+          "cross-generation error text: " + error);
+    check(store.prepareTemplates(2, error), "prepare(2) failed: " + error);
+    check(store.loadDay(2, 0, day, error), "loadDay(2) failed: " + error);
+    check(day.events.size() == 2, "stale template set survived the reload");
+    check(day.events[0].description == "tpl 0", "wrong template payload");
+}
+
+void templates_failed_reload_invalidates() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 2, "practice", 3, error), "seed failed: " + error);
+    course_store::CourseStore store;
+    check(store.prepareTemplates(1, error), "prepare failed: " + error);
+    writeRawFile(templatesPath(1), "{\"format\":\"gong-course-templates\",\"version\":1,"
+                                   "\"templates\":{\"practice\":[{\"id\":1,\"hour\":99}]}}");
+    // A fresh boot reads the file again; the already-loaded set is dropped.
+    store.invalidateTemplates();
+    error.clear();
+    check(!store.prepareTemplates(1, error), "invalid template body was accepted");
+    check(store.cachedTemplateGeneration() == 0, "failed reload kept the old cache");
+    course::Day day;
+    check(!store.loadDay(1, 0, day, error),
+          "stale cache was used after a failed reload");
+}
+
+void templates_recover_interrupted_write() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 2, "practice", 3, error), "seed failed: " + error);
+    course_store::CourseStore store;
+    course_store::CalendarState state;
+    state.active_generation = 1;
+    state.course_length = 2;
+    state.flags = course_store::kApplied;
+    check(store.saveCalendar(state, error), "saveCalendar failed: " + error);
+
+    // Interrupted replacement: the new file sits in .tmp, the published one is
+    // damaged beyond CRC.
+    const std::string good = host::files()[templatesPath(1)];
+    host::files()["/course/g1/templates.tmp"] = good;
+    host::files()[templatesPath(1)] = "CRC32 00000000\n{\"format\":\"gong-course-templates\"}";
+
+    check(store.recover(error), "recover failed: " + error);
+    check(host::files().find("/course/g1/templates.tmp") == host::files().end(),
+          "recover left the tmp file behind");
+    course::Day day;
+    check(store.loadDay(1, 0, day, error), "day load after recover failed: " + error);
+    check(day.events.size() == 3, "recover lost the template events");
+}
+
+void templates_recover_backup() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 2, "practice", 3, error), "seed failed: " + error);
+    course_store::CourseStore store;
+    course_store::CalendarState state;
+    state.active_generation = 1;
+    state.course_length = 2;
+    state.flags = course_store::kApplied;
+    check(store.saveCalendar(state, error), "saveCalendar failed: " + error);
+
+    const std::string good = host::files()[templatesPath(1)];
+    host::files()["/course/g1/templates.bak"] = good;
+    host::files()[templatesPath(1)] = "CRC32 00000000\n{";
+    check(store.recover(error), "recover from backup failed: " + error);
+    check(host::files().find("/course/g1/templates.bak") == host::files().end(),
+          "recover left the bak file behind");
+    course::Day day;
+    check(store.loadDay(1, 0, day, error), "day load after backup restore failed: " + error);
+    check(day.events.size() == 3, "backup restore lost the template events");
+}
+
+void templates_delete_generation() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 2, "practice", 3, error), "seed failed: " + error);
+    course_store::CourseStore store;
+    check(store.prepareTemplates(1, error), "prepare failed: " + error);
+    check(store.cachedTemplateGeneration() == 1, "cache tag before delete");
+    check(store.deleteGeneration(1, error), "deleteGeneration failed: " + error);
+    check(host::files().find(templatesPath(1)) == host::files().end(),
+          "deleteGeneration kept templates.json");
+    check(store.cachedTemplateGeneration() == 0,
+          "deleteGeneration kept the deleted generation in the cache");
+}
+
+void templates_limits() {
+    resetHost();
+    course_store::CourseStore store;
+    std::string error;
+
+    std::map<std::string, std::vector<course::Event> > many;
+    for (int i = 0; i < 33; ++i) {
+        many["t" + std::to_string(i)] = templateSet("x", 1)["x"];
+    }
+    check(!store.writeTemplates(1, many, error), "33 templates must be refused");
+
+    std::map<std::string, std::vector<course::Event> > tooManyEvents;
+    for (int i = 0; i < 9; ++i) {
+        std::vector<course::Event> list;
+        for (int e = 0; e < 32; ++e) {
+            list.push_back(event(5 + e, 0, "e", static_cast<std::uint32_t>(e + 1)));
+        }
+        tooManyEvents["t" + std::to_string(i)] = list;
+    }
+    check(!store.writeTemplates(1, tooManyEvents, error),
+          "288 template events must be refused");
+
+    std::vector<course::Event> oversized;
+    for (int e = 0; e < 33; ++e) {
+        oversized.push_back(event(5, e, "e", static_cast<std::uint32_t>(e + 1)));
+    }
+    std::map<std::string, std::vector<course::Event> > perTemplate;
+    perTemplate["big"] = oversized;
+    check(!store.writeTemplates(1, perTemplate, error),
+          "33 events in one template must be refused");
+    check(host::files().find(templatesPath(1)) == host::files().end(),
+          "a refused template set must not be written");
+}
+
+void templates_clone_keeps_layout() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 3, "practice", 3, error), "seed failed: " + error);
+    course_store::CourseStore store;
+    std::uint32_t clone = 0;
+    check(store.cloneGeneration(1, clone, error), "clone failed: " + error);
+    course_store::CourseMeta meta;
+    check(store.loadMeta(clone, meta, error), "clone meta failed: " + error);
+    check(meta.layout == course_store::kLayoutTemplates,
+          "clone lost the tpl1 layout marker");
+    check(host::files().find(templatesPath(clone)) != host::files().end(),
+          "clone did not copy templates.json");
+    const std::string dayFile = "/course/g" + std::to_string(clone) + "/d00.json";
+    check(host::files()[dayFile].size() < 160,
+          "clone materialised a reference day");
+    check(store.prepareTemplates(clone, error), "prepare(clone) failed: " + error);
+    course::Day day;
+    check(store.loadDay(clone, 0, day, error), "clone day load failed: " + error);
+    check(day.events.size() == 3, "clone lost the template events");
+}
+
 int main() {
     runGroup("calendar_roundtrip", calendar_roundtrip);
     runGroup("calendar_crc_corruption", calendar_crc_corruption);
@@ -538,6 +870,25 @@ int main() {
     runGroup("validate_generation_detects_corruption",
              validate_generation_detects_corruption);
     runGroup("no_calendar_recover_is_ok", no_calendar_recover_is_ok);
+
+    // Stage A: templates.json, cache and day resolution.
+    runGroup("templates_expanded_generation_unaffected",
+             templates_expanded_generation_unaffected);
+    runGroup("templates_reference_day_resolves", templates_reference_day_resolves);
+    runGroup("templates_mixed_generation", templates_mixed_generation);
+    runGroup("templates_missing_template", templates_missing_template);
+    runGroup("templates_corrupt_body", templates_corrupt_body);
+    runGroup("templates_crc_error", templates_crc_error);
+    runGroup("templates_cache_generation_mismatch",
+             templates_cache_generation_mismatch);
+    runGroup("templates_failed_reload_invalidates",
+             templates_failed_reload_invalidates);
+    runGroup("templates_recover_interrupted_write",
+             templates_recover_interrupted_write);
+    runGroup("templates_recover_backup", templates_recover_backup);
+    runGroup("templates_delete_generation", templates_delete_generation);
+    runGroup("templates_limits", templates_limits);
+    runGroup("templates_clone_keeps_layout", templates_clone_keeps_layout);
 
     std::cout << "PASS=" << g_pass << " FAIL=" << g_fail << "\n";
     return g_fail == 0 ? 0 : 1;

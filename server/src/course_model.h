@@ -111,6 +111,19 @@ bool fromJson(const std::string& json, Course& out, std::string& error);
 // The Web GUI reports which format a file uses before importing it; fromJson()
 // stays the single validating parser.
 bool formatVersion(const std::string& json, int& out, std::string& error);
+// Parses a single-day (or full) document that may reference a template
+// without resolving it. Structural and event validation still apply; only the
+// "unknown template" check is skipped. Used by course_store::loadDay(), which
+// resolves the reference from the generation's template set.
+bool fromJsonUnresolved(const std::string& json, Course& out, std::string& error);
+
+// Serialises a template set as the stage-A templates.json body:
+//   {"format":"gong-course-templates","version":1,"templates":{"name":[...]}}
+// Returns an empty string on error. `totalEvents` receives the event count.
+// Templates are validated with the same rules as a course day.
+std::string toJsonTemplates(const std::map<std::string, std::vector<Event> >& templates,
+                            std::size_t& totalEvents, std::string& error);
+
 std::string toJsonV2(const Course& course, bool expandTemplates,
                      std::string& error);
 

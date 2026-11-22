@@ -171,6 +171,367 @@ std::string metaBase(std::uint32_t generation) {
     return basePath(generation, kMetaBase);
 }
 
+std::string templateBase(std::uint32_t generation) {
+    return basePath(generation, "templates");
+}
+
+std::string escapeText(const std::string& text) {
+    std::string out;
+    out.reserve(text.size() + 8);
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    char buffer[8];
+                    std::snprintf(buffer, sizeof(buffer), "\\u%04x", c);
+                    out += buffer;
+                } else {
+                    out.push_back(static_cast<char>(c));
+                }
+        }
+    }
+    return out;
+}
+
+struct TemplateSlice {
+    std::string name;
+    std::size_t begin;
+    std::size_t length;
+    TemplateSlice() : begin(0), length(0) {}
+};
+
+// Reads templates.json into byte ranges: each template body is parsed on its
+// own through the course model, so only one template is materialised in RAM at
+// a time (a 32-event template costs the same peak as a 32-event day).
+class TemplateScanner {
+public:
+    explicit TemplateScanner(const std::string& text) : text_(text), pos_(0) {}
+
+    bool scan(std::vector<TemplateSlice>& out, std::string& error) {
+        ws();
+        if (!expect('{', error)) return false;
+        bool sawFormat = false;
+        bool sawVersion = false;
+        bool sawTemplates = false;
+        ws();
+        if (peek() != '}') {
+            for (;;) {
+                std::string key;
+                if (!readString(&key, 24, error)) return false;
+                if (!expect(':', error)) return false;
+                ws();
+                if (key == "format") {
+                    std::string value;
+                    if (!readString(&value, 32, error)) return false;
+                    if (value != "gong-course-templates") {
+                        return fail(error, "unsupported templates format");
+                    }
+                    sawFormat = true;
+                } else if (key == "version") {
+                    std::string value;
+                    if (!readNumber(value, error)) return false;
+                    if (value != "1") return fail(error, "unsupported templates version");
+                    sawVersion = true;
+                } else if (key == "templates") {
+                    if (!readTemplates(out, error)) return false;
+                    sawTemplates = true;
+                } else {
+                    return fail(error, "unknown field: " + key);
+                }
+                ws();
+                if (peek() == ',') {
+                    ++pos_;
+                    ws();
+                    continue;
+                }
+                break;
+            }
+        }
+        if (!expect('}', error)) return false;
+        ws();
+        if (pos_ != text_.size()) return fail(error, "trailing data");
+        if (!sawFormat || !sawVersion || !sawTemplates) return fail(error, "missing fields");
+        return true;
+    }
+
+private:
+    const std::string& text_;
+    std::size_t pos_;
+
+    bool fail(std::string& error, const std::string& what) const {
+        error = what + " at byte " + std::to_string(pos_);
+        return false;
+    }
+    void ws() {
+        while (pos_ < text_.size()) {
+            const char c = text_[pos_];
+            if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+                ++pos_;
+            } else {
+                break;
+            }
+        }
+    }
+    char peek() const { return pos_ < text_.size() ? text_[pos_] : '\0'; }
+    bool expect(char c, std::string& error) {
+        ws();
+        if (pos_ >= text_.size() || text_[pos_] != c) {
+            return fail(error, std::string("expected '") + c + "'");
+        }
+        ++pos_;
+        return true;
+    }
+
+    bool readString(std::string* out, std::size_t cap, std::string& error) {
+        ws();
+        if (peek() != '"') return fail(error, "expected a string");
+        ++pos_;
+        std::size_t written = 0;
+        for (;;) {
+            if (pos_ >= text_.size()) return fail(error, "unterminated string");
+            const char c = text_[pos_++];
+            if (c == '"') break;
+            if (static_cast<unsigned char>(c) < 0x20) return fail(error, "control character in string");
+            if (c != '\\') {
+                if (out && written++ >= cap) return fail(error, "string too long");
+                if (out) out->push_back(c);
+                continue;
+            }
+            if (pos_ >= text_.size()) return fail(error, "truncated escape");
+            const char esc = text_[pos_++];
+            char decoded = esc;
+            if (esc == 'u') {
+                if (pos_ + 4 > text_.size()) return fail(error, "truncated \\u escape");
+                unsigned code = 0;
+                for (int i = 0; i < 4; ++i) {
+                    const char h = text_[pos_++];
+                    code <<= 4;
+                    if (h >= '0' && h <= '9') code |= static_cast<unsigned>(h - '0');
+                    else if (h >= 'a' && h <= 'f') code |= static_cast<unsigned>(h - 'a' + 10);
+                    else if (h >= 'A' && h <= 'F') code |= static_cast<unsigned>(h - 'A' + 10);
+                    else return fail(error, "invalid \\u escape");
+                }
+                // Names are ASCII in practice; encode the BMP code point as UTF-8.
+                if (code < 0x80) {
+                    decoded = static_cast<char>(code);
+                    if (out && written++ >= cap) return fail(error, "string too long");
+                    if (out) out->push_back(decoded);
+                } else if (code < 0x800) {
+                    if (out && written + 2 > cap) return fail(error, "string too long");
+                    if (out) {
+                        out->push_back(static_cast<char>(0xC0 | (code >> 6)));
+                        out->push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                        written += 2;
+                    }
+                } else {
+                    if (out && written + 3 > cap) return fail(error, "string too long");
+                    if (out) {
+                        out->push_back(static_cast<char>(0xE0 | (code >> 12)));
+                        out->push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+                        out->push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                        written += 3;
+                    }
+                }
+                continue;
+            }
+            if (esc == 'b') decoded = '\b';
+            else if (esc == 'f') decoded = '\f';
+            else if (esc == 'n') decoded = '\n';
+            else if (esc == 'r') decoded = '\r';
+            else if (esc == 't') decoded = '\t';
+            else if (esc != '"' && esc != '\\' && esc != '/') return fail(error, "invalid escape");
+            if (out && written++ >= cap) return fail(error, "string too long");
+            if (out) out->push_back(decoded);
+        }
+        if (out == nullptr) return true;
+        return true;
+    }
+
+    bool readNumber(std::string& out, std::string& error) {
+        ws();
+        out.clear();
+        while (pos_ < text_.size()) {
+            const char c = text_[pos_];
+            if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.' ||
+                c == 'e' || c == 'E') {
+                out.push_back(c);
+                ++pos_;
+            } else {
+                break;
+            }
+        }
+        if (out.empty()) return fail(error, "expected a number");
+        return true;
+    }
+
+    bool skipValue(int depth, std::string& error) {
+        if (depth > 32) return fail(error, "nesting too deep");
+        ws();
+        const char c = peek();
+        if (c == '"') return readString(nullptr, 0, error);
+        if (c == '{' || c == '[') {
+            const char open = c;
+            const char close = (c == '{') ? '}' : ']';
+            ++pos_;
+            ws();
+            if (peek() == close) {
+                ++pos_;
+                return true;
+            }
+            for (;;) {
+                if (open == '{') {
+                    if (!readString(nullptr, 0, error)) return false;
+                    if (!expect(':', error)) return false;
+                }
+                if (!skipValue(depth + 1, error)) return false;
+                ws();
+                if (peek() == ',') {
+                    ++pos_;
+                    ws();
+                    continue;
+                }
+                break;
+            }
+            return expect(close, error);
+        }
+        if (c == 't' || c == 'f' || c == 'n') {
+            const char* literal = (c == 't') ? "true" : (c == 'f') ? "false" : "null";
+            const std::size_t len = std::strlen(literal);
+            if (pos_ + len > text_.size() || text_.compare(pos_, len, literal) != 0) {
+                return fail(error, "invalid literal");
+            }
+            pos_ += len;
+            return true;
+        }
+        std::string ignored;
+        return readNumber(ignored, error);
+    }
+
+    bool readTemplates(std::vector<TemplateSlice>& out, std::string& error) {
+        if (!expect('{', error)) return false;
+        ws();
+        if (peek() == '}') {
+            ++pos_;
+            return true;
+        }
+        for (;;) {
+            TemplateSlice slice;
+            if (!readString(&slice.name, kMaxTemplateNameBytes, error)) return false;
+            if (slice.name.empty()) return fail(error, "template name must not be empty");
+            if (!expect(':', error)) return false;
+            ws();
+            if (peek() != '[') return fail(error, "template body must be an array");
+            slice.begin = pos_;
+            if (!skipValue(1, error)) return false;
+            slice.length = pos_ - slice.begin;
+            if (out.size() >= CourseStore::kMaxTemplates) {
+                return fail(error, "too many templates");
+            }
+            out.push_back(slice);
+            ws();
+            if (peek() == ',') {
+                ++pos_;
+                ws();
+                continue;
+            }
+            break;
+        }
+        return expect('}', error);
+    }
+};
+
+// Process-wide template set of exactly one generation. `loaded` is set only
+// after a complete successful load; every failure path clears the entries, so
+// a stale or partial set can never be served.
+struct TemplateCacheState {
+    std::uint32_t generation;
+    bool loaded;
+    std::size_t events;
+    std::map<std::string, std::vector<course::Event> > items;
+
+    TemplateCacheState() : generation(0), loaded(false), events(0) {}
+};
+
+TemplateCacheState& templateCache() {
+    static TemplateCacheState state;
+    return state;
+}
+
+void clearTemplateCache() {
+    TemplateCacheState& cache = templateCache();
+    cache.generation = 0;
+    cache.loaded = false;
+    cache.events = 0;
+    cache.items.clear();
+}
+
+bool loadTemplateFile(std::uint32_t generation,
+                      std::map<std::string, std::vector<course::Event> >& out,
+                      std::size_t& totalEvents, std::string& error) {
+    out.clear();
+    totalEvents = 0;
+    std::string raw;
+    if (!readFileWithCrc(templateBase(generation) + ".json", raw, error)) return false;
+
+    std::vector<TemplateSlice> slices;
+    TemplateScanner scanner(raw);
+    if (!scanner.scan(slices, error)) return false;
+
+    std::map<std::string, std::vector<course::Event> > parsed;
+    std::size_t events = 0;
+    for (std::size_t i = 0; i < slices.size(); ++i) {
+        const TemplateSlice& slice = slices[i];
+        if (parsed.find(slice.name) != parsed.end()) {
+            error = "duplicate template: " + slice.name;
+            return false;
+        }
+        std::string wrapped;
+        wrapped.reserve(slice.length + 192);
+        wrapped += "{\"format\":\"gong-course\",\"version\":2,\"templates\":{\"";
+        wrapped += escapeText(slice.name);
+        wrapped += "\":";
+        wrapped.append(raw, slice.begin, slice.length);
+        wrapped += "},\"days\":[{\"template\":\"";
+        wrapped += escapeText(slice.name);
+        wrapped += "\"}]}";
+
+        course::Course one;
+        std::string parseError;
+        if (!course::fromJson(wrapped, one, parseError)) {
+            error = "template " + slice.name + ": " + parseError;
+            return false;
+        }
+        std::map<std::string, std::vector<course::Event> >::const_iterator it =
+            one.templates.find(slice.name);
+        if (it == one.templates.end()) {
+            error = "template " + slice.name + ": missing after parse";
+            return false;
+        }
+        events += it->second.size();
+        if (events > CourseStore::kMaxTemplateEvents) {
+            error = "too many template events";
+            return false;
+        }
+        parsed[slice.name] = it->second;
+    }
+    out.swap(parsed);
+    totalEvents = events;
+    return true;
+}
+
+bool templatesFilePresent(std::uint32_t generation) {
+    const std::string base = templateBase(generation);
+    return LittleFS.exists((base + ".json").c_str()) ||
+           LittleFS.exists((base + ".tmp").c_str()) ||
+           LittleFS.exists((base + ".bak").c_str());
+}
+
 bool ensureGenerationDir(std::uint32_t generation) {
     LittleFS.mkdir(kCourseDir);
     LittleFS.mkdir(generationDir(generation).c_str());
@@ -323,6 +684,17 @@ bool parseMetaJson(const std::string& json, CourseMeta& out, std::string& error)
     out.generation = generation;
     out.course_length = static_cast<std::uint8_t>(length);
     out.name = doc["name"].as<const char*>();
+    out.layout = kLayoutExpanded;
+    if (doc.containsKey("layout")) {
+        if (!doc["layout"].is<const char*>() ||
+            std::string(doc["layout"].as<const char*>()) != "tpl1") {
+            // An unknown layout would make day reference files unreadable, so
+            // it is refused instead of being silently ignored.
+            error = "unsupported generation layout";
+            return false;
+        }
+        out.layout = kLayoutTemplates;
+    }
     return true;
 }
 
@@ -333,6 +705,7 @@ std::string makeMetaJson(const CourseMeta& meta, std::string& error) {
     doc["generation"] = meta.generation;
     doc["course_length"] = meta.course_length;
     doc["name"] = meta.name;
+    if (meta.layout == kLayoutTemplates) doc["layout"] = "tpl1";
     if (doc.overflowed()) {
         error = "meta JSON too large";
         return std::string();
@@ -491,7 +864,11 @@ LastFire::LastFire()
       date(0),
       timestamp(0) {}
 
-CourseMeta::CourseMeta() : generation(0), course_length(0), name() {}
+CourseMeta::CourseMeta()
+    : generation(0), course_length(0), name(), layout(kLayoutExpanded) {}
+
+const std::size_t CourseStore::kMaxTemplates;
+const std::size_t CourseStore::kMaxTemplateEvents;
 
 CourseStore::CourseStore() {}
 
@@ -642,8 +1019,11 @@ bool CourseStore::loadDay(std::uint32_t generation, std::uint8_t day,
     if (!readFileWithCrc(dayBase(generation, day) + ".json", json, error)) {
         return false;
     }
+    // A reference day cannot be validated against an empty template map, so
+    // the structural parse allows the unresolved name and loadDay() below
+    // resolves it from the generation's own template set.
     course::Course one;
-    if (!course::fromJson(json, one, error)) return false;
+    if (!course::fromJsonUnresolved(json, one, error)) return false;
     if (one.generation != generation) {
         error = "day generation mismatch";
         return false;
@@ -652,7 +1032,33 @@ bool CourseStore::loadDay(std::uint32_t generation, std::uint8_t day,
         error = "day file must contain one day";
         return false;
     }
-    out = one.days[0];
+    course::Day resolved = one.days[0];
+    if (!resolved.hasOwnEvents) {
+        // A reference day: the events live once in templates.json. Without a
+        // cache that belongs to this exact generation the day is unusable —
+        // returning an empty day here would ring nothing while looking healthy.
+        if (resolved.templateName.empty()) {
+            error = "day has neither template nor events";
+            return false;
+        }
+        if (!templatesReady(generation)) {
+            error = "templates for generation " + std::to_string(generation) +
+                    " are not loaded";
+            return false;
+        }
+        const std::map<std::string, std::vector<course::Event> >& items =
+            templateCache().items;
+        std::map<std::string, std::vector<course::Event> >::const_iterator it =
+            items.find(resolved.templateName);
+        if (it == items.end()) {
+            error = "unknown template: " + resolved.templateName;
+            return false;
+        }
+        resolved.events = it->second;
+        resolved.hasOwnEvents = true;
+        resolved.templateName.clear();
+    }
+    out = resolved;
     return true;
 }
 
@@ -901,15 +1307,60 @@ bool CourseStore::cloneGeneration(std::uint32_t from,
     }
 
     std::string scratch;
-    for (std::uint8_t day = 0; day < meta.course_length; ++day) {
-        course::Day data;
-        if (!loadDay(from, day, data, error)) {
-            deleteGeneration(generation, scratch);
-            return false;
+    if (meta.layout == kLayoutTemplates) {
+        // Copy a template generation verbatim: the two files keep the same
+        // layout (references stay references), which is both cheaper and
+        // exactly equivalent. Resolving here would materialise every day and
+        // then contradict the tpl1 marker.
+        if (templatesFilePresent(from)) {
+            std::string tplJson;
+            if (!readFileWithCrc(templateBase(from) + ".json", tplJson, error) ||
+                !writeAtomic(templateBase(generation), tplJson, error)) {
+                deleteGeneration(generation, scratch);
+                return false;
+            }
         }
-        if (!saveDayAtomic(generation, day, data, error)) {
-            deleteGeneration(generation, scratch);
-            return false;
+        for (std::uint8_t day = 0; day < meta.course_length; ++day) {
+            std::string dayJson;
+            if (!readFileWithCrc(dayBase(from, day) + ".json", dayJson, error)) {
+                deleteGeneration(generation, scratch);
+                return false;
+            }
+            course::Course one;
+            if (!course::fromJsonUnresolved(dayJson, one, error) ||
+                one.days.size() != 1) {
+                deleteGeneration(generation, scratch);
+                return false;
+            }
+            std::string copy;
+            if (one.days[0].hasOwnEvents) {
+                one.generation = generation;
+                copy = course::toJsonV2(one, true, error);
+            } else {
+                // A reference stays a reference; only the generation id is
+                // rewritten, so the clone does not materialise the course.
+                copy = "{\"format\":\"gong-course\",\"version\":2,\"name\":\"day\","
+                       "\"generation\":" +
+                       std::to_string(generation) +
+                       ",\"course_length\":1,\"days\":[{\"template\":\"" +
+                       escapeText(one.days[0].templateName) + "\"}]}";
+            }
+            if (copy.empty() || !writeAtomic(dayBase(generation, day), copy, error)) {
+                deleteGeneration(generation, scratch);
+                return false;
+            }
+        }
+    } else {
+        for (std::uint8_t day = 0; day < meta.course_length; ++day) {
+            course::Day data;
+            if (!loadDay(from, day, data, error)) {
+                deleteGeneration(generation, scratch);
+                return false;
+            }
+            if (!saveDayAtomic(generation, day, data, error)) {
+                deleteGeneration(generation, scratch);
+                return false;
+            }
         }
     }
 
@@ -996,6 +1447,10 @@ bool CourseStore::validateGeneration(std::uint32_t generation,
         error = "course length mismatch";
         return false;
     }
+    if (templatesFilePresent(generation) &&
+        !prepareTemplates(generation, error)) {
+        return false;
+    }
     for (std::uint8_t i = 0; i < meta.course_length; ++i) {
         course::Day day;
         if (!loadDay(generation, i, day, error)) return false;
@@ -1017,6 +1472,11 @@ bool CourseStore::deleteGeneration(std::uint32_t generation,
     LittleFS.remove((meta + ".json").c_str());
     LittleFS.remove((meta + ".tmp").c_str());
     LittleFS.remove((meta + ".bak").c_str());
+    const std::string tpl = templateBase(generation);
+    LittleFS.remove((tpl + ".json").c_str());
+    LittleFS.remove((tpl + ".tmp").c_str());
+    LittleFS.remove((tpl + ".bak").c_str());
+    if (templateCache().generation == generation) clearTemplateCache();
     return true;
 }
 
@@ -1081,6 +1541,12 @@ bool CourseStore::recover(std::string& error) {
     if (!recoverBase(metaBase(state.active_generation), false, error)) {
         return false;
     }
+    // A template generation cannot be validated before templates.json is
+    // repaired, so it is restored right after meta (same tmp/bak rules).
+    if (templatesFilePresent(state.active_generation) &&
+        !recoverBase(templateBase(state.active_generation), true, error)) {
+        return false;
+    }
     for (std::uint8_t i = 0; i < state.course_length; ++i) {
         if (!recoverBase(dayBase(state.active_generation, i), true, error)) {
             return false;
@@ -1092,12 +1558,113 @@ bool CourseStore::recover(std::string& error) {
         // active course from running.
         std::string ignored;
         recoverBase(metaBase(state.draft_generation), false, ignored);
+        if (templatesFilePresent(state.draft_generation)) {
+            recoverBase(templateBase(state.draft_generation), true, ignored);
+        }
         for (std::uint8_t i = 0; i < state.course_length; ++i) {
             recoverBase(dayBase(state.draft_generation, i), true, ignored);
         }
     }
+    // Recovery touched the files on disk; never keep a set loaded before it.
+    clearTemplateCache();
     return validateGeneration(state.active_generation, state.course_length,
                               error);
+}
+
+bool CourseStore::writeTemplates(
+    std::uint32_t generation,
+    const std::map<std::string, std::vector<course::Event> >& templates,
+    std::string& error) {
+    error.clear();
+    if (generation == 0) {
+        error = "invalid generation";
+        return false;
+    }
+    if (templates.size() > kMaxTemplates) {
+        error = "too many templates";
+        return false;
+    }
+    for (std::map<std::string, std::vector<course::Event> >::const_iterator it =
+             templates.begin();
+         it != templates.end(); ++it) {
+        if (it->first.empty()) {
+            error = "template name must not be empty";
+            return false;
+        }
+        if (it->first.size() > kMaxTemplateNameBytes) {
+            error = "template name too long";
+            return false;
+        }
+    }
+    std::size_t events = 0;
+    const std::string json = course::toJsonTemplates(templates, events, error);
+    if (json.empty()) return false;
+    if (events > kMaxTemplateEvents) {
+        error = "too many template events";
+        return false;
+    }
+    ensureGenerationDir(generation);
+    if (!writeAtomic(templateBase(generation), json, error)) return false;
+    // The file changed: whatever was cached is no longer trustworthy.
+    invalidateTemplates();
+    return true;
+}
+
+bool CourseStore::prepareTemplates(std::uint32_t generation, std::string& error) {
+    error.clear();
+    TemplateCacheState& cache = templateCache();
+    if (generation == 0) {
+        clearTemplateCache();
+        error = "invalid generation";
+        return false;
+    }
+    if (cache.loaded && cache.generation == generation) return true;
+
+    // Any other generation drops the previous entries first, so a failed load
+    // below can never leave the previous generation's templates addressable.
+    clearTemplateCache();
+
+    CourseMeta meta;
+    if (!loadMeta(generation, meta, error)) return false;
+    if (meta.layout != kLayoutTemplates) {
+        // Expanded generation: there is nothing to resolve, but the marker is
+        // still recorded so loadDay() can tell "no templates required".
+        cache.generation = generation;
+        cache.loaded = true;
+        return true;
+    }
+
+    std::map<std::string, std::vector<course::Event> > items;
+    std::size_t events = 0;
+    if (!loadTemplateFile(generation, items, events, error)) {
+        clearTemplateCache();
+        return false;
+    }
+    cache.items.swap(items);
+    cache.events = events;
+    cache.generation = generation;
+    cache.loaded = true;
+    return true;
+}
+
+bool CourseStore::templatesReady(std::uint32_t generation) const {
+    const TemplateCacheState& cache = templateCache();
+    return generation != 0 && cache.loaded && cache.generation == generation;
+}
+
+void CourseStore::invalidateTemplates() { clearTemplateCache(); }
+
+std::size_t CourseStore::cachedTemplateCount() const {
+    return templateCache().items.size();
+}
+
+std::size_t CourseStore::cachedTemplateEvents() const {
+    return templateCache().events;
+}
+
+std::uint32_t CourseStore::cachedTemplateGeneration() const {
+    const TemplateCacheState& cache = templateCache();
+    return cache.loaded ? cache.generation : 0;
 }
 
 bool CourseStore::loadLastFire(LastFire& out, std::string& error) {

@@ -190,3 +190,18 @@ pre-скриптом `scripts/gzip_web.py`.
 - Не делать push/reset/clean без разрешения. Локальные коммиты — только `-c core.hooksPath=/dev/null`.
 - Не запускать субагентов без разрешения.
 - Не трогать `end` и не добавлять его в коммит.
+
+## 7. Этап A шаблонов выполнен (2026-11-23)
+
+- План: `docs/DYNAMIC_COURSE_TEMPLATE_PLAN.md` (§8 — что сделано).
+- `course_store`: `templates.json` (CRC+tmp/bak), `CourseMeta::layout` ("tpl1"),
+  `prepareTemplates/templatesReady/invalidateTemplates`, разрешение ссылок в `loadDay`,
+  восстановление и валидация, удаление и клонирование шаблонных поколений.
+- `course_model`: аддитивные `toJsonTemplates`, `fromJsonUnresolved`; `fromJson`/`validate`
+  без изменений.
+- Импорт/публикация/экспорт/планировщик не менялись. Этапы B–F не начаты.
+- Тесты: store 220/220; course 578; editor 495; scheduler 130; active_day 275; emergency 58;
+  ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 86.8 % (1 364 757 Б).
+- Память: prepareTemplates — пик 39 КБ / резидентно 4,8 КБ (4×12 событий);
+  пик 101 КБ / 12,1 КБ (4×32 события). При этапе E нужен guard по largest free block
+  и вызов prepare в точках смены поколения до публикации дня.
