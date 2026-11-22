@@ -21,6 +21,10 @@ enum : std::uint8_t {
     kLayoutTemplates = 1,
 };
 
+// Test-only: called between building a template set and committing it, so the
+// host regression test can simulate the other task committing first.
+void setCacheCommitHook(void (*hook)());
+
 // Longest template name accepted in templates.json.
 const std::size_t kMaxTemplateNameBytes = 64;
 
@@ -199,6 +203,10 @@ public:
     // never evicted by editor or validation work.
     bool prepareActiveTemplates(std::uint32_t generation, std::string& error);
     bool templatesReady(std::uint32_t generation) const;
+    // Copies one template's events out under the cache lock. Callers never hold
+    // a pointer into the cache, so a concurrent commit cannot invalidate it.
+    bool lookupTemplate(std::uint32_t generation, const std::string& name,
+                        std::vector<course::Event>& out, std::string& error) const;
     void invalidateTemplates();
     std::size_t cachedTemplateCount() const;
     std::size_t cachedTemplateEvents() const;

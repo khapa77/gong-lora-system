@@ -265,3 +265,13 @@ pre-скриптом `scripts/gzip_web.py`.
 - Тесты: editor 739, store 469, scheduler 255, course 578, active_day 275, emergency 58;
   ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 87.5 % (1 375 765 Б); node --check OK.
 - На железе не проверено ничего из нового документа; список блокеров — в отчёте этапа F.
+
+## 13. Синхронизация кэша шаблонов
+
+- Аудит: `R_NOLOCK`-маршруты (import/apply/draft-правки) меняли кэш вне `sys_lock`, пока
+  controlTask читал его под `sys_lock` — гонка была реальной.
+- Решение: листовой мьютекс `CacheGuard`; сборка набора вне блокировки, короткая замена
+  `swap` под ней с перепроверкой; `lookupTemplate()` копирует события. Порядок
+  `sys_lock → cacheMutex`, обратного захвата нет.
+- Тесты: store 493 (+3 группы), editor 739, scheduler 255, course 578, active_day 275,
+  emergency 58; ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 87.5 % (1 376 617 Б).

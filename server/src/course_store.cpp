@@ -5,6 +5,14 @@
 #include <LittleFS.h>
 #include <Preferences.h>
 
+// The template cache is touched from two FreeRTOS tasks (see CacheGuard).
+#if defined(ARDUINO)
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#else
+#include <atomic>
+#endif
+
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -13,6 +21,82 @@
 #include <vector>
 
 namespace course_store {
+
+// ── Template cache lock ─────────────────────────────────────────────────────
+// Why this exists: the web handlers for import / apply / draft edits run with
+// R_NOLOCK (their long LittleFS work happens outside sys_lock), while
+// controlTask holds sys_lock and runs sched_check() -> courseLoadDay() on the
+// same cache. On one core that still interleaves: a std::map mutated by
+// loopTask while controlTask iterates it is a real race. This lock is a leaf
+// mutex — nothing inside course_store takes sys_lock, so the only ordering is
+// sys_lock -> cacheMutex and no cycle (hence no deadlock) is possible.
+//
+// It is never held during LittleFS I/O: a set is built in a local object and
+// committed with a few map swaps, so the audio task is not blocked either.
+#if defined(ARDUINO)
+static StaticSemaphore_t s_cacheMutexBuffer;
+static SemaphoreHandle_t s_cacheMutex = nullptr;
+static portMUX_TYPE s_cacheMutexInit = portMUX_INITIALIZER_UNLOCKED;
+
+static SemaphoreHandle_t cacheMutexHandle() {
+    if (s_cacheMutex == nullptr) {
+        portENTER_CRITICAL(&s_cacheMutexInit);
+        if (s_cacheMutex == nullptr) {
+            s_cacheMutex = xSemaphoreCreateMutexStatic(&s_cacheMutexBuffer);
+        }
+        portEXIT_CRITICAL(&s_cacheMutexInit);
+    }
+    return s_cacheMutex;
+}
+
+class CacheGuard {
+public:
+    CacheGuard() : handle_(cacheMutexHandle()) {
+        if (handle_) xSemaphoreTake(handle_, portMAX_DELAY);
+    }
+    ~CacheGuard() {
+        if (handle_) xSemaphoreGive(handle_);
+    }
+    CacheGuard(const CacheGuard&) = delete;
+    CacheGuard& operator=(const CacheGuard&) = delete;
+
+private:
+    SemaphoreHandle_t handle_;
+};
+#else
+// Host builds are single-threaded, but the guard is a real lock so the
+// concurrency regression test exercises the same code path.
+class CacheGuard {
+public:
+    CacheGuard() {
+        while (flag_.test_and_set(std::memory_order_acquire)) {
+        }
+    }
+    ~CacheGuard() { flag_.clear(std::memory_order_release); }
+    CacheGuard(const CacheGuard&) = delete;
+    CacheGuard& operator=(const CacheGuard&) = delete;
+
+private:
+    static std::atomic_flag flag_;
+};
+
+std::atomic_flag CacheGuard::flag_ = ATOMIC_FLAG_INIT;
+#endif
+
+namespace {
+
+// Test-only hook: runs between building a set and committing it, so the host
+// regression test can simulate the other task committing first.
+void (*g_cacheCommitHook)() = nullptr;
+
+// Defined below with the other cache helpers; declared here because
+// deleteGeneration() uses it before its definition.
+void invalidateTemplatesFor(std::uint32_t generation);
+
+}  // namespace
+
+void setCacheCommitHook(void (*hook)()) { g_cacheCommitHook = hook; }
+
 namespace {
 
 const char* kCourseDir = "/course";
@@ -566,9 +650,8 @@ const TemplateSet* activeOrDraftSet() {
     return nullptr;
 }
 
-// The set belonging to `generation`, or null. A set from another generation is
-// never returned, so a stale entry cannot be served.
-const TemplateSet* findTemplateSet(std::uint32_t generation) {
+// The set belonging to `generation`, or null. Caller must hold a CacheGuard.
+const TemplateSet* findTemplateSetLocked(std::uint32_t generation) {
     const TemplateCacheState& cache = templateCache();
     if (generation == 0) return nullptr;
     if (cache.active.loaded && cache.active.generation == generation) return &cache.active;
@@ -1133,20 +1216,13 @@ bool CourseStore::loadDay(std::uint32_t generation, std::uint8_t day,
             error = "day has neither template nor events";
             return false;
         }
-        const TemplateSet* set = findTemplateSet(generation);
-        if (set == nullptr) {
-            error = "templates for generation " + std::to_string(generation) +
-                    " are not loaded";
+        // Copy the events while holding the cache lock: a pointer into the map
+        // could be invalidated by the other task's commit.
+        std::vector<course::Event> events;
+        if (!lookupTemplate(generation, resolved.templateName, events, error)) {
             return false;
         }
-        const std::map<std::string, std::vector<course::Event> >& items = set->items;
-        std::map<std::string, std::vector<course::Event> >::const_iterator it =
-            items.find(resolved.templateName);
-        if (it == items.end()) {
-            error = "unknown template: " + resolved.templateName;
-            return false;
-        }
-        resolved.events = it->second;
+        resolved.events.swap(events);
         resolved.hasOwnEvents = true;
         resolved.templateName.clear();
     }
@@ -1568,8 +1644,7 @@ bool CourseStore::deleteGeneration(std::uint32_t generation,
     LittleFS.remove((tpl + ".json").c_str());
     LittleFS.remove((tpl + ".tmp").c_str());
     LittleFS.remove((tpl + ".bak").c_str());
-    if (templateCache().active.generation == generation) templateCache().active.clear();
-    if (templateCache().draft.generation == generation) templateCache().draft.clear();
+    invalidateTemplatesFor(generation);
     return true;
 }
 
@@ -1738,6 +1813,7 @@ namespace {
 // templates at the next midnight tick.
 void invalidateTemplatesFor(std::uint32_t generation) {
     if (generation == 0) return;
+    CacheGuard guard;
     if (templateCache().active.generation == generation) templateCache().active.clear();
     if (templateCache().draft.generation == generation) templateCache().draft.clear();
 }
@@ -1838,10 +1914,27 @@ bool CourseStore::prepareTemplates(std::uint32_t generation, std::string& error)
         error = "invalid generation";
         return false;
     }
-    if (findTemplateSet(generation) != nullptr) return true;
-    // Editor/browsing loads go to the draft slot: the active set is never
-    // evicted, so a running schedule keeps resolving its own templates.
-    return loadIntoSlot(*this, generation, templateCache().draft, error);
+    {
+        CacheGuard guard;
+        if (findTemplateSetLocked(generation) != nullptr) return true;
+    }
+    // Build outside the lock: LittleFS + parsing never run under it.
+    TemplateSet loaded;
+    if (!loadIntoSlot(*this, generation, loaded, error)) return false;
+    if (g_cacheCommitHook != nullptr) g_cacheCommitHook();
+
+    CacheGuard guard;
+    TemplateCacheState& cache = templateCache();
+    // Another task may have loaded it meanwhile; keep whichever set is complete.
+    if (findTemplateSetLocked(generation) != nullptr) return true;
+    TemplateSet& slot = cache.draft;
+    // Short atomic replacement: swap in the new contents, then let `loaded`
+    // (which now owns the previous contents) be destroyed outside the lock.
+    slot.items.swap(loaded.items);
+    slot.events = loaded.events;
+    slot.generation = generation;
+    slot.loaded = true;
+    return true;
 }
 
 bool CourseStore::prepareActiveTemplates(std::uint32_t generation,
@@ -1851,32 +1944,73 @@ bool CourseStore::prepareActiveTemplates(std::uint32_t generation,
         error = "invalid generation";
         return false;
     }
+    {
+        CacheGuard guard;
+        const TemplateCacheState& cache = templateCache();
+        if (cache.active.loaded && cache.active.generation == generation) return true;
+    }
+    TemplateSet loaded;
+    if (!loadIntoSlot(*this, generation, loaded, error)) return false;
+    if (g_cacheCommitHook != nullptr) g_cacheCommitHook();
+
+    CacheGuard guard;
     TemplateCacheState& cache = templateCache();
     if (cache.active.loaded && cache.active.generation == generation) return true;
-    if (!loadIntoSlot(*this, generation, cache.active, error)) return false;
-    // A draft set of another generation stays where it is; it can no longer
-    // shadow the active one because lookups match on generation.
+    TemplateSet& slot = cache.active;
+    slot.items.swap(loaded.items);
+    slot.events = loaded.events;
+    slot.generation = generation;
+    slot.loaded = true;
     return true;
 }
 
 bool CourseStore::templatesReady(std::uint32_t generation) const {
-    return findTemplateSet(generation) != nullptr;
+    CacheGuard guard;
+    return findTemplateSetLocked(generation) != nullptr;
 }
 
-void CourseStore::invalidateTemplates() { clearTemplateCache(); }
+bool CourseStore::lookupTemplate(std::uint32_t generation, const std::string& name,
+                                 std::vector<course::Event>& out,
+                                 std::string& error) const {
+    error.clear();
+    out.clear();
+    CacheGuard guard;
+    const TemplateSet* set = findTemplateSetLocked(generation);
+    if (set == nullptr) {
+        error = "templates for generation " + std::to_string(generation) +
+                " are not loaded";
+        return false;
+    }
+    std::map<std::string, std::vector<course::Event> >::const_iterator it =
+        set->items.find(name);
+    if (it == set->items.end()) {
+        error = "unknown template: " + name;
+        return false;
+    }
+    out = it->second;  // <= 32 events: a small copy, not a shared pointer
+    return true;
+}
+
+void CourseStore::invalidateTemplates() {
+    CacheGuard guard;
+    clearTemplateCache();
+}
 
 
 std::size_t CourseStore::cachedTemplateCount() const {
+    CacheGuard guard;
     const TemplateSet* set = activeOrDraftSet();
     return set == nullptr ? 0 : set->items.size();
 }
 
 std::size_t CourseStore::cachedTemplateEvents() const {
+    CacheGuard guard;
     const TemplateSet* set = activeOrDraftSet();
     return set == nullptr ? 0 : set->events;
 }
 
 std::uint32_t CourseStore::cachedTemplateGeneration() const {
+    CacheGuard guard;
     const TemplateSet* set = activeOrDraftSet();
     return set == nullptr ? 0 : set->generation;
 }

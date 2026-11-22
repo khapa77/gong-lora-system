@@ -49,6 +49,7 @@ void runGroup(const char* name, void (*fn)()) {
 }
 
 void resetHost() {
+    course_store::setCacheCommitHook(nullptr);
     host::files().clear();
     host::fs() = host::FsFaults();
     host::nvs().visible.clear();
@@ -1411,6 +1412,114 @@ void audit_active_templates_survive_draft_write() {
 }
 
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Concurrency regressions for the template cache lock. The host build uses the
+// same guard as the device (a real lock), so these exercise the commit path:
+// a set is built outside the lock and committed with a short atomic swap that
+// re-checks what the other task may have done meanwhile.
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+course_store::CourseStore* g_hookStore = nullptr;
+std::uint32_t g_hookGeneration = 0;
+int g_hookCalls = 0;
+}
+
+static void cacheHookInvalidate() {
+    course_store::setCacheCommitHook(nullptr);
+    ++g_hookCalls;
+    if (g_hookStore != nullptr) g_hookStore->invalidateTemplates();
+}
+
+static void cacheHookCommitOtherGeneration() {
+    // Simulates the other task finishing its own load between our build and
+    // our commit. Recursion is blocked by clearing the hook first.
+    course_store::setCacheCommitHook(nullptr);
+    ++g_hookCalls;
+    std::string ignored;
+    if (g_hookStore != nullptr) {
+        g_hookStore->prepareTemplates(g_hookGeneration, ignored);
+    }
+}
+
+void cache_commit_rechecks_after_concurrent_load() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 3, "practice", 4, error), "seed 1 failed: " + error);
+    course_store::CourseStore store;
+
+    g_hookStore = &store;
+    g_hookGeneration = 1;
+    g_hookCalls = 0;
+    course_store::setCacheCommitHook(cacheHookCommitOtherGeneration);
+    const bool prepared = store.prepareTemplates(1, error);
+    course_store::setCacheCommitHook(nullptr);
+    check(prepared, "prepare with a concurrent commit failed: " + error);
+    check(g_hookCalls == 1, "the commit hook did not run");
+    check(store.cachedTemplateGeneration() == 1, "wrong generation after the race");
+    check(store.cachedTemplateCount() == 1, "template count after the race");
+    check(store.cachedTemplateEvents() == 4, "template events after the race");
+
+    course::Day day;
+    check(store.loadDay(1, 0, day, error), "day load after the race: " + error);
+    check(day.events.size() == 4, "day events after the race");
+}
+
+void cache_invalidate_during_commit_is_atomic() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 3, "practice", 3, error), "seed failed: " + error);
+    course_store::CourseStore store;
+
+    // The other task clears the cache while we are building; the commit must
+    // still leave either a complete set or none — never a partial one.
+    g_hookStore = &store;
+    g_hookGeneration = 0;
+    g_hookCalls = 0;
+    course_store::setCacheCommitHook(cacheHookInvalidate);
+    const bool prepared = store.prepareTemplates(1, error);
+    course_store::setCacheCommitHook(nullptr);
+    check(prepared, "prepare after concurrent invalidate failed: " + error);
+    const std::size_t count = store.cachedTemplateCount();
+    check(count == 0 || count == 1, "partial template set after a concurrent invalidate");
+    if (count == 1) {
+        check(store.cachedTemplateEvents() == 3, "partial event set");
+        course::Day day;
+        check(store.loadDay(1, 0, day, error), "day load after invalidate race");
+        check(day.events.size() == 3, "day events after invalidate race");
+    }
+}
+
+void cache_lookup_returns_a_copy() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 2, "practice", 3, error), "seed failed: " + error);
+    course_store::CourseStore store;
+    check(store.prepareTemplates(1, error), "prepare failed: " + error);
+
+    std::vector<course::Event> first;
+    check(store.lookupTemplate(1, "practice", first, error), "lookup failed: " + error);
+    check(first.size() == 3, "lookup event count");
+    first[0].description = "mutated by the caller";
+    first.clear();
+
+    std::vector<course::Event> second;
+    check(store.lookupTemplate(1, "practice", second, error), "second lookup failed");
+    check(second.size() == 3, "a caller mutated the cached set");
+    check(second[0].description == "tpl 0", "cached payload was corrupted by a caller");
+
+    // An unknown name is an error, not an empty success.
+    std::vector<course::Event> none;
+    error.clear();
+    check(!store.lookupTemplate(1, "ghost", none, error), "unknown template resolved");
+    check(error.find("unknown template") != std::string::npos, "unclear error: " + error);
+
+    // A different generation is never served from this set.
+    error.clear();
+    check(!store.lookupTemplate(2, "practice", none, error),
+          "a foreign generation was served from the cache");
+}
+
 int main() {
     runGroup("calendar_roundtrip", calendar_roundtrip);
     runGroup("calendar_crc_corruption", calendar_crc_corruption);
@@ -1481,6 +1590,13 @@ int main() {
     // Stage F audit: a write for another generation must not evict the cache.
     runGroup("audit_active_templates_survive_draft_write",
              audit_active_templates_survive_draft_write);
+
+    // Stage F: template cache synchronization.
+    runGroup("cache_commit_rechecks_after_concurrent_load",
+             cache_commit_rechecks_after_concurrent_load);
+    runGroup("cache_invalidate_during_commit_is_atomic",
+             cache_invalidate_during_commit_is_atomic);
+    runGroup("cache_lookup_returns_a_copy", cache_lookup_returns_a_copy);
 
     std::cout << "PASS=" << g_pass << " FAIL=" << g_fail << "\n";
     return g_fail == 0 ? 0 : 1;
