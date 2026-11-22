@@ -38,8 +38,16 @@ bool   sched_activateDay(uint8_t day);  // load /dayNN.conf as active schedule
 int    sched_getActiveDay();            // -1 if not set
 uint8_t sched_dayCount();               // active course length (DAY_COUNT in legacy mode)
 bool   sched_courseEnded();             // true if active day is the last day (DAY_COUNT-1)
-bool   sched_hasError();                // file/preparation or persistence failure
+bool   sched_hasError();                // file error or persistence failure
 active_day::Status sched_persistenceStatus();
+
+// Emergency schedule (stage 4). The built-in schedule runs when the normal
+// course cannot be loaded three times in a row.
+bool    sched_emergencyActive();
+uint8_t sched_emergencyReason();
+const char* sched_emergencyReasonText();
+uint8_t sched_failureCount();
+bool    sched_emergencyRetry();         // manual recovery check
 bool   sched_isRunning();
 // Internal only: no HTTP/UI/serial caller in A02.1. Recovery preserves the
 // exact expected record and leaves execution paused; Resume performs no I/O.

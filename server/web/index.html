@@ -624,6 +624,7 @@ function applyAlerts(d) {
   if (schedFetchFailed) a.push('⚠️ Устройству не хватило памяти, чтобы отдать расписание — показан файл активного дня. Гонги звонят как обычно.');
   if (d.fs_ok === false) a.push('❌ Файловая система не смонтирована — нет звука и расписания. Залейте данные: <code>pio run -t uploadfs</code>.');
   if (d.sched_error) a.push('❌ Файл активного дня не читается — расписание пустое. Активируйте день заново.');
+  if (d.emergency) a.push('🛑 Аварийный режим: ' + esc(d.emergency_reason || 'course unavailable') + '. Работает встроенное аварийное расписание. Устраните причину и нажмите <button class="btn btn-yellow btn-sm" onclick="emergencyRetry()">Проверить восстановление</button>.');
   if (!d.time) a.push('❌ Время не установлено — гонги не звучат. Подключите WiFi с интернетом, проверьте батарейку DS3231 или установите время вручную.');
   if (d.crash_count > 0 && d.reset_reason && !/power-on|software|external/.test(d.reset_reason))
     a.push('⚠️ Последний перезапуск: ' + esc(d.reset_reason) + ' (сбоев всего: ' + d.crash_count + ').');
@@ -633,6 +634,16 @@ function applyAlerts(d) {
   const el = document.getElementById('alerts');
   el.innerHTML = a.join('<br>');
   el.style.display = a.length ? '' : 'none';
+}
+
+async function emergencyRetry() {
+  try {
+    const r = await fetch('/api/emergency/retry', {method: 'POST'});
+    if (!r.ok) throw new Error('retry failed');
+    await loadStatus();
+  } catch {
+    alert('Проверка восстановления не удалась — причина не устранена.');
+  }
 }
 
 async function loadStatus() {

@@ -35,6 +35,7 @@ def main() -> int:
         root / "server" / "src" / "active_day_state.cpp",
         root / "server" / "src" / "course_model.cpp",
         root / "server" / "src" / "course_store.cpp",
+        root / "server" / "src" / "emergency.cpp",
     ]
     test = root / "tests" / "test_course_scheduler.cpp"
     arduino_json = root / "server" / ".pio" / "libdeps" / "esp32dev" / "ArduinoJson" / "src"

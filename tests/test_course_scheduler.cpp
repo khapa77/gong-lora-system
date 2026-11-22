@@ -112,6 +112,7 @@ static void resetRuntime() {
     courseLastFireValid = false;
     courseTransitionPending = false;
     courseStore = course_store::CourseStore();
+    emergency::resetRuntime();
     onScheduleTrigger = audioCallback;
     audioCalls = 0;
     audioPlaying = false;

@@ -460,6 +460,9 @@ static String statusJSON() {
     // Health — anything here that is false/true-bad means gongs may not ring.
     doc["fs_ok"]        = sys_fsOk();
     doc["sched_error"]  = sched_hasError();
+    doc["emergency"]        = sched_emergencyActive();
+    doc["emergency_reason"] = sched_emergencyReasonText();
+    doc["failure_count"]    = sched_failureCount();
     doc["reset_reason"] = sys_resetReason();
     doc["crash_count"]  = sys_crashCount();
     doc["ap_default_pw"] = strcmp(AP_PASSWORD, "vipassana") == 0;
@@ -531,6 +534,13 @@ static void handleDayActivate() {
     if (n < 0 || n >= sched_dayCount()) { sendErr("invalid day"); return; }
     if (sched_activateDay((uint8_t)n)) sendOK();
     else sendErr("day file missing or unreadable");
+}
+
+// Manual recovery check while in EMERGENCY. Separate from the emergency
+// schedule execution; a success restores the normal course and clears EMERGENCY.
+static void handleEmergencyRetry() {
+    if (sched_emergencyRetry()) sendOK();
+    else sendErr(sched_emergencyReasonText());
 }
 
 static void handleTracksGet() { sendJSON(200, mp3_listTracksJSON()); }
@@ -737,6 +747,7 @@ void web_setup() {
     route("/api/days",          HTTP_GET,    handleDaysStatus,     R_AUTH);
     route("/api/day",           HTTP_GET,    handleDayGet,         R_AUTH);
     route("/api/day/activate",  HTTP_POST,   handleDayActivate,    R_WRITE);
+    route("/api/emergency/retry", HTTP_POST, handleEmergencyRetry,  R_WRITE);
     route("/api/day/entry",     HTTP_POST,   handleDayEntryPOST,   R_WRITE);
     route("/api/day/entry",     HTTP_PUT,    handleDayEntryPUT,    R_WRITE);
     route("/api/day/entry",     HTTP_DELETE, handleDayEntryDELETE, R_WRITE);

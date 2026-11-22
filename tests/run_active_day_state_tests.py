@@ -46,7 +46,8 @@ def main() -> int:
         str(root / "tests/test_active_day_state.cpp"),
         str(root / "server/src/active_day_state.cpp"),
         str(root / "server/src/course_model.cpp"),
-        str(root / "server/src/course_store.cpp"), "-o", str(binary),
+        str(root / "server/src/course_store.cpp"),
+        str(root / "server/src/emergency.cpp"), "-o", str(binary),
     ]
     if args.sanitize:
         sanitizers = "address,undefined" if args.sanitize == "address" else "undefined"
