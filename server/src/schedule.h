@@ -77,3 +77,22 @@ String sched_courseJSON();   // {"days":[[...], ...]}; String() on out-of-memory
 
 // Callback: fired when a scheduled gong triggers
 extern void (*onScheduleTrigger)(uint8_t track, uint8_t loop, uint8_t vol);
+
+// ── Course editor facade (stage 5) ────────────────────────────────────────
+// The draft course is edited through course_editor; these wrappers keep the
+// scheduler's in-RAM calendar copy in sync after every change. Errors are
+// reported through sched_courseError().
+bool sched_courseInfoJSON(String& out);
+bool sched_courseDraftDayJSON(uint8_t day, String& out);
+bool sched_courseDraftSaveDay(uint8_t day, const String& json);
+bool sched_courseDraftClearDay(uint8_t day);
+bool sched_courseInsertDay(uint8_t day, bool copyEvents);
+bool sched_courseDeleteDay(uint8_t day);
+bool sched_coursePreset(uint8_t days);
+bool sched_courseRename(const String& name);
+bool sched_courseImport(const String& json);
+bool sched_courseApply();
+bool sched_courseDiscardDraft();
+bool sched_courseExportBegin();
+bool sched_courseExportNext(String& chunk, bool& done);
+const String& sched_courseError();

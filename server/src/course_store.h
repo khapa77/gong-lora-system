@@ -81,13 +81,34 @@ public:
                          CalendarState& outState, std::string& error);
 
     // Publishes an already validated draft generation. The active calendar
-    // binding is reset to APPLIED (no calls until Activate this day).
+    // binding is replaced by APPLIED.
     bool applyDraft(std::uint32_t draftGeneration, CalendarState& outState,
                     std::string& error);
+
+    // Copies every day of `from` into a brand-new generation and returns its
+    // id. Days are copied one at a time, so only one day is held in RAM.
+    bool cloneGeneration(std::uint32_t from, std::uint32_t& outGeneration,
+                         std::string& error);
+
+    // Allocates an empty generation directory without writing meta.json. The
+    // caller fills the days one at a time and publishes meta last with
+    // saveMeta(), so an interrupted build leaves an unreferenced generation
+    // rather than a mixed course.
+    bool createGeneration(std::uint32_t& outGeneration, std::string& error);
+
+    // Atomically replaces meta.json of an existing generation.
+    bool saveMeta(const CourseMeta& meta, std::string& error);
+
+    bool generationExists(std::uint32_t generation);
 
     bool validateGeneration(std::uint32_t generation, std::uint8_t expectedLength,
                             std::string& error);
     bool deleteGeneration(std::uint32_t generation, std::string& error);
+
+    // A published generation is kept as a fallback until the new active day
+    // has actually loaded. The id is recorded here and reclaimed afterwards.
+    bool setPendingGeneration(std::uint32_t generation, std::string& error);
+    bool reclaimPendingGeneration(std::string& error);
 
     // Repairs interrupted file replacements and removes stale .tmp/.bak files.
     bool recover(std::string& error);

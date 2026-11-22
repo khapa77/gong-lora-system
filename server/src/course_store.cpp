@@ -838,6 +838,118 @@ bool CourseStore::applyDraft(std::uint32_t draftGeneration,
     return true;
 }
 
+bool CourseStore::cloneGeneration(std::uint32_t from,
+                                  std::uint32_t& outGeneration,
+                                  std::string& error) {
+    error.clear();
+    if (from == 0) {
+        error = "invalid generation";
+        return false;
+    }
+    CourseMeta meta;
+    if (!loadMeta(from, meta, error)) return false;
+    if (meta.course_length == 0 || meta.course_length > course::kMaxDays) {
+        error = "generation length out of range";
+        return false;
+    }
+
+    std::uint32_t generation = from + 1;
+    for (unsigned guard = 0; guard < 10000; ++guard) {
+        if (!LittleFS.exists((metaBase(generation) + ".json").c_str())) break;
+        ++generation;
+    }
+    if (generation == 0) generation = 1;
+    if (!ensureGenerationDir(generation)) {
+        error = "cannot create generation directory";
+        return false;
+    }
+
+    std::string scratch;
+    for (std::uint8_t day = 0; day < meta.course_length; ++day) {
+        course::Day data;
+        if (!loadDay(from, day, data, error)) {
+            deleteGeneration(generation, scratch);
+            return false;
+        }
+        if (!saveDayAtomic(generation, day, data, error)) {
+            deleteGeneration(generation, scratch);
+            return false;
+        }
+    }
+
+    CourseMeta newMeta = meta;
+    newMeta.generation = generation;
+    const std::string metaJson = makeMetaJson(newMeta, error);
+    if (metaJson.empty()) {
+        deleteGeneration(generation, scratch);
+        return false;
+    }
+    if (!writeAtomic(metaBase(generation), metaJson, error)) {
+        deleteGeneration(generation, scratch);
+        return false;
+    }
+    if (!validateGeneration(generation, meta.course_length, error)) {
+        deleteGeneration(generation, scratch);
+        return false;
+    }
+    error.clear();
+    outGeneration = generation;
+    return true;
+}
+
+bool CourseStore::createGeneration(std::uint32_t& outGeneration,
+                                   std::string& error) {
+    error.clear();
+    std::uint32_t generation = 1;
+    CalendarState state;
+    bool present = false;
+    if (!readCalendarIfPresent(state, present, error)) return false;
+    if (present) {
+        generation = state.active_generation > state.draft_generation
+                         ? state.active_generation
+                         : state.draft_generation;
+        ++generation;
+    }
+    if (generation == 0) generation = 1;
+    for (unsigned guard = 0; guard < 10000; ++guard) {
+        const std::string meta = metaBase(generation) + ".json";
+        const std::string first = dayBase(generation, 0) + ".json";
+        if (!LittleFS.exists(meta.c_str()) &&
+            !LittleFS.exists((metaBase(generation) + ".tmp").c_str()) &&
+            !LittleFS.exists(first.c_str())) {
+            break;
+        }
+        ++generation;
+    }
+    if (!ensureGenerationDir(generation)) {
+        error = "cannot create generation directory";
+        return false;
+    }
+    error.clear();
+    outGeneration = generation;
+    return true;
+}
+
+bool CourseStore::saveMeta(const CourseMeta& meta, std::string& error) {
+    error.clear();
+    if (meta.generation == 0) {
+        error = "invalid generation";
+        return false;
+    }
+    if (meta.course_length == 0 || meta.course_length > course::kMaxDays) {
+        error = "course length out of range";
+        return false;
+    }
+    const std::string json = makeMetaJson(meta, error);
+    if (json.empty()) return false;
+    return writeAtomic(metaBase(meta.generation), json, error);
+}
+
+bool CourseStore::generationExists(std::uint32_t generation) {
+    if (generation == 0) return false;
+    return LittleFS.exists((metaBase(generation) + ".json").c_str());
+}
+
 bool CourseStore::validateGeneration(std::uint32_t generation,
                                      std::uint8_t expectedLength,
                                      std::string& error) {
@@ -870,6 +982,51 @@ bool CourseStore::deleteGeneration(std::uint32_t generation,
     LittleFS.remove((meta + ".tmp").c_str());
     LittleFS.remove((meta + ".bak").c_str());
     return true;
+}
+
+bool CourseStore::setPendingGeneration(std::uint32_t generation,
+                                       std::string& error) {
+    error.clear();
+    const std::string path = std::string(kCourseDir) + "/pending_gen";
+    if (generation == 0) {
+        LittleFS.remove(path.c_str());
+        return true;
+    }
+    File file = LittleFS.open(path.c_str(), "w");
+    if (!file) {
+        error = "cannot write pending generation";
+        return false;
+    }
+    const std::string text = std::to_string(generation) + "\n";
+    const size_t written = file.write(
+        reinterpret_cast<const uint8_t*>(text.data()), text.size());
+    file.close();
+    if (written != text.size()) {
+        LittleFS.remove(path.c_str());
+        error = "short write to pending generation";
+        return false;
+    }
+    return true;
+}
+
+bool CourseStore::reclaimPendingGeneration(std::string& error) {
+    error.clear();
+    const std::string path = std::string(kCourseDir) + "/pending_gen";
+    if (!LittleFS.exists(path.c_str())) return true;
+    File file = LittleFS.open(path.c_str(), "r");
+    if (!file) {
+        error = "cannot read pending generation";
+        return false;
+    }
+    const String raw = file.readString();
+    file.close();
+    LittleFS.remove(path.c_str());
+    std::uint32_t generation = 0;
+    if (!parseU32(toStd(raw).substr(0, toStd(raw).find('\n')), generation)) {
+        // A corrupt marker must not block the scheduler.
+        return true;
+    }
+    return deleteGeneration(generation, error);
 }
 
 bool CourseStore::recover(std::string& error) {

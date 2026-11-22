@@ -2,118 +2,183 @@
 
 Актуальный документ. Предыдущий `docs/ai-handoff/SESSION_STATE.md` описывает архитектуру до утверждения циклической модели и считается историческим.
 
+Вторая сессия 2026-11-22: этап 5 доведён до полного PASS host-тестов, ASan/UBSan и PlatformIO build, закоммичен локально (без push, hooks отключены через `-c core.hooksPath=/dev/null`). Этап 6 не начат.
+
 ## 1. Git
 
-- Репозиторий: /root/gong-lora-system
-- Ветка: standalone-max
-- Последний коммит: 24447ef «HERMES»
-- Исходники прошивки не изменялись.
-- Коммитов, push и destructive Git-операций не было.
+- Репозиторий: `/root/gong-lora-system`
+- Ветка: `standalone-max`
+- HEAD: `8aa68bb feat: add emergency mode and reboot-limited recovery`
+- Ветка впереди `origin/standalone-max` на 4 коммита, push не выполнялся.
+- `git diff --check` — чисто, ошибок пробелов нет.
+- Изменённые файлы этапа 5 до коммита: 12 (включая обновлённые handoff-документы и `tests/active_day_review_cases.h`), новых файлов: 4. `end` — untracked, игнорировать, в репозиторий не добавлять.
+- В первой сессии коммитов, push, reset, clean, checkout и stash не было; во второй — один локальный коммит этапа 5 без push.
 - В режиме READ ONLY использовать `git --no-optional-locks status`.
 
-## 2. Что утверждено заказчиком
+### История коммитов
+
+- `8aa68bb` — этап 4: аварийный режим и восстановление.
+- `ef6f9d3` — этап 3: интеграция циклического планировщика с NVS.
+- `d1ab533` — этапы 1–2: модель курса и хранилище.
+- `2996c28` — удаление `end` из отслеживания.
+- `a4f81f8` — финализация спецификации.
+- `24447ef` — HERMES.
+
+## 2. Незакоммиченные изменения этапа 5
+
+Изменены:
+
+- `server/src/course_store.cpp` (+157)
+- `server/src/course_store.h` (+23/−4)
+- `server/src/schedule.cpp` (+202)
+- `server/src/schedule.h` (+19)
+- `server/src/webhandler.cpp` (+209)
+- `server/web/index.html` (+229)
+- `tests/run_active_day_state_tests.py` (+1)
+- `tests/run_course_scheduler_tests.py` (+1)
+- `tests/run_emergency_tests.py` (+1)
+
+Новые (untracked):
+
+- `server/src/course_editor.cpp`
+- `server/src/course_editor.h`
+- `tests/test_course_editor.cpp`
+- `tests/run_course_editor_tests.py`
+
+`end` — untracked, игнорировать, не добавлять в коммит.
+
+## 3. Что реализовано на этапе 5
+
+### 3.1. Course Store
+
+- `CourseStore::cloneGeneration()` — копирование существующего поколения в новое, по одному дню, без загрузки всего курса в RAM.
+- Обновлён интерфейс `course_store.h` под клонирование и валидацию поколения.
+
+### 3.2. Course Editor (новый модуль)
+
+`server/src/course_editor.h/.cpp` — независимый от Arduino слой операций над черновиком:
+
+- `info()` — метаданные курса и состояние.
+- `ensureInitialCourse()` — эталонный 14-дневный курс при первом запуске.
+- `dayJson()` / `saveDay()` — чтение и запись отдельного дня черновика.
+- `insertDay()` — вставка до/после/копии.
+- `deleteDay()` — удаление дня, кроме последнего.
+- `clearDay()` — очистка событий без удаления слота.
+- `setPreset()` — пресеты 3, 10, 14, 20, 30, 45 дней.
+- `apply()` — атомарная публикация нового поколения.
+- `discardDraft()` — отказ от черновика.
+- `beginExport()` / `exportNext()` — потоковый экспорт JSON v2.
+- `importJson()` — импорт JSON v1/v2.
+
+Хранение: активный курс и черновик — разные поколения; `meta.json` пишется последним; `active_generation` фиксируется одной записью NVS.
+
+### 3.3. Планировщик
+
+В `schedule.cpp` добавлены обёртки `sched_courseInfo`, `sched_courseDraftGet/Save`, `sched_courseInsert/Delete/Clear`, `sched_coursePreset`, `sched_courseApply/Discard`, `sched_courseImport/Export`, `sched_courseRename`, `sched_courseActivate`, `sched_courseError`. Объявления — в `schedule.h`.
+
+### 3.4. Web API
+
+В `webhandler.cpp` добавлены и зарегистрированы маршруты:
+
+- `GET /api/course/meta`
+- `GET /api/course/status` (alias meta, спецификация 11)
+- `GET /api/course/draft?i=N` и alias `GET /api/course/day?i=N`
+- `PUT /api/course/draft?i=N` (`PUT /api/course/day` занят маршрутом этапа 2)
+- `DELETE /api/course/draft?i=N` и alias `DELETE /api/course/day?i=N`
+- `POST /api/course/insert?i=N&mode=before|empty|after|copy`
+- `POST /api/course/clear?i=N`
+- `POST /api/course/preset?days=N`
+- `POST /api/course/rename`
+- `POST /api/course/apply`
+- `POST /api/course/discard`
+- `POST /api/course/activate?i=N`
+- `POST /api/course/import`
+- `GET /api/course/export` (потоковый, `R_STREAM`)
+- `POST /api/emergency/retry` (этап 4, сохранён) и alias `POST /api/course/emergency/retry` (спецификация 11)
+
+Добавлена проверка диапазонов и типов; отсутствующий или некорректный индекс не превращается в день 0. Существующие маршруты редактора событий не изменены.
+
+### 3.5. Web GUI
+
+В `server/web/index.html` добавлена карточка Course Editor: просмотр дней, выбор дня, вставка/удаление/копирование, очистка, пресеты, переименование, импорт/экспорт, Apply, Discard, Activate. Существующая карточка Schedule и её редактор событий сохранены.
+
+## 4. Результаты проверок
+
+Подтверждено фактическим запуском во второй сессии 2026-11-22 (после всех правок):
+
+- `tests/run_course_editor_tests.py` — 191 checks, 0 FAIL.
+- То же с ASan/UBSan — 191 checks, 0 FAIL.
+- `tests/run_course_tests.py` — 570 PASS, 0 FAIL.
+- `tests/run_course_store_tests.py` — 108 PASS, 0 FAIL.
+- `tests/run_course_scheduler_tests.py` — 90 checks, 0 FAIL; с ASan/UBSan — 90, 0 FAIL.
+- `tests/run_emergency_tests.py` — 58 checks, 0 FAIL; с ASan/UBSan — 58, 0 FAIL.
+- `tests/run_active_day_state_tests.py` — 269 PASS, 0 FAIL; с UBSan — 269 PASS, 0 FAIL.
+  Было 7 FAIL (T02 — 5, T03 — 2); закрыто гейтом `courseLegacyConfirmedAbsent()`, старые тесты не менялись.
+- PlatformIO build (`pio run -e esp32dev`) — SUCCESS: RAM 20.9%, Flash 85.2%. Прошивка не заливалась.
+- Мутационная проверка гейта сидирования: 13 падений при принудительном `return true`.
+
+**Не подтверждено:**
+
+- `--sanitize address` для `active_day_state` не линкуется (дубль `operator new`, clang 10). Существовало до сессии.
+- Реальный Web GUI в браузере не проверялся; проверен только `node --check` для JS.
+- Реальная прошивка на ESP32 не проверялась.
+
+## 5. Известные проблемы и дефекты
+
+1. `active_day_state` T02/T03 (было 7 падений) — закрыто ограничением автосидирования:
+   `courseTryBoot()` публикует эталон только при подтверждённом отсутствии `gong.conf` и всех
+   `dayNN.conf` на смонтированной ФС. Ошибка/неопределённость проверки трактуется как «не отсутствие».
+   Добавлены 4 теста: чистый старт публикует эталон, эталон активируется и звонит, legacy dayNN.conf и
+   gong.conf блокируют автосидирование.
+2. Экспорт `course_editor.cpp` — дублирование `course_length` исправлено ранее, тест экспорта проходит.
+3. Host-тесты этапа 5 запускаются отдельным раннером `run_course_editor_tests.py` (191 проверка).
+4. Обычное редактирование событий в режиме курса (`courseLoadDay()`/`courseSaveActiveDay()`) —
+   атомарность записи дня при обрыве питания остаётся вне этапа 5, host-тестами не покрыта.
+5. Маршруты приведены к фактическому коду: запись дня черновика — `PUT /api/course/draft`,
+   удаление — `DELETE /api/course/draft` (и alias `DELETE /api/course/day`), `POST /api/course/delete`
+   не существует. `PUT /api/course/day` занят маршрутом этапа 2 (сохранение дня действующего курса),
+   поэтому спецификация, раздел 11, по этому пути не выполнима без смены контракта этапа 2.
+6. Ошибки LittleFS/NVS для черновика теперь покрыты: отказ записи meta при вставке, короткая запись дня,
+   отказ NVS при Apply, повреждённый meta черновика, обрыв экспорта. Конкурентные операции и авторизация
+   host-тестами не покрываются (webhandler не собирается на хосте); проверены ревью кода.
+7. `GET/PUT /api/course/template?name=...` не реализованы: шаблоны существуют только в импортируемом JSON,
+   в поколении хранятся материализованные дни. Требуется решение заказчика (переработка хранилища, этап 2).
+8. Долгие операции с LittleFS (вставка, удаление, пресеты, импорт, Apply) вынесены из `sys_lock`
+   (флаг `R_NOLOCK`); публикация в RAM — под коротким захватом. На железе не измерялось.
+
+## 6. Утверждённые архитектурные требования
 
 - Курс — циклическая последовательность N календарных слотов, 1..47.
-- После Activate this day курс привязан к дате и повторяется бесконечно.
-- День вычисляется по формуле: (activated_day + civil_days_between(activation_date, today)) % course_length.
+- После ручной активации курс привязан к дате и повторяется бесконечно.
+- Формула дня: `(activated_day + civil_days_between(activation_date, today)) % course_length`.
 - Нет Stop, Completed, Non-Stop, Merge Days и отдельного режима Service.
-- Apply публикует конфигурацию, но не запускает звонки. Нужна ручная активация.
+- Apply публикует конфигурацию, но не запускает звонки. Нужна ручная `Activate this day`.
 - Действующий курс и черновик независимы. Save Draft не влияет на звонки.
 - Вставка дня до/после, пустая или копия. Удаление дня вместе с событиями и перенумерацией. Последний день удалить нельзя. День 0 удалить можно.
 - Очистка дня удаляет события, но оставляет слот.
 - День 13 эталона — копия дня 12, затем независимая правка.
 - Эталон: 14 дней. День 0 — заезд, 1..10 — практика, 11 — отъезд, 12 — Service, 13 — Service (копия 12).
-- Аварийное расписание: 04:00, 04:20, 06:30 стандартные; 06:31 — трек 1, ровно 10 воспроизведений, громкость 5/30.
-- Выход из аварии автоматический после успешной проверки курса и привязки. При неудаче — остаться в аварии.
-- Миграции старых 13 дней нет. Заказчик очищает NVS/LittleFS перед прошивкой.
-- Старые dayNN.conf и gong.conf не удалять.
-- Существующий редактор событий сохраняется: обычные правки через Web GUI применяются сразу, без Activate и без Apply, не прерывают текущий MP3 и не меняют календарную привязку.
-- Структурные изменения курса (вставка, удаление, замена, импорт) выполняются только через черновик и отдельный Apply.
+- Обычное редактирование событий применяется сразу, без Apply и Activate; текущий MP3 не прерывается; календарная привязка сохраняется.
+- Структурные изменения курса — только через черновик и отдельный Apply.
+- При ручной активации MP3 останавливается немедленно. При автоматической смене суток играющий MP3 доигрывает.
+- Защита от повторного звонка: `last_fire` отдельно от `course_state`; идентичность generation + day_index + minute + event_id + date; сначала звук, затем запись; RAM-защита 65 секунд сохраняется.
+- Аварийный режим: встроенное расписание не зависит от JSON/LittleFS; три неудачи — вход в EMERGENCY; в EMERGENCY автоматических перезагрузок нет; успешная проверка — автоматический выход.
+- Аварийное расписание: 04:00, 04:20, 06:30 — стандартный гонг; 06:31 — громкость 5/30, ровно 10 воспроизведений.
+- Миграции старых 13 дней нет. Старые `dayNN.conf` и `gong.conf` не удалять.
+- `end` игнорировать, в репозиторий не добавлять.
 
-## 3. Технические решения, принятые основным разработчиком
+## 7. Противоречия в документах
 
-1. Защита от повторного звонка:
-   - last_fire хранится отдельно от course_state.
-   - Идентичность: generation + day_index + minute + event_id + date.
-   - Перед звонком проверяется last_fire; при now < last_fire.timestamp звонки не выполняются.
-   - Звонок: сначала звук, затем запись last_fire; ошибка записи логируется, звук не повторяется.
-   - Существующая RAM-защита 65 секунд сохраняется.
-   - Это расширение существующей логики, не новая подсистема.
-
-2. Аварийное исполнение и восстановление разделены:
-   - Встроенная таблица не зависит от LittleFS/JSON.
-   - Периодическая и ручная проверка восстановления отдельно.
-   - В EMERGENCY нет автоматических перезагрузок.
-   - Три неудачи — вход в EMERGENCY; успешная проверка — выход.
-
-3. last_fire не хранится в одном blob с календарной привязкой:
-   - course_state пишется при Apply/Activate/ошибке/аварии.
-   - last_fire пишется при каждом звонке.
-   - Разделение уменьшает износ NVS и изолирует сбои.
-   - При несоответствии generation last_fire игнорируется.
-
-4. Полная валидация курса потоковая:
-   - Дни проверяются по одному.
-   - В RAM только активный день и JSON-пул до 12 КБ.
-   - Apply/Activate не загружают все 47 дней одновременно.
-
-## 3.5. Сохранение редактора событий (проверено по коду)
-
-- Существующие маршруты: `GET /api/day?n=N`, `POST/PUT/DELETE /api/day/entry`, `GET /api/days` (`webhandler.cpp:523-570, 737-743`); GUI использует их (`server/web/index.html:730-745, 913-920`).
-- Для активного дня `sched_addToDay()`, `sched_editInDay()`, `sched_delFromDay()` делегируют в `sched_add()`, `sched_edit()`, `sched_del()` (`schedule.cpp:780-868`). Те меняют `entries[]` в RAM и вызывают `sched_save()`.
-- `sched_save()` при играющем MP3 только ставит `schedPendingSave`; RAM уже обновлена, запись выполняется после окончания звука (`schedule.cpp:521-534, 341-346`).
-- Для неактивного дня правка читает `/dayNN.conf`, меняет JSON и сразу пишет файл (`schedule.cpp:766-778`).
-- Подтверждённый дефект: `saveDayArray()` открывает целевой файл на `"w"` (`schedule.cpp:773`), поэтому обрыв питания может оставить частичный JSON. Исправление — атомарная замена через `dNN.tmp` и `dNN.bak`.
-- Требование: обычная правка не создаёт новое поколение, не меняет meta.json и календарную привязку; структурные изменения — только через черновик и Apply.
-
-## 4. Документы
-
-- docs/DYNAMIC_COURSE_SPEC.md — окончательная спецификация.
-- docs/DYNAMIC_COURSE_PLAN.md — поэтапный план.
-- docs/ai-handoff/NEXT_SESSION.md — инструкции следующей сессии.
-- docs/ai-handoff/SESSION_STATE.md — исторический документ, не актуальный.
-
-## 5. Что прочитано и проверено
-
-- AGENTS.md, CLAUDE.md.
-- server/src/schedule.cpp, schedule.h.
-- server/src/active_day_state.cpp, active_day_state.h.
-- server/src/config.h, main.cpp, webhandler.cpp, mp3handler.cpp.
-- server/web/index.html — маршруты и упоминания курса.
-- server/data/day00.conf..day12.conf, gong.conf.
-- docs/ai-handoff/SESSION_STATE.md, NEXT_SESSION.md.
-- Ревью Astra: /root/.hermes/cache/delegation/subagent-summary-0-20261121_205827_069912.txt.
-- docs/course-example.json, server/courses/gong-course-gong1.json.
-
-## 6. Подтверждённые дефекты текущего кода
-
-- sched_commitCourse() заменяет dayNN.conf последовательно; обрыв даёт смесь дней (schedule.cpp:937-972).
-- checkDateAdvance() не циклический и не использует формулу (schedule.cpp:225-265).
-- sched_catchup() воспроизводит пропущенное событие после перезагрузки (schedule.cpp:295-315).
-- doFire() пишет lastfire после звука и не проверяет результат (schedule.cpp:273-284).
-- sched_activateDay() не останавливает звук и не пишет SUSPENDED до проверки (schedule.cpp:620-678).
-- sched_hasError() не отражает ошибку чтения/парсинга (schedule.cpp:681).
-- sched_courseJSON() резервирует DAY_COUNT * 2048 (schedule.cpp:975-988).
-- active_day_state.cpp:137-139 — Store::load() принимает только статус Boot.
-
-## 7. Следующий шаг
-
-Реализация не начата. Ждём отдельного разрешения заказчика.
-
-Первый этап — модель курса и host-тесты:
-- server/src/course_model.h/.cpp
-- tests/test_course_model.cpp
-- tests/course_cases.h
-- tests/run_course_tests.py
-
-После этапа: host-тесты, сборка PlatformIO, diff, отчёт.
+1. `docs/DYNAMIC_COURSE_SPEC.md` описывает `last_fire` в одном NVS blob с календарным состоянием, а принятое решение — отдельные ключи. Документ не синхронизирован.
+2. Ранее в спецификации было «Merge Days отсутствует», при этом заказчик требовал объединение дня отъезда со слотом 0. Окончательное решение заказчика: Merge Days отсутствует. Противоречие снято, но старые формулировки в документе стоит проверить.
+3. Спецификация называет активное поколение неизменяемым; раздел 4A вводит copy-on-write для событий. Формулировки нужно сверить, чтобы не было двусмысленности.
 
 ## 8. Запреты
 
-- Не менять config.h, GPIO, audio, LoRa, WiFi.
+- Не менять `config.h`, GPIO, audio, LoRa, WiFi.
 - Не прошивать ESP32.
 - Не стирать NVS/LittleFS.
 - Не удалять старые расписания.
-- Не делать commit/push/reset без разрешения.
+- Не делать commit/push/reset/clean без разрешения.
 - Не запускать субагентов без разрешения.
-- Не менять исходники до разрешения на этап 1.
+- Не трогать `end`.

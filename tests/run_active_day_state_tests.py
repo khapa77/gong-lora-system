@@ -47,6 +47,7 @@ def main() -> int:
         str(root / "server/src/active_day_state.cpp"),
         str(root / "server/src/course_model.cpp"),
         str(root / "server/src/course_store.cpp"),
+        str(root / "server/src/course_editor.cpp"),
         str(root / "server/src/emergency.cpp"), "-o", str(binary),
     ]
     if args.sanitize:

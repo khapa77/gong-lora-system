@@ -3,6 +3,7 @@
 #include "mp3handler.h"
 #include "active_day_state.h"
 #include "course_store.h"
+#include "course_editor.h"
 #include "emergency.h"
 #include "sysstate.h"
 #include <LittleFS.h>
@@ -298,8 +299,47 @@ static void courseAdvance() {
     if (!coursePublishDay(day, true)) courseSuspend("cannot load next day", emergency::kMidnightFailed);
 }
 
+// Drops the generation replaced by the last Apply once the new active day has
+// loaded. Until then it stays on flash as a fallback.
+static void courseReclaimPending() {
+    std::string err;
+    if (!courseStore.reclaimPendingGeneration(err)) {
+        logPrintf("[COURSE] reclaim pending generation failed: %s\n", err.c_str());
+    }
+}
+
+static void dayPath(int day, char (&path)[16]);
+
+// True only when the filesystem is mounted and every legacy schedule file
+// (dayNN.conf, gong.conf) is confirmed absent. A failed or ambiguous probe is
+// not absence: seeding a course over unknown state would hide a storage fault.
+static bool courseLegacyConfirmedAbsent() {
+    if (!sys_fsOk()) return false;
+    if (active_day::probeFile(SCHEDULE_FILE) != active_day::FilePresence::ConfirmedAbsent) return false;
+    char path[16];
+    for (int d = 0; d < DAY_COUNT; d++) {
+        dayPath(d, path);
+        if (active_day::probeFile(path) != active_day::FilePresence::ConfirmedAbsent) return false;
+    }
+    return true;
+}
+
 static bool courseTryBoot() {
-    if (!courseStore.hasCalendar()) return false;
+    if (!courseStore.hasCalendar()) {
+        // Fresh device: publish the reference course so the editor has a
+        // course to show. Installations that still have any legacy schedule
+        // file, or whose filesystem cannot confirm their absence, keep the
+        // legacy path untouched.
+        if (courseLegacyConfirmedAbsent()) {
+            std::string err;
+            if (course_editor::ensureInitialCourse(err)) {
+                logPrintf("[COURSE] initial reference course published\n");
+            } else {
+                logPrintf("[COURSE] initial course failed: %s\n", err.c_str());
+            }
+        }
+        if (!courseStore.hasCalendar()) return false;
+    }
     std::string err;
     course_store::CalendarState cal;
     if (!courseStore.loadCalendar(cal, err)) {
@@ -339,6 +379,7 @@ static bool courseTryBoot() {
         }
         courseRunning = true;
         emergency::clearFailure();
+        courseReclaimPending();
     } else if (cal.flags & course_store::kSuspended) {
         // The previous activation/midnight load failed. Retry the interrupted
         // binding once at boot; a repeated failure counts as the next attempt.
@@ -399,6 +440,7 @@ static bool courseActivate(uint8_t day) {
     executionRunning = true;
     courseTransitionPending = false;
     emergency::clearFailure();
+    courseReclaimPending();
     logPrintf("[COURSE] activated day %u\n", (unsigned)day);
     return true;
 }
@@ -449,6 +491,7 @@ static bool courseRecoveryCheck() {
     executionRunning = true;
     courseTransitionPending = false;
     emergency::clearFailure();
+    courseReclaimPending();
     logPrintf("[COURSE] recovered to RUNNING on day %u\n", (unsigned)day);
     return true;
 }
@@ -1523,3 +1566,179 @@ uint8_t sched_emergencyReason() { return emergency::reason(); }
 const char* sched_emergencyReasonText() { return emergency::reasonText(emergency::reason()); }
 uint8_t sched_failureCount() { return emergency::attempts(); }
 bool sched_emergencyRetry() { return emergency::checkRecovery(); }
+
+// -------------------------------------------------------
+// Course editor facade (stage 5). Draft edits never touch the live scheduler;
+// only sched_courseApply() republishes and clears the calendar binding.
+// -------------------------------------------------------
+static String schedCourseError;
+
+const String& sched_courseError() { return schedCourseError; }
+
+static bool courseFail(const std::string& err) {
+    schedCourseError = err.c_str();
+    return false;
+}
+
+// The draft operations rewrite the NVS calendar's draft_generation. Refresh
+// the in-RAM copy so a later suspend/activation cannot write back a stale
+// pointer.
+static void courseReloadCalendar() {
+    if (!courseStore.hasCalendar()) return;
+    course_store::CalendarState cal;
+    std::string err;
+    // A calendar read is one short NVS blob, so it is taken under the lock
+    // together with the RAM update: the control task cannot slip a suspend
+    // between the read and the assignment and be overwritten here.
+    bool loaded = false;
+    sys_lock();
+    loaded = courseStore.loadCalendar(cal, err);
+    if (loaded) courseCal = cal;
+    sys_unlock();
+    if (!loaded) logPrintf("[COURSE] calendar reload failed: %s\n", err.c_str());
+}
+
+bool sched_courseInfoJSON(String& out) {
+    schedCourseError = "";
+    course_editor::Info info;
+    std::string err;
+    if (!course_editor::info(info, err)) return courseFail(err);
+    DynamicJsonDocument doc(640);
+    JsonObject root = doc.to<JsonObject>();
+    root["has_course"] = info.hasCourse;
+    root["active_generation"] = info.activeGeneration;
+    root["draft_generation"] = info.draftGeneration;
+    root["draft_dirty"] = info.draftDirty;
+    root["length"] = info.length;
+    root["name"] = info.name.c_str();
+    root["flags"] = info.flags;
+    root["failure_count"] = info.failureCount;
+    root["activation_date"] = info.activationDate;
+    root["course_mode"] = courseMode;
+    root["running"] = courseRunning && !courseSuspended;
+    root["suspended"] = courseSuspended;
+    root["emergency"] = emergency::isActive();
+    root["day_index"] = activeDay >= 0 ? activeDay : -1;
+    root["scheduler_ready"] = schedulerReady();
+    String body;
+    serializeJson(doc, body);
+    out = body;
+    return true;
+}
+
+bool sched_courseDraftDayJSON(uint8_t day, String& out) {
+    schedCourseError = "";
+    std::string json;
+    std::string err;
+    if (!course_editor::dayJson(day, json, err)) return courseFail(err);
+    out = json.c_str();
+    return true;
+}
+
+bool sched_courseDraftSaveDay(uint8_t day, const String& json) {
+    schedCourseError = "";
+    std::string err;
+    if (!course_editor::saveDay(day, json.c_str(), err)) return courseFail(err);
+    courseReloadCalendar();
+    return true;
+}
+
+bool sched_courseDraftClearDay(uint8_t day) {
+    schedCourseError = "";
+    std::string err;
+    if (!course_editor::clearDay(day, err)) return courseFail(err);
+    courseReloadCalendar();
+    return true;
+}
+
+bool sched_courseInsertDay(uint8_t day, bool copyEvents) {
+    schedCourseError = "";
+    std::string err;
+    if (!course_editor::insertDay(day, copyEvents, err)) return courseFail(err);
+    courseReloadCalendar();
+    return true;
+}
+
+bool sched_courseDeleteDay(uint8_t day) {
+    schedCourseError = "";
+    std::string err;
+    if (!course_editor::deleteDay(day, err)) return courseFail(err);
+    courseReloadCalendar();
+    return true;
+}
+
+bool sched_coursePreset(uint8_t days) {
+    schedCourseError = "";
+    std::string err;
+    if (!course_editor::setPreset(days, err)) return courseFail(err);
+    courseReloadCalendar();
+    return true;
+}
+
+bool sched_courseRename(const String& name) {
+    schedCourseError = "";
+    std::string err;
+    if (!course_editor::renameCourse(name.c_str(), err)) return courseFail(err);
+    courseReloadCalendar();
+    return true;
+}
+
+bool sched_courseImport(const String& json) {
+    schedCourseError = "";
+    std::string err;
+    if (!course_editor::importCourse(json.c_str(), err)) return courseFail(err);
+    courseReloadCalendar();
+    return true;
+}
+
+bool sched_courseDiscardDraft() {
+    schedCourseError = "";
+    std::string err;
+    if (!course_editor::discardDraft(err)) return courseFail(err);
+    courseReloadCalendar();
+    return true;
+}
+
+bool sched_courseApply() {
+    schedCourseError = "";
+    std::string err;
+    if (!course_editor::applyDraft(err)) return courseFail(err);
+    // Apply replaces the calendar binding with APPLIED: no day is bound and
+    // nothing may ring until an explicit Activate.
+    mp3_stop();
+    courseReloadCalendar();
+    sys_lock();
+    courseMode = true;
+    courseGeneration = courseCal.active_generation;
+    courseLength = courseCal.course_length;
+    courseRunning = false;
+    courseSuspended = false;
+    courseDayValid = false;
+    courseTransitionPending = false;
+    executionRunning = false;
+    scheduleFileState = ScheduleFileState::Ready;
+    count = 0;
+    for (unsigned i = 0; i < MAX_SCHEDULES; ++i) entries[i] = ScheduleEntry{};
+    activeDay = -1;
+    activeDate = "";
+    sys_unlock();
+    logPrintf("[COURSE] draft applied: generation %u, %u days\n",
+              (unsigned)courseGeneration, (unsigned)courseLength);
+    return true;
+}
+
+bool sched_courseExportBegin() {
+    schedCourseError = "";
+    std::string err;
+    if (!course_editor::beginExport(err)) return courseFail(err);
+    return true;
+}
+
+bool sched_courseExportNext(String& chunk, bool& done) {
+    schedCourseError = "";
+    std::string part;
+    std::string err;
+    if (!course_editor::nextExportChunk(part, done, err)) return courseFail(err);
+    chunk = part.c_str();
+    return true;
+}

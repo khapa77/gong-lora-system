@@ -273,6 +273,60 @@ tr:hover td { background: rgba(79,158,248,.04); }
     </div>
   </div>
 
+  <!-- ── Course Editor (draft) ── -->
+  <div class="card" id="sectionCourseEditor">
+    <div class="card-title">
+      Course Editor
+      <button class="collapse-btn" onclick="toggleCard('sectionCourseEditor')">&#9662;</button>
+    </div>
+    <div class="card-body">
+      <div id="ceStatus" style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Загрузка…</div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+        <input id="ceName" type="text" maxlength="64" placeholder="Название курса"
+               style="flex:1;min-width:180px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text)">
+        <button class="btn btn-ghost btn-sm" onclick="ceRename()">Переименовать</button>
+      </div>
+
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+        <span style="align-self:center;color:var(--muted);font-size:.8rem">Пресеты:</span>
+        <button class="btn btn-ghost btn-sm" onclick="cePreset(3)">3</button>
+        <button class="btn btn-ghost btn-sm" onclick="cePreset(10)">10</button>
+        <button class="btn btn-ghost btn-sm" onclick="cePreset(14)">14</button>
+        <button class="btn btn-ghost btn-sm" onclick="cePreset(20)">20</button>
+        <button class="btn btn-ghost btn-sm" onclick="cePreset(30)">30</button>
+        <button class="btn btn-ghost btn-sm" onclick="cePreset(45)">45</button>
+      </div>
+
+      <div id="ceDays" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
+
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+        <button class="btn btn-ghost btn-sm" onclick="ceInsert('before')">+ Перед</button>
+        <button class="btn btn-ghost btn-sm" onclick="ceInsert('after')">+ После</button>
+        <button class="btn btn-ghost btn-sm" onclick="ceInsert('copy')">+ Копия</button>
+        <button class="btn btn-ghost btn-sm" onclick="ceDeleteDay()">Удалить день</button>
+        <button class="btn btn-ghost btn-sm" onclick="ceClearDay()">Очистить расписание</button>
+      </div>
+
+      <div id="ceDayView" style="margin-bottom:12px"></div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-green" onclick="ceApply()">Apply (применить черновик)</button>
+        <button class="btn btn-yellow" onclick="ceActivate()">Activate this day</button>
+        <button class="btn btn-ghost" onclick="ceDiscard()">Отменить черновик</button>
+        <button class="btn btn-primary" onclick="document.getElementById('ceFile').click()">&#11014; Импорт JSON</button>
+        <input type="file" id="ceFile" accept=".json,application/json" style="display:none" onchange="ceImport(this)">
+        <button class="btn btn-ghost" onclick="ceExport()">&#11015; Экспорт JSON v2</button>
+      </div>
+      <p style="color:var(--muted);font-size:.78rem;margin-top:10px">
+        Структурные изменения (вставка, удаление, пресеты, импорт) сохраняются в отдельном черновике и не влияют
+        на действующий курс до Apply. После Apply курс публикуется, календарная привязка сбрасывается —
+        звонки не выполняются до ручного «Activate this day». Правка отдельных событий выполняется в карточке
+        Schedule без Apply.
+      </p>
+    </div>
+  </div>
+
   <!-- ── Clock ── -->
   <div class="card" id="sectionClock">
     <div class="card-title">
@@ -515,7 +569,9 @@ document.addEventListener('DOMContentLoaded', () => {
   initCards();
   loadTracks();
   refreshAll();
+  ceLoad();
   setInterval(refreshAll, 5000);
+  setInterval(ceLoad, 30000);
   setInterval(updateClock, 1000);
 });
 
@@ -1233,6 +1289,181 @@ async function applyCourse() {
 }
 
 // ─────────────────────────────────────────────
+// Course Editor (draft) — structural edits only.
+// Ordinary event editing stays in the Schedule card.
+// ─────────────────────────────────────────────
+let ceMeta = null;
+let ceDay = 0;
+
+async function ceLoad() {
+  try {
+    const r = await fetch('/api/course/meta');
+    const d = await r.json();
+    if (!d || d.ok === false) { ceRenderStatus(null, d?.err); return; }
+    ceMeta = d;
+    ceRenderStatus(d);
+    ceRenderDays();
+    await ceLoadDay(ceDay);
+  } catch { ceRenderStatus(null, 'network error'); }
+}
+
+function ceRenderStatus(d, err) {
+  const el = document.getElementById('ceStatus');
+  if (!el) return;
+  if (!d) { el.textContent = 'Курс недоступен: ' + (err || 'error'); return; }
+  const flags = [];
+  if (d.suspended) flags.push('SUSPENDED');
+  if (d.emergency) flags.push('EMERGENCY');
+  if (d.running) flags.push('RUNNING');
+  if (d.course_mode) flags.push('COURSE');
+  const dirty = d.draft_dirty ? ' · черновик изменён' : '';
+  const fails = d.failure_count ? ' · сбоев: ' + d.failure_count : '';
+  el.textContent = 'Курс: ' + (d.name || '—') +
+    ' · дней: ' + d.length +
+    ' · активное поколение: ' + d.active_generation +
+    ' · черновик: ' + d.draft_generation +
+    ' · ' + (flags.join(' / ') || 'APPLIED') + dirty + fails;
+  if (d.emergency) {
+    el.textContent += ' — работает аварийное расписание; причина и кнопка «Проверить восстановление» в карточке Schedule.';
+  }
+  const name = document.getElementById('ceName');
+  if (name && document.activeElement !== name) name.value = d.name || '';
+}
+
+function ceRenderDays() {
+  const box = document.getElementById('ceDays');
+  if (!box || !ceMeta) return;
+  const n = ceMeta.length || 0;
+  let html = '';
+  for (let i = 0; i < n; i++) {
+    const active = i === ceDay;
+    html += '<button class="btn btn-sm ' + (active ? 'btn-primary' : 'btn-ghost') +
+      '" onclick="ceSelectDay(' + i + ')">' + pad(i) + '</button>';
+  }
+  box.innerHTML = html || '<span style="color:var(--muted);font-size:.8rem">Нет дней</span>';
+}
+
+async function ceSelectDay(i) {
+  ceDay = i;
+  ceRenderDays();
+  await ceLoadDay(i);
+}
+
+async function ceLoadDay(i) {
+  const box = document.getElementById('ceDayView');
+  if (!box) return;
+  box.innerHTML = '<span style="color:var(--muted);font-size:.8rem">Загрузка…</span>';
+  try {
+    const r = await fetch('/api/course/draft?i=' + i);
+    const d = await r.json();
+    if (!Array.isArray(d)) {
+      box.innerHTML = '<span style="color:var(--red);font-size:.8rem">' + esc(d?.err || 'error') + '</span>';
+      return;
+    }
+    if (!d.length) {
+      box.innerHTML = '<span style="color:var(--muted);font-size:.8rem">День ' + pad(i) + ' — событий нет</span>';
+      return;
+    }
+    let rows = '';
+    d.forEach(e => {
+      rows += '<tr><td>' + pad(e.hour) + ':' + pad(e.min) + '</td><td>' + esc(e.desc || '') +
+        '</td><td>' + e.track + '</td><td>' + e.loop + '</td><td>' + e.vol + '</td><td>' +
+        (e.en === false ? 'off' : 'on') + '</td></tr>';
+    });
+    box.innerHTML = '<div style="font-size:.8rem;color:var(--muted);margin-bottom:4px">День ' + pad(i) +
+      ' (черновик, только просмотр — правка событий в карточке Schedule)</div>' +
+      '<table><thead><tr><th>Time</th><th>Description</th><th>Track</th><th>Loop</th><th>Vol</th><th>Status</th></tr></thead>' +
+      '<tbody>' + rows + '</tbody></table>';
+  } catch { box.innerHTML = '<span style="color:var(--red);font-size:.8rem">network error</span>'; }
+}
+
+async function cePost(url, body, method = 'POST') {
+  const d = await postJSON(url, body || {}, method);
+  if (d && d.ok) { toast('Готово', 'ok'); await ceLoad(); }
+  else toast(d?.err || 'Ошибка', 'err');
+  return d;
+}
+
+async function ceInsert(mode) {
+  if (!ceMeta) return;
+  const label = mode === 'before' ? 'перед' : mode === 'after' ? 'после' : 'копию';
+  if (!confirm('Вставить ' + label + ' днём ' + pad(ceDay) + '?')) return;
+  await cePost('/api/course/insert?i=' + ceDay + '&mode=' + mode);
+}
+
+async function ceDeleteDay() {
+  if (!ceMeta) return;
+  if (ceMeta.length <= 1) { toast('Нельзя удалить последний день', 'err'); return; }
+  if (!confirm('Удалить день ' + pad(ceDay) + ' из курса? Длина курса уменьшится на 1.')) return;
+  await cePost('/api/course/draft?i=' + ceDay, null, 'DELETE');
+}
+
+async function ceClearDay() {
+  if (!ceMeta) return;
+  if (!confirm('Очистить расписание дня ' + pad(ceDay) + '? День останется в курсе, события удалятся.')) return;
+  await cePost('/api/course/clear?i=' + ceDay);
+}
+
+async function cePreset(days) {
+  if (!confirm('Создать черновик курса из ' + days + ' дней? Действующий курс не изменится до Apply.')) return;
+  await cePost('/api/course/preset?days=' + days);
+}
+
+async function ceRename() {
+  const name = document.getElementById('ceName').value.trim();
+  if (!name) { toast('Введите название', 'err'); return; }
+  await cePost('/api/course/rename', { name });
+}
+
+async function ceApply() {
+  if (!confirm('Применить черновик? Действующий курс будет заменён, календарная привязка сброшена. Звонки прекратятся до ручного «Activate this day».')) return;
+  await cePost('/api/course/apply');
+}
+
+async function ceDiscard() {
+  if (!confirm('Отменить черновик и вернуться к действующему курсу?')) return;
+  await cePost('/api/course/discard');
+}
+
+async function ceActivate() {
+  if (!ceMeta) return;
+  if (!confirm('Активировать день ' + pad(ceDay) + ' как текущее расписание? Текущий MP3 будет остановлен.')) return;
+  const d = await postJSON('/api/course/activate?i=' + ceDay, {});
+  if (d && d.ok) { toast('День ' + pad(ceDay) + ' активирован', 'ok'); await ceLoad(); await loadSchedules(); await loadDaysStatus(); }
+  else toast(d?.err || 'Ошибка', 'err');
+}
+
+async function ceImport(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const r = await fetch('/api/course/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Gong-Request': '1' },
+      body: text
+    });
+    const d = await r.json();
+    if (d && d.ok) { toast('Импортировано в черновик', 'ok'); await ceLoad(); }
+    else toast(d?.err || 'Ошибка импорта', 'err');
+  } catch { toast('Ошибка чтения файла', 'err'); }
+  input.value = '';
+}
+
+async function ceExport() {
+  try {
+    const r = await fetch('/api/course/export');
+    if (!r.ok) { toast('Ошибка экспорта', 'err'); return; }
+    const blob = await r.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'gong-course-v2.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch { toast('Ошибка экспорта', 'err'); }
+}
+
+// ─────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────
 async function postJSON(url, body, method = 'POST') {
@@ -1252,7 +1483,7 @@ async function postJSON(url, body, method = 'POST') {
 // ─────────────────────────────────────────────
 // Collapsible cards
 // ─────────────────────────────────────────────
-const CARD_IDS = ['sectionSchedule','sectionCourse','sectionControl','sectionWifi','sectionClock','sectionDevice','sectionSecurity'];
+const CARD_IDS = ['sectionSchedule','sectionCourse','sectionCourseEditor','sectionControl','sectionWifi','sectionClock','sectionDevice','sectionSecurity'];
 
 function initCards() {
   CARD_IDS.forEach(id => {

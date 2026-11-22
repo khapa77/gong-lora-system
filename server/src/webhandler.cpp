@@ -261,7 +261,17 @@ static bool hostAllowed() {
     return false;
 }
 
-enum : uint8_t { R_OPEN = 0, R_AUTH = 1, R_CSRF = 2, R_WRITE = R_AUTH | R_CSRF };
+// R_NOLOCK: the handler does long LittleFS work and takes sys_lock itself
+// around the short RAM updates. R_STREAM: the handler owns the response and
+// sends it directly (streaming export), so dispatch must not buffer it.
+enum : uint8_t {
+    R_OPEN = 0,
+    R_AUTH = 1,
+    R_CSRF = 2,
+    R_WRITE = R_AUTH | R_CSRF,
+    R_NOLOCK = 4,
+    R_STREAM = 8
+};
 
 // send_P()/send() hand the whole body to one WiFiClient::write(), and
 // WiFiClient closes the socket on any send() error except EAGAIN — including
@@ -311,6 +321,16 @@ static void dispatch(void (*fn)(), uint8_t flags) {
     // only ever touched from this (loopTask) side.
     if ((flags & R_AUTH) && !checkAuth())   { flushResponse(); return; }
     if ((flags & R_CSRF) && !checkOrigin()) { flushResponse(); return; }
+    if (flags & R_STREAM) {
+        // The handler owns the socket: no sys_lock, no buffered flush.
+        fn();
+        return;
+    }
+    if (flags & R_NOLOCK) {
+        fn();
+        flushResponse();
+        return;
+    }
     sys_lock();
     fn();
     sys_unlock();
@@ -620,6 +640,179 @@ static void handleCourseCommit() {
 }
 
 // -------------------------------------------------------
+// /api/course — draft course editor (stage 5). Structural edits happen on the
+// draft generation only; the active course stays untouched until Apply.
+// -------------------------------------------------------
+// Strict day index: "12abc" or a missing parameter must never fall back to 0.
+static bool courseDayParam(int& day) {
+    if (!server.hasArg("i")) { sendErr("missing day index"); return false; }
+    const String raw = server.arg("i");
+    if (raw.length() == 0 || raw.length() > 3) { sendErr("invalid day index"); return false; }
+    for (size_t i = 0; i < raw.length(); ++i) {
+        if (raw[i] < '0' || raw[i] > '9') { sendErr("invalid day index"); return false; }
+    }
+    const long value = raw.toInt();
+    if (value < 0 || value > 255) { sendErr("invalid day index"); return false; }
+    day = static_cast<int>(value);
+    return true;
+}
+
+static void handleCourseMeta() {
+    String json;
+    if (!sched_courseInfoJSON(json)) { sendErr(sched_courseError().c_str()); return; }
+    sendJSON(200, json);
+}
+
+static void handleCourseDraftDayGET() {
+    int day = 0;
+    if (!courseDayParam(day)) return;
+    String json;
+    if (!sched_courseDraftDayJSON(static_cast<uint8_t>(day), json)) {
+        sendErr(sched_courseError().c_str());
+        return;
+    }
+    sendJSON(200, json);
+}
+
+static void handleCourseDraftDayPUT() {
+    int day = 0;
+    if (!courseDayParam(day)) return;
+    const String& body = server.arg("plain");
+    if (body.length() == 0) { sendErr("empty body"); return; }
+    if (body.length() > 8192) { sendErr("request too large"); return; }
+    if (!sched_courseDraftSaveDay(static_cast<uint8_t>(day), body)) {
+        sendErr(sched_courseError().c_str());
+        return;
+    }
+    sendOK();
+}
+
+static void handleCourseDraftDayDELETE() {
+    int day = 0;
+    if (!courseDayParam(day)) return;
+    if (!sched_courseDeleteDay(static_cast<uint8_t>(day))) {
+        sendErr(sched_courseError().c_str());
+        return;
+    }
+    sendOK();
+}
+
+static void handleCourseInsert() {
+    int day = 0;
+    if (!courseDayParam(day)) return;
+    // "empty" is the spec's name for an insert without events; "before" is the
+    // same position, kept because the GUI has always sent it.
+    const String mode = server.hasArg("mode") ? server.arg("mode") : String("before");
+    int position = day;
+    bool copy = false;
+    if (mode == "before" || mode == "empty") {
+        position = day;
+    } else if (mode == "after") {
+        position = day + 1;
+    } else if (mode == "copy") {
+        position = day;
+        copy = true;
+    } else {
+        sendErr("mode must be before, after or copy");
+        return;
+    }
+    if (position < 0 || position > 255) { sendErr("invalid day index"); return; }
+    if (!sched_courseInsertDay(static_cast<uint8_t>(position), copy)) {
+        sendErr(sched_courseError().c_str());
+        return;
+    }
+    sendOK();
+}
+
+static void handleCourseClear() {
+    int day = 0;
+    if (!courseDayParam(day)) return;
+    if (!sched_courseDraftClearDay(static_cast<uint8_t>(day))) {
+        sendErr(sched_courseError().c_str());
+        return;
+    }
+    sendOK();
+}
+
+static void handleCoursePreset() {
+    if (!server.hasArg("days")) { sendErr("missing days"); return; }
+    const String raw = server.arg("days");
+    if (raw.length() == 0 || raw.length() > 2) { sendErr("invalid days"); return; }
+    for (size_t i = 0; i < raw.length(); ++i) {
+        if (raw[i] < '0' || raw[i] > '9') { sendErr("invalid days"); return; }
+    }
+    const long days = raw.toInt();
+    if (days < 1 || days > 47) { sendErr("days must be 1..47"); return; }
+    if (!sched_coursePreset(static_cast<uint8_t>(days))) {
+        sendErr(sched_courseError().c_str());
+        return;
+    }
+    sendOK();
+}
+
+static void handleCourseRename() {
+    DynamicJsonDocument doc(256);
+    if (!parseBody(doc)) return;
+    const char* name = doc["name"] | "";
+    if (!name || !*name) { sendErr("name is required"); return; }
+    if (strlen(name) > 64) { sendErr("name too long"); return; }
+    if (!sched_courseRename(String(name))) { sendErr(sched_courseError().c_str()); return; }
+    sendOK();
+}
+
+static void handleCourseApply() {
+    if (!sched_courseApply()) { sendErr(sched_courseError().c_str()); return; }
+    sendOK();
+}
+
+static void handleCourseDiscard() {
+    if (!sched_courseDiscardDraft()) { sendErr(sched_courseError().c_str()); return; }
+    sendOK();
+}
+
+static void handleCourseActivate() {
+    int day = 0;
+    if (!courseDayParam(day)) return;
+    if (day >= sched_dayCount()) { sendErr("invalid day"); return; }
+    if (sched_activateDay(static_cast<uint8_t>(day))) sendOK();
+    else sendErr("activation failed");
+}
+
+static void handleCourseImport() {
+    const String& body = server.arg("plain");
+    if (body.length() == 0) { sendErr("empty body"); return; }
+    if (body.length() > 49152) { sendErr("request too large"); return; }
+    if (!sched_courseImport(body)) { sendErr(sched_courseError().c_str()); return; }
+    sendOK();
+}
+
+// Streaming export. The handler owns the socket: setContentLength(UNKNOWN)
+// turns the reply into chunked transfer, so only one day is in RAM at a time.
+static void handleCourseExport() {
+    if (!sched_courseExportBegin()) { sendErr(sched_courseError().c_str()); flushResponse(); return; }
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.sendHeader("Cache-Control", "no-cache");
+    server.send(200, "application/json", "");
+    bool done = false;
+    while (!done) {
+        String chunk;
+        if (!sched_courseExportNext(chunk, done)) {
+            logPrintf("[WEB] course export failed: %s\n", sched_courseError().c_str());
+            break;
+        }
+        if (chunk.length()) {
+            server.sendContent(chunk);
+            if (!server.client().connected()) {
+                logPrintf("[WEB] course export aborted by client\n");
+                break;
+            }
+        }
+        delay(1);   // feed the watchdog between days
+    }
+    server.sendContent("");
+}
+
+// -------------------------------------------------------
 // /api/play  /api/stop — manual control.
 // -------------------------------------------------------
 static void handlePlay() {
@@ -748,6 +941,8 @@ void web_setup() {
     route("/api/day",           HTTP_GET,    handleDayGet,         R_AUTH);
     route("/api/day/activate",  HTTP_POST,   handleDayActivate,    R_WRITE);
     route("/api/emergency/retry", HTTP_POST, handleEmergencyRetry,  R_WRITE);
+    // Spec 11 spells the same manual recovery check under /api/course.
+    route("/api/course/emergency/retry", HTTP_POST, handleEmergencyRetry, R_WRITE);
     route("/api/day/entry",     HTTP_POST,   handleDayEntryPOST,   R_WRITE);
     route("/api/day/entry",     HTTP_PUT,    handleDayEntryPUT,    R_WRITE);
     route("/api/day/entry",     HTTP_DELETE, handleDayEntryDELETE, R_WRITE);
@@ -760,6 +955,33 @@ void web_setup() {
     route("/api/course",        HTTP_GET,    handleCourseGET,      R_AUTH);
     route("/api/course/day",    HTTP_PUT,    handleCourseDayPUT,   R_WRITE);
     route("/api/course/commit", HTTP_POST,   handleCourseCommit,   R_WRITE);
+
+    // Draft course editor (stage 5). Structural edits touch the draft only;
+    // /api/course/apply publishes it and resets the calendar binding.
+    route("/api/course/meta",    HTTP_GET,    handleCourseMeta,        R_AUTH);
+    // Spec 11 alias: status is the same snapshot (state, failure_count,
+    // emergency flag), it exists so an operator can ask for it by that name.
+    route("/api/course/status",  HTTP_GET,    handleCourseMeta,        R_AUTH);
+    // Spec 11 names the draft-day routes /api/course/day. PUT on that path is
+    // already the stage-2 whole-day save for the active course, so the draft
+    // write lives on /api/course/draft and only read/delete keep the alias.
+    route("/api/course/day",     HTTP_GET,    handleCourseDraftDayGET, R_AUTH);
+    route("/api/course/day",     HTTP_DELETE, handleCourseDraftDayDELETE, R_WRITE | R_NOLOCK);
+    route("/api/course/draft",   HTTP_GET,    handleCourseDraftDayGET, R_AUTH);
+    // Structural edits rebuild whole generations on LittleFS, so they run
+    // outside sys_lock (spec 10) and publish to RAM under a short lock inside
+    // the sched_course* wrappers.
+    route("/api/course/draft",   HTTP_PUT,    handleCourseDraftDayPUT, R_WRITE | R_NOLOCK);
+    route("/api/course/draft",   HTTP_DELETE, handleCourseDraftDayDELETE, R_WRITE | R_NOLOCK);
+    route("/api/course/insert",  HTTP_POST,   handleCourseInsert,      R_WRITE | R_NOLOCK);
+    route("/api/course/clear",   HTTP_POST,   handleCourseClear,       R_WRITE | R_NOLOCK);
+    route("/api/course/preset",  HTTP_POST,   handleCoursePreset,      R_WRITE | R_NOLOCK);
+    route("/api/course/rename",  HTTP_POST,   handleCourseRename,      R_WRITE | R_NOLOCK);
+    route("/api/course/apply",   HTTP_POST,   handleCourseApply,       R_WRITE | R_NOLOCK);
+    route("/api/course/discard", HTTP_POST,   handleCourseDiscard,     R_WRITE | R_NOLOCK);
+    route("/api/course/activate",HTTP_POST,   handleCourseActivate,    R_WRITE);
+    route("/api/course/import",  HTTP_POST,   handleCourseImport,      R_WRITE | R_NOLOCK);
+    route("/api/course/export",  HTTP_GET,    handleCourseExport,      R_AUTH | R_STREAM);
     route("/api/device",        HTTP_GET,    handleDeviceGET,      R_AUTH);
     route("/api/device",        HTTP_POST,   handleDevicePOST,     R_WRITE);
     route("/api/wifi",          HTTP_GET,    handleWifiGET,        R_AUTH);

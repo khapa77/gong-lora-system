@@ -240,6 +240,41 @@ static void registerReviewCases(std::vector<Test>& list) {
         require(sched_resume(),"repaired boot file cannot Resume");
         require(host::nvs().writes==(oldFormat?2U:0U),"file repair repeated/missed migration");
     });
+    // First boot of a genuinely empty device publishes the reference course
+    // (spec 12) instead of the legacy Day 00, but an installation that still
+    // has any legacy schedule file keeps the legacy path untouched.
+    addCase(list,"T03","fresh_device_publishes_reference_course",[]() {
+        host::files().clear(); host::nvs()=host::NvsModel();
+        sched_setup();
+        require(courseMode,"fresh device did not enter course mode");
+        require(courseGeneration>0 && courseLength==14,"fresh device did not publish the 14-day reference course");
+        require(!sched_isRunning(),"published course rang before an explicit Activate");
+        require(!host::files().count("/gong.conf"),"fresh device wrote the legacy seed file");
+        require(!host::files().count("/day00.conf"),"fresh device wrote a legacy day file");
+        require(host::files().count("/course/g1/meta.json")==1,"reference generation meta missing");
+    });
+    addCase(list,"T03","fresh_course_activates_and_fires",[]() {
+        host::files().clear(); host::nvs()=host::NvsModel();
+        sched_setup();
+        require(courseMode && courseLength==14,"reference course not published");
+        require(sched_activateDay(0),"seeded day 0 could not be activated");
+        require(sched_isRunning() && activeDay==0,"activation did not bind day 0");
+        host::clock()=at(16,19,45); sched_check();
+        require(audioCalls==1,"seeded arrival gong did not fire at 19:45");
+    });
+    addCase(list,"T02","legacy_day_files_block_course_seed",[]() {
+        sched_setup();
+        require(!courseMode,"course was seeded over an existing legacy installation");
+        require(liveIs(0,"2026-11-16"),"legacy first boot did not activate Day 00");
+        require(!host::files().count("/course/g1/meta.json"),"legacy boot wrote a course generation");
+    });
+    addCase(list,"T02","legacy_gong_seed_blocks_course_seed",[]() {
+        for (int day=0;day<DAY_COUNT;++day) { char path[16]; dayPath(day,path); host::files().erase(path); }
+        host::files()[SCHEDULE_FILE]="[{\"hour\":4,\"min\":0,\"desc\":\"legacy\"}]";
+        sched_setup();
+        require(!courseMode,"course was seeded over the legacy gong.conf seed file");
+        require(!host::files().count("/course/g1/meta.json"),"legacy seed boot wrote a course generation");
+    });
     addCase(list,"T08","course_reload_success_stays_running",[]() {
         readyActive(); stageReplacementCourse(); String error;
         require(sched_commitCourse(error) && !sched_hasError() && sched_isRunning(),"successful course reload stopped scheduler");
