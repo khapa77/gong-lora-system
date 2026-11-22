@@ -731,6 +731,28 @@ void testBootstrapPresets() {
     }
 }
 
+// The bootstrap pointer must live under a key NVS accepts (<= 15 characters)
+// and a device write error must surface instead of being swallowed.
+void testBootstrapNvsKey() {
+    resetHost();
+    std::string error;
+    host::nvs().inject("set", "crs_boot", host::Action::ErrorBefore);
+    check(!course_editor::setPreset(14, error), "preset reports a pointer write failure");
+    check(!error.empty(), "preset keeps the NVS error text");
+    check(bootstrapGeneration() == 0, "failed pointer write stored nothing");
+    check(!hasCalendar(), "failed preset published no calendar");
+
+    resetHost();
+    check(course_editor::setPreset(14, error), "preset succeeds with the short key");
+    check(bootstrapGeneration() != 0, "pointer recorded");
+    check(host::nvs().visible.count("gong/crs_boot") == 1, "pointer stored under crs_boot");
+    check(host::nvs().visible.count("gong/course_bootstrap") == 0,
+          "the rejected 16-character key is never used");
+    check(course_editor::applyDraft(error), "apply publishes the preset");
+    check(hasCalendar(), "published after apply");
+    check(host::nvs().visible.count("gong/crs_boot") == 0, "pointer cleared after apply");
+}
+
 // A published course must keep using its own draft pointer, never the bootstrap.
 void testPublishedCourseIgnoresBootstrap() {
     resetHost();
@@ -766,6 +788,7 @@ int main() {
     runGroup("bootstrap failures", testBootstrapFailures);
     runGroup("bootstrap presets", testBootstrapPresets);
     runGroup("bootstrap discard and seed guard", testBootstrapDiscardAndSeedGuard);
+    runGroup("bootstrap nvs key", testBootstrapNvsKey);
     runGroup("published course ignores bootstrap", testPublishedCourseIgnoresBootstrap);
 
     std::cout << "\n" << g_pass << " checks passed, " << g_fail << " failed\n";

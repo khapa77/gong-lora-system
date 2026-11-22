@@ -104,7 +104,7 @@
 
 ### 3.4a. Bootstrap первого запуска (третья сессия)
 
-- Пока `course_state` не создан, черновик хранится в NVS-ключе `course_bootstrap`
+- Пока `course_state` не создан, черновик хранится в NVS-ключе `crs_boot` (8 символов — NVS допускает максимум 15)
   (`CourseStore::loadBootstrapGeneration()/saveBootstrapGeneration()`), календарь не пишется.
 - `course_editor`: пресеты 1..47 и импорт создают bootstrap-поколение; чтение/правка дня,
   вставка, удаление, очистка, переименование и экспорт работают от него; `info()` возвращает
@@ -116,6 +116,8 @@
 - `ensureInitialCourse()` не публикует эталон, если есть bootstrap-черновик.
 - `POST /api/course/activate` без опубликованного курса отвечает `apply the draft first`.
 - `GET /api/course/meta` дополнен полями `has_draft` и `bootstrap`; буфер JSON увеличен до 1 КБ.
+- Третья сессия дополнительно: ключ bootstrap-указателя укорочен до `crs_boot` (NVS допускает 15 символов),
+  `tests/host/nvs.h` отвергает имена ключей/namespace длиннее 15, добавлены тесты лимита и отказа записи.
 
 ### 3.5. Web GUI
 
@@ -125,14 +127,14 @@
 
 Подтверждено фактическим запуском в третьей сессии 2026-11-22 (после всех правок bootstrap):
 
-- `tests/run_course_editor_tests.py` — 346 checks, 0 FAIL.
-- То же с ASan/UBSan — 346 checks, 0 FAIL.
+- `tests/run_course_editor_tests.py` — 357 checks, 0 FAIL.
+- То же с ASan/UBSan — 357 checks, 0 FAIL.
 - `tests/run_course_tests.py` — 570 PASS, 0 FAIL.
-- `tests/run_course_store_tests.py` — 108 PASS, 0 FAIL.
+- `tests/run_course_store_tests.py` — 130 PASS, 0 FAIL (включая лимит NVS 15 символов).
 - `tests/run_course_scheduler_tests.py` — 90 checks, 0 FAIL; с ASan/UBSan — 90, 0 FAIL.
 - `tests/run_emergency_tests.py` — 58 checks, 0 FAIL; с ASan/UBSan — 58, 0 FAIL.
-- `tests/run_active_day_state_tests.py` — 271 PASS, 0 FAIL; с UBSan — 271 PASS, 0 FAIL.
-- PlatformIO build (`pio run -e esp32dev`) — SUCCESS: RAM 20.9%, Flash 85.3%. Прошивка не заливалась.
+- `tests/run_active_day_state_tests.py` — 272 PASS, 0 FAIL; с UBSan — 272 PASS, 0 FAIL.
+- PlatformIO build (`pio run -e esp32dev`) — SUCCESS: RAM 20.9%, Flash 85.3% (1342005 B). Прошивка не заливалась.
 - Мутационные проверки: гейт сидирования (13 падений) и первенство курса при загрузке
   (`T03/bootstrap_course_takes_over_and_survives_reboot` падает при старом условии).
 

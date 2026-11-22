@@ -29,7 +29,7 @@ legacy-планировщик активирует Day 00, а Course Editor от
 ### Решение
 
 1. **Bootstrap-черновик без календаря.** Поколение-черновик до первого Apply хранится
-   в отдельном NVS-ключе `course_bootstrap` (`CourseStore::loadBootstrapGeneration()` /
+   в отдельном NVS-ключе `crs_boot` (`CourseStore::loadBootstrapGeneration()` /
    `saveBootstrapGeneration()`). `course_state` не создаётся, ничего не исполняется.
 2. **Bootstrap-aware редактор.** `course_editor` умеет работать без календаря:
    пресеты 1..47 (GUI: 3/10/14/20/30/45) и импорт создают bootstrap-поколение;
@@ -51,15 +51,24 @@ legacy-планировщик активирует Day 00, а Course Editor от
 7. **GUI:** карточка Course Editor показывает «черновик не опубликован» с длиной и поколением,
    подсказывает Apply, а Activate до публикации не отправляет запрос.
 
+### Инцидент KEY_TOO_LONG (реальная ESP32)
+
+Ключ `course_bootstrap` содержит 16 символов, а NVS допускает 15 (`NVS_KEY_NAME_MAX_SIZE` = 16
+с завершающим нулём). Первое создание курса на железе падало с
+`nvs_set_u32 fail: course_bootstrap KEY_TOO_LONG`. Ключ заменён на `crs_boot` (8).
+Гостевой мок `tests/host/nvs.h` теперь сам отвергает имена длиннее 15
+(`ESP_ERR_NVS_KEY_TOO_LONG`, `ESP_ERR_NVS_INVALID_NAME` для namespace), поэтому такой дефект
+не может снова пройти host-тесты. Проверены все NVS-ключи и namespace проекта — все ≤ 15.
+
 ## Проверено фактическим запуском (эта сессия)
 
-- `run_course_editor_tests.py` — 346 checks, 0 FAIL; с ASan/UBSan — 346, 0 FAIL.
-- `run_active_day_state_tests.py` — 271 PASS, 0 FAIL; с UBSan — 271 PASS, 0 FAIL.
+- `run_course_editor_tests.py` — 357 checks, 0 FAIL; с ASan/UBSan — 357, 0 FAIL.
+- `run_active_day_state_tests.py` — 272 PASS, 0 FAIL; с UBSan — 272 PASS, 0 FAIL.
 - `run_course_tests.py` — 570 PASS, 0 FAIL.
-- `run_course_store_tests.py` — 108 PASS, 0 FAIL.
+- `run_course_store_tests.py` — 130 PASS, 0 FAIL.
 - `run_course_scheduler_tests.py` — 90 checks, 0 FAIL (ASan/UBSan 90, 0 FAIL).
 - `run_emergency_tests.py` — 58 checks, 0 FAIL (ASan/UBSan 58, 0 FAIL).
-- `pio run -e esp32dev` — SUCCESS, RAM 20.9%, Flash 85.3%. Прошивка не заливалась.
+- `pio run -e esp32dev` — SUCCESS, RAM 20.9%, Flash 85.3% (1342005 B). Прошивка не заливалась.
 - Мутационная проверка: при возврате старого условия в `sched_setup()` падает
   `T03/bootstrap_course_takes_over_and_survives_reboot` — тест первенства курса не пустой.
 

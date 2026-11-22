@@ -308,6 +308,26 @@ static void registerReviewCases(std::vector<Test>& list) {
             require(host::files().count(path)==1,"legacy day file was deleted");
         }
     });
+    // The reported field flow: a clean device, "create the 14-day course",
+    // Apply, reboot, Activate. The bootstrap pointer is written to NVS here, so
+    // this is the path that failed with KEY_TOO_LONG on hardware.
+    addCase(list,"T03","first_course_create_apply_reboot_activate",[]() {
+        host::files().clear(); host::nvs()=host::NvsModel();
+        sched_setup();
+        require(courseMode && courseLength==14,"reference course not published");
+        std::string err;
+        require(course_editor::setPreset(14,err),std::string("preset 14 failed: ")+err);
+        require(courseStore.hasCalendar(),"preset must not unpublish the course");
+        require(sched_courseApply(),std::string("apply failed: ")+sched_courseError().c_str());
+        require(courseMode && !sched_isRunning(),"applied course must stay inactive");
+        host::nvs().reboot(); resetRam(); sched_setup();
+        require(courseMode,"course lost after reboot");
+        require(!sched_isRunning(),"APPLIED course rang after reboot before Activate");
+        require(sched_activateDay(0),"activation after reboot failed");
+        require(sched_isRunning() && activeDay==0,"activation did not bind day 0");
+        host::clock()=at(16,19,45); sched_check();
+        require(audioCalls==1,"arrival gong did not fire after activation");
+    });
     // The opposite compatibility guarantee: preparing a draft on a legacy device
     // must not change what rings until the operator applies it.
     addCase(list,"T03","unpublished_draft_keeps_legacy_running",[]() {

@@ -18,7 +18,11 @@ namespace {
 const char* kCourseDir = "/course";
 const char* kNamespace = "gong";
 const char* kCalendarKey = "course_state";
-const char* kBootstrapKey = "course_bootstrap";
+// NVS keys are limited to 15 characters (NVS_KEY_NAME_MAX_SIZE is 16 including
+// the terminator); a longer key makes nvs_set_* fail with KEY_TOO_LONG on the
+// device, which is why this one is short. See tests/host/nvs.h, which now
+// enforces the same limit on the host.
+const char* kBootstrapKey = "crs_boot";
 const char* kLastFireKey = "last_fire";
 const char* kMetaBase = "meta";
 

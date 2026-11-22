@@ -463,6 +463,55 @@ void no_calendar_recover_is_ok() {
 
 }  // namespace
 
+// NVS limits key and namespace names to 15 characters. The device fails a
+// 16-character key with KEY_TOO_LONG (this is what broke
+// "course_bootstrap"), so the host model must fail it too instead of hiding it.
+void nvs_key_length_limit() {
+    resetHost();
+    check(std::strlen("course_bootstrap") == 16, "fixture key is 16 characters");
+    check(std::strlen("course_bootstra") == 15, "fixture limit key is 15 characters");
+
+    Preferences prefs;
+    check(prefs.begin("gong", false), "namespace opens");
+    check(prefs.putUInt("course_bootstrap", 7) == 0, "16-character key write is rejected");
+    check(prefs.putString("course_bootstrap", "x") == 0, "16-character key string write is rejected");
+    check(host::nvs().visible.empty(), "rejected key wrote nothing");
+
+    check(prefs.putUInt("course_bootstra", 7) == static_cast<size_t>(sizeof(std::uint32_t)),
+          "15-character key write is accepted");
+    check(prefs.getUInt("course_bootstra", 0) == 7, "15-character key reads back");
+    check(host::nvs().visible.count(key("course_bootstra")) == 1, "15-character key stored");
+
+    uint32_t value = 0;
+    Preferences tooLongNamespace;
+    check(!tooLongNamespace.begin("namespace_is_long", false),
+          "namespace longer than 15 characters is rejected");
+    check(nvs_get_u32(1, "course_bootstrap", &value) == ESP_ERR_NVS_KEY_TOO_LONG,
+          "16-character key read is rejected with KEY_TOO_LONG");
+}
+
+// The bootstrap draft pointer must use a key NVS accepts and report failures.
+void bootstrap_pointer_roundtrip() {
+    resetHost();
+    course_store::CourseStore store;
+    std::string error;
+
+    check(store.loadBootstrapGeneration() == 0, "no pointer before any draft");
+    check(store.saveBootstrapGeneration(5, error), "bootstrap pointer write accepted");
+    check(error.empty(), "successful pointer write reports no error");
+    check(store.loadBootstrapGeneration() == 5, "bootstrap pointer reads back");
+    check(host::nvs().visible.count(key("crs_boot")) == 1, "pointer stored under crs_boot");
+    check(store.saveBootstrapGeneration(0, error), "pointer can be cleared");
+    check(store.loadBootstrapGeneration() == 0, "cleared pointer reads as zero");
+    check(store.saveBootstrapGeneration(0, error), "clearing an absent pointer is not an error");
+
+    host::nvs().inject("set", "crs_boot", host::Action::ErrorBefore);
+    check(!store.saveBootstrapGeneration(9, error), "device NVS error is reported, not hidden");
+    check(!error.empty(), "failed pointer write keeps an error text");
+    host::nvs().fault.armed = false;
+    check(store.loadBootstrapGeneration() == 0, "failed pointer write stored nothing");
+}
+
 int main() {
     runGroup("calendar_roundtrip", calendar_roundtrip);
     runGroup("calendar_crc_corruption", calendar_crc_corruption);
@@ -484,6 +533,8 @@ int main() {
     runGroup("apply_meta_write_failure_keeps_old",
              apply_meta_write_failure_keeps_old);
     runGroup("apply_nvs_error_keeps_old", apply_nvs_error_keeps_old);
+    runGroup("nvs_key_length_limit", nvs_key_length_limit);
+    runGroup("bootstrap_pointer_roundtrip", bootstrap_pointer_roundtrip);
     runGroup("validate_generation_detects_corruption",
              validate_generation_detects_corruption);
     runGroup("no_calendar_recover_is_ok", no_calendar_recover_is_ok);

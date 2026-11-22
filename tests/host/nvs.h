@@ -16,8 +16,17 @@ constexpr esp_err_t ESP_FAIL = -1;
 constexpr esp_err_t ESP_ERR_NVS_NOT_FOUND = 0x1102;
 constexpr esp_err_t ESP_ERR_NVS_TYPE_MISMATCH = 0x1103;
 constexpr esp_err_t ESP_ERR_NVS_NOT_ENOUGH_SPACE = 0x1105;
+constexpr esp_err_t ESP_ERR_NVS_INVALID_NAME = 0x1106;
+constexpr esp_err_t ESP_ERR_NVS_KEY_TOO_LONG = 0x1109;
 constexpr esp_err_t ESP_ERR_NVS_INVALID_LENGTH = 0x110c;
 namespace host {
+// Real NVS limit: NVS_KEY_NAME_MAX_SIZE is 16, i.e. 15 characters plus the
+// terminator. Both keys and namespace names are rejected above it, so a key
+// that is too long fails here exactly as it does on the device.
+constexpr size_t kNvsKeyNameMax = 15;
+inline bool nvsNameTooLong(const char* name) {
+    return !name || std::strlen(name) > kNvsKeyNameMax;
+}
 enum class Type { I32, U32, U64, Text };
 struct Cell {
     Type type = Type::I32;
@@ -78,6 +87,7 @@ struct NvsModel {
 };
 inline NvsModel& nvs() { static NvsModel model; return model; }
 inline esp_err_t set(nvs_handle_t h, const char* key, const Cell& cell) {
+    if (nvsNameTooLong(key)) return ESP_ERR_NVS_KEY_TOO_LONG;
     NvsModel& m=nvs(); ++m.writes;
     if (m.beforeWrite) m.beforeWrite();
     const Action a=m.event("set",key);
@@ -91,6 +101,7 @@ inline esp_err_t set(nvs_handle_t h, const char* key, const Cell& cell) {
     return ESP_OK;
 }
 inline esp_err_t get(nvs_handle_t h, const char* key, Type type, Cell& out) {
+    if (nvsNameTooLong(key)) return ESP_ERR_NVS_KEY_TOO_LONG;
     NvsModel& m=nvs(); ++m.reads;
     const Action a=m.event("get",key);
     if (a==Action::CutBefore) throw PowerCut();
@@ -105,6 +116,7 @@ inline esp_err_t get(nvs_handle_t h, const char* key, Type type, Cell& out) {
 }
 }
 inline esp_err_t nvs_open(const char* name, nvs_open_mode_t mode, nvs_handle_t* h) {
+    if (host::nvsNameTooLong(name)) return ESP_ERR_NVS_INVALID_NAME;
     host::NvsModel& m=host::nvs();
     if (m.event("open",name)==host::Action::ErrorBefore) return ESP_FAIL;
     if (mode==NVS_READONLY && !m.namespacePresent) return ESP_ERR_NVS_NOT_FOUND;
@@ -135,6 +147,7 @@ inline esp_err_t nvs_set_str(nvs_handle_t h,const char* k,const char* v) {
     return host::set(h,k,host::Cell::string(v));
 }
 inline esp_err_t nvs_erase_key(nvs_handle_t h,const char* k) {
+    if (host::nvsNameTooLong(k)) return ESP_ERR_NVS_KEY_TOO_LONG;
     host::NvsModel& m=host::nvs();
     const host::Action a=m.event("erase",k);
     if (a==host::Action::CutBefore) throw host::PowerCut();
