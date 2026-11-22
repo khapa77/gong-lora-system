@@ -239,3 +239,19 @@ pre-скриптом `scripts/gzip_web.py`.
   256 уникальных событий — 25 155 Б, 58 чанков, макс. чанк 3 106 Б, пик 73 КБ.
 - Тесты: editor 727, store 458, scheduler 154, course 578, active_day 275, emergency 58;
   ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 87.0 % (1 367 941 Б).
+
+## 11. Этап E (интеграция) выполнен
+
+- Кэш шаблонов: два слота (active/draft), строгая привязка к поколению; active не
+  вытесняется работой с черновиком. Boot/Apply/Activate/полночь/восстановление грузят
+  active-слот; ошибка → SUSPENDED, без чужих событий.
+- Импорт: `importCourseAuto` (compact для документов со ссылками, expanded для полных),
+  подключён к `sched_courseImport`.
+- Память: validate 47 дней/256 событий — 8–10 КБ (было 77–101 КБ); день/шаблон 32 события —
+  5 КБ (было 82 КБ); import — 94 КБ с host-моком FS (≈60 КБ на устройстве).
+- Новые примитивы: `course::parseEventArrayBounded`, потоковые read/write с CRC,
+  `writeTemplatesParts` (templates.json из диапазонов входа).
+- Тесты: editor 739, store 458, scheduler 224, course 578, active_day 275, emergency 58;
+  ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 87.5 % (1 375 741 Б).
+- На железе не проверено: реальные пики heap при импорте 27 КБ JSON, поведение при
+  фрагментированной куче, обрыв питания при записи templates.json.

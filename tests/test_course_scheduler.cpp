@@ -673,6 +673,214 @@ static void test_cow_scheduler_edits_reference_day() {
           "the live day changed while editing other days");
 }
 
+// ---- stage E: template (layout=tpl1) courses in the scheduler -------------
+
+static course::Course makeTemplateCourse(int days, int perTemplate, int templateCount) {
+    course::Course c;
+    c.name = "tpl-course";
+    for (int t = 0; t < templateCount; ++t) {
+        const std::string name = "t" + std::to_string(t);
+        for (int e = 0; e < perTemplate; ++e) {
+            course::Event ev;
+            ev.id = static_cast<std::uint32_t>(e + 1);
+            ev.hour = static_cast<std::uint8_t>(5 + e);
+            ev.minute = 0;
+            ev.track = 1;
+            ev.loop = 1;
+            ev.volume = 10;
+            ev.enabled = true;
+            ev.description = name + "-" + std::to_string(e);
+            c.templates[name].push_back(ev);
+        }
+    }
+    for (int d = 0; d < days; ++d) {
+        course::Day day;
+        day.templateName = "t" + std::to_string(d % templateCount);
+        c.days.push_back(day);
+    }
+    return c;
+}
+
+static bool applyCompact(const course::Course& c) {
+    course_store::CourseStore store;
+    std::uint32_t gen = 0;
+    course_store::CalendarState st;
+    std::string err;
+    if (!store.applyCompactCourse(c, gen, st, err)) {
+        std::cout << "applyCompactCourse failed: " << err << "\n";
+        return false;
+    }
+    return true;
+}
+
+static void test_tpl_apply_activate_and_ring() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22);
+    check(applyCompact(makeTemplateCourse(14, 4, 3)), "apply compact course");
+    sched_setup();
+    check(courseMode, "template course enters course mode");
+    check(!courseRunning, "APPLIED template course does not run");
+    check(activeDay == -1, "no active day before Activate");
+    check(audioCalls == 0, "no calls before Activate");
+    check(sched_dayCount() == 14, "course length from the template course");
+    check(sched_activateDay(7), "activate day 7");
+    check(courseRunning && activeDay == 7, "day 7 running");
+    check(count == 4, "template events published");
+    check(entries[0].description == "t1-0", "day 7 uses template t1");
+    host::clock() = atDate(2026, 11, 22, 5, 0);
+    sched_check();
+    check(audioCalls == 1, "template event rang");
+}
+
+static void test_tpl_reboot_midnight_and_wrap() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 12, 0);
+    check(applyCompact(makeTemplateCourse(14, 3, 3)), "apply");
+    sched_setup();
+    check(sched_activateDay(7), "activate day 7");
+    reboot();
+    check(courseMode && courseRunning, "running after reboot");
+    check(activeDay == 7, "day 7 restored after reboot");
+    check(count == 3, "day 7 events restored");
+    host::clock() = atDate(2026, 11, 23, 3, 0);
+    sched_check();
+    check(activeDay == 8, "midnight advanced to day 8");
+    host::clock() = atDate(2026, 11, 29, 3, 0);   // 7 + 7 days
+    sched_check();
+    check(activeDay == 0, "14-day course wrapped 13 -> 00");
+}
+
+static void test_tpl_draft_browsing_keeps_running() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 3, 0);
+    check(applyCompact(makeTemplateCourse(14, 3, 3)), "apply active");
+    sched_setup();
+    check(sched_activateDay(2), "activate day 2");
+    check(courseRunning && activeDay == 2, "running day 2");
+    course_store::CourseStore store;
+    const std::uint32_t active = courseGeneration;
+
+    // A different template course lands in the draft generation.
+    course::Course other = makeTemplateCourse(10, 5, 2);
+    other.name = "draft course";
+    std::string draftError;
+    const std::string draftJson = course::toJsonV2(other, false, draftError);
+    check(!draftJson.empty(), "draft JSON build failed");
+    check(course_editor::importCourseAuto(draftJson, draftError),
+          "compact draft import failed");
+
+    // Browsing the draft resolves from the draft slot...
+    std::string dayJson;
+    std::string err;
+    check(course_editor::dayJson(0, dayJson, err), "draft day readable");
+    check(dayJson.find("t0-0") != std::string::npos, "draft day used the wrong template");
+
+    // ...and the running generation still resolves through its own set.
+    check(store.prepareActiveTemplates(active, err), "active templates still loaded");
+    check(store.cachedTemplateGeneration() == active, "active slot was evicted");
+    course::Day day;
+    check(store.loadDay(active, 2, day, err), "active day still loadable");
+    check(day.events.size() == 3, "active day events intact");
+
+    // The live schedule was not disturbed.
+    check(courseRunning && activeDay == 2 && count == 3, "live day changed");
+    host::clock() = atDate(2026, 11, 22, 5, 0);
+    sched_check();
+    check(audioCalls == 1, "active schedule stopped ringing after draft browsing");
+}
+
+static void test_tpl_edit_draft_and_active_day() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 3, 0);
+    check(applyCompact(makeTemplateCourse(14, 3, 3)), "apply");
+    sched_setup();
+    check(sched_activateDay(2), "activate day 2");
+
+    // Edit a *different* day of the active generation (copy-on-write).
+    check(sched_addToDay(5, 21, 0, String("extra"), 1, 1, 10),
+          "edit of another day failed");
+    check(count == 3, "live day changed by editing another day");
+    course::Day other;
+    std::string err;
+    course_store::CourseStore store;
+    check(store.loadDay(courseGeneration, 5, other, err), "day 5 load");
+    check(other.events.size() == 4, "day 5 did not get the event");
+    course::Day neighbour;
+    check(store.loadDay(courseGeneration, 6, neighbour, err), "day 6 load");
+    check(neighbour.events.size() == 3, "day 6 changed");
+
+    // Editing the active day needs no second activation.
+    check(sched_addToDay(2, 22, 0, String("live extra"), 1, 1, 10),
+          "edit of the active day failed");
+    check(count == 4, "active day RAM not updated");
+    check(courseRunning, "still running after editing the active day");
+    check(sched_dayCount() == 14, "length unchanged");
+}
+
+static void test_tpl_republish_other_length() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 3, 0);
+    check(applyCompact(makeTemplateCourse(14, 3, 3)), "apply 14");
+    sched_setup();
+    check(sched_activateDay(7), "activate 7");
+    check(courseRunning, "running");
+
+    // A new 10-day course is published through the operational path while the
+    // old one runs.
+    course::Course next = makeTemplateCourse(10, 2, 2);
+    std::string buildError;
+    const std::string json = course::toJsonV2(next, false, buildError);
+    check(!json.empty(), "10-day JSON build");
+    check(course_editor::importCourseAuto(json, buildError), "import 10-day course");
+    check(sched_courseApply(), "apply 10-day course");
+    check(!courseRunning, "republished course does not run");
+    check(courseCal.course_length == 10, "new length stored");
+    check(courseGeneration != 0, "new generation active");
+    check(audioCalls == 0, "no calls after republish");
+    check(sched_activateDay(9), "activate day 9 of 10");
+    host::clock() = atDate(2026, 11, 23, 3, 0);
+    sched_check();
+    check(activeDay == 0, "10-day course wraps 9 -> 0");
+}
+
+static void test_tpl_missing_templates_suspends() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 3, 0);
+    check(applyCompact(makeTemplateCourse(14, 3, 2)), "apply");
+    sched_setup();
+    check(sched_activateDay(1), "activate day 1");
+    const std::uint32_t gen = courseGeneration;
+    host::files().erase("/course/g" + std::to_string(gen) + "/templates.json");
+
+    reboot();
+    check(courseMode, "still course mode");
+    check(!courseRunning, "a course without templates must not run");
+    check(!schedulerReady(), "scheduler not ready");
+    check(audioCalls == 0, "no events executed without templates");
+    course_store::CalendarState cal;
+    check(readCalendar(cal), "calendar readable");
+    check((cal.flags & course_store::kSuspended) != 0, "state marked SUSPENDED");
+    check((cal.flags & course_store::kApplied) != 0, "course still APPLIED");
+}
+
+static void test_tpl_corrupt_templates_suspends() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 3, 0);
+    check(applyCompact(makeTemplateCourse(14, 3, 2)), "apply");
+    sched_setup();
+    check(sched_activateDay(0), "activate day 0");
+    const std::uint32_t gen = courseGeneration;
+    std::string& raw = host::files()["/course/g" + std::to_string(gen) + "/templates.json"];
+    raw[raw.size() - 2] = (raw[raw.size() - 2] == 'x') ? 'y' : 'x';
+
+    reboot();
+    check(!courseRunning && !schedulerReady(), "corrupt CRC must not run");
+    check(audioCalls == 0, "no events with a corrupt template file");
+    course_store::CalendarState cal;
+    check(readCalendar(cal), "calendar readable");
+    check((cal.flags & course_store::kSuspended) != 0, "SUSPENDED after corrupt CRC");
+}
+
 int main() {
     TestCase tests[] = {
         {"boot_applied_no_calls", test_boot_applied_no_calls},
@@ -702,6 +910,13 @@ int main() {
         {"no_course_waits", test_no_course_waits},
         {"published_course_needs_manual_activation", test_published_course_needs_manual_activation},
         {"cow_scheduler_edits_reference_day", test_cow_scheduler_edits_reference_day},
+        {"tpl_apply_activate_and_ring", test_tpl_apply_activate_and_ring},
+        {"tpl_reboot_midnight_and_wrap", test_tpl_reboot_midnight_and_wrap},
+        {"tpl_draft_browsing_keeps_running", test_tpl_draft_browsing_keeps_running},
+        {"tpl_edit_draft_and_active_day", test_tpl_edit_draft_and_active_day},
+        {"tpl_republish_other_length", test_tpl_republish_other_length},
+        {"tpl_missing_templates_suspends", test_tpl_missing_templates_suspends},
+        {"tpl_corrupt_templates_suspends", test_tpl_corrupt_templates_suspends},
     };
     for (const TestCase& t : tests) {
         const int before = failures;

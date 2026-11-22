@@ -78,11 +78,27 @@ std::vector<std::string> splitSemicolon(const std::string& text) {
     return parts;
 }
 
-std::string makeEnvelope(const std::string& json) {
-    return "CRC32 " + hex32(CourseStore::crc32(json)) + "\n" + json;
-}
+// Reads a file into `json` with a single allocation: the CRC header is parsed
+// in place and erased from the same buffer, so a multi-KB templates.json is not
+// copied twice on a device without PSRAM.
+bool readFileWithCrc(const std::string& path, std::string& json,
+                     std::string& error) {
+    error.clear();
+    File file = LittleFS.open(path.c_str(), "r");
+    if (!file) {
+        error = "cannot open " + path;
+        return false;
+    }
+    std::string raw;
+    const size_t length = file.size();
+    raw.resize(length);
+    size_t got = 0;
+    if (length > 0) {
+        got = file.readBytes(&raw[0], length);
+        raw.resize(got);
+    }
+    file.close();
 
-bool readEnvelope(const std::string& raw, std::string& json, std::string& error) {
     const std::size_t newline = raw.find('\n');
     if (newline == std::string::npos) {
         error = "missing CRC header";
@@ -101,28 +117,76 @@ bool readEnvelope(const std::string& raw, std::string& json, std::string& error)
         error = "invalid CRC value";
         return false;
     }
-    json = raw.substr(newline + 1);
-    const std::uint32_t actual = CourseStore::crc32(json);
-    if (actual != expected) {
+    raw.erase(0, newline + 1);
+    if (CourseStore::crc32(raw) != expected) {
         error = "CRC mismatch";
+        return false;
+    }
+    json.swap(raw);
+    return true;
+}
+
+// Incremental CRC so a file can be verified while it is streamed, without
+// materialising it in RAM. Same polynomial and bit order as crc32().
+std::uint32_t crc32Update(std::uint32_t crc, const void* data, std::size_t len) {
+    const std::uint8_t* bytes = static_cast<const std::uint8_t*>(data);
+    for (std::size_t i = 0; i < len; ++i) {
+        crc ^= bytes[i];
+        for (int bit = 0; bit < 8; ++bit) {
+            const std::uint32_t mask =
+                static_cast<std::uint32_t>(-(static_cast<int>(crc & 1u)));
+            crc = (crc >> 1) ^ (0xEDB88320u & mask);
+        }
+    }
+    return crc;
+}
+
+const std::size_t kIoChunk = 256;
+
+// Verifies a file's CRC header and content by streaming it: no copy of the file
+// is created, which matters for a multi-KB templates.json on a device without
+// PSRAM.
+bool verifyFileStreamed(const std::string& path, std::uint32_t expected,
+                        std::size_t expectedSize, std::string& error) {
+    File check = LittleFS.open(path.c_str(), "r");
+    if (!check) {
+        error = "cannot re-open " + path;
+        return false;
+    }
+    std::string line;
+    for (;;) {
+        const int c = check.read();
+        if (c < 0) break;
+        if (c == '\n') break;
+        line.push_back(static_cast<char>(c));
+    }
+    std::uint32_t stored = 0;
+    if (line.size() < 7 || line.compare(0, 6, "CRC32 ") != 0 ||
+        !parseHex32(line.substr(6), stored)) {
+        check.close();
+        error = "verification failed for " + path;
+        return false;
+    }
+    std::uint32_t crc = 0xFFFFFFFFu;
+    std::size_t total = 0;
+    char buffer[kIoChunk];
+    for (;;) {
+        const size_t got = check.readBytes(buffer, sizeof(buffer));
+        if (got == 0) break;
+        total += got;
+        crc = crc32Update(crc, buffer, got);
+    }
+    check.close();
+    if (~crc != stored || total != expectedSize || stored != expected) {
+        error = "verification mismatch for " + path;
         return false;
     }
     return true;
 }
 
-bool readFileWithCrc(const std::string& path, std::string& json,
-                     std::string& error) {
-    error.clear();
-    File file = LittleFS.open(path.c_str(), "r");
-    if (!file) {
-        error = "cannot open " + path;
-        return false;
-    }
-    const String raw = file.readString();
-    file.close();
-    return readEnvelope(toStd(raw), json, error);
-}
-
+// Streams `json` with a CRC header and verifies it by re-reading in chunks.
+// No envelope string and no full read-back buffer: peak RAM is the caller's
+// buffer plus one 256-byte chunk, which matters for a multi-KB templates file.
 bool writeFileWithCrc(const std::string& path, const std::string& json,
                       std::string& error) {
     error.clear();
@@ -131,23 +195,34 @@ bool writeFileWithCrc(const std::string& path, const std::string& json,
         error = "cannot create " + path;
         return false;
     }
-    const std::string envelope = makeEnvelope(json);
-    const size_t written = file.write(
-        reinterpret_cast<const uint8_t*>(envelope.data()), envelope.size());
-    file.close();
-    if (written != envelope.size()) {
+    const std::uint32_t expected = CourseStore::crc32(json);
+    char header[24];
+    const int headerLen = std::snprintf(header, sizeof(header), "CRC32 %08lx\n",
+                                        static_cast<unsigned long>(expected));
+    if (headerLen <= 0 ||
+        file.write(reinterpret_cast<const uint8_t*>(header),
+                   static_cast<std::size_t>(headerLen)) !=
+            static_cast<std::size_t>(headerLen)) {
+        file.close();
         LittleFS.remove(path.c_str());
         error = "short write to " + path;
         return false;
     }
-    std::string check;
-    if (!readFileWithCrc(path, check, error)) {
-        LittleFS.remove(path.c_str());
-        return false;
+    for (std::size_t offset = 0; offset < json.size(); offset += kIoChunk) {
+        const std::size_t count =
+            (json.size() - offset < kIoChunk) ? (json.size() - offset) : kIoChunk;
+        if (file.write(reinterpret_cast<const uint8_t*>(json.data() + offset), count) !=
+            count) {
+            file.close();
+            LittleFS.remove(path.c_str());
+            error = "short write to " + path;
+            return false;
+        }
     }
-    if (check != json) {
+    file.close();
+
+    if (!verifyFileStreamed(path, expected, json.size(), error)) {
         LittleFS.remove(path.c_str());
-        error = "verification mismatch for " + path;
         return false;
     }
     return true;
@@ -446,16 +521,31 @@ private:
     }
 };
 
-// Process-wide template set of exactly one generation. `loaded` is set only
-// after a complete successful load; every failure path clears the entries, so
-// a stale or partial set can never be served.
-struct TemplateCacheState {
+// One loaded template set, tagged with the generation it belongs to. `loaded`
+// is only true after a complete successful load.
+struct TemplateSet {
     std::uint32_t generation;
     bool loaded;
     std::size_t events;
     std::map<std::string, std::vector<course::Event> > items;
 
-    TemplateCacheState() : generation(0), loaded(false), events(0) {}
+    TemplateSet() : generation(0), loaded(false), events(0) {}
+
+    void clear() {
+        generation = 0;
+        loaded = false;
+        events = 0;
+        items.clear();
+    }
+};
+
+// Two slots. The active slot belongs to the generation the scheduler is
+// executing and is never evicted by editor/draft work; the draft slot serves
+// every other generation (validation, browsing, editing a draft). This is what
+// keeps a running schedule alive while the operator looks at another course.
+struct TemplateCacheState {
+    TemplateSet active;
+    TemplateSet draft;
 };
 
 TemplateCacheState& templateCache() {
@@ -464,11 +554,26 @@ TemplateCacheState& templateCache() {
 }
 
 void clearTemplateCache() {
-    TemplateCacheState& cache = templateCache();
-    cache.generation = 0;
-    cache.loaded = false;
-    cache.events = 0;
-    cache.items.clear();
+    templateCache().active.clear();
+    templateCache().draft.clear();
+}
+
+// The set used by the cache accessors: the active one when present.
+const TemplateSet* activeOrDraftSet() {
+    const TemplateCacheState& cache = templateCache();
+    if (cache.active.loaded) return &cache.active;
+    if (cache.draft.loaded) return &cache.draft;
+    return nullptr;
+}
+
+// The set belonging to `generation`, or null. A set from another generation is
+// never returned, so a stale entry cannot be served.
+const TemplateSet* findTemplateSet(std::uint32_t generation) {
+    const TemplateCacheState& cache = templateCache();
+    if (generation == 0) return nullptr;
+    if (cache.active.loaded && cache.active.generation == generation) return &cache.active;
+    if (cache.draft.loaded && cache.draft.generation == generation) return &cache.draft;
+    return nullptr;
 }
 
 bool loadTemplateFile(std::uint32_t generation,
@@ -491,34 +596,21 @@ bool loadTemplateFile(std::uint32_t generation,
             error = "duplicate template: " + slice.name;
             return false;
         }
-        std::string wrapped;
-        wrapped.reserve(slice.length + 192);
-        wrapped += "{\"format\":\"gong-course\",\"version\":2,\"templates\":{\"";
-        wrapped += escapeText(slice.name);
-        wrapped += "\":";
-        wrapped.append(raw, slice.begin, slice.length);
-        wrapped += "},\"days\":[{\"template\":\"";
-        wrapped += escapeText(slice.name);
-        wrapped += "\"}]}";
-
-        course::Course one;
+        // Parse the body event by event: peak RAM is one event (~5 KB for a
+        // 32-event template) instead of the ~82 KB the whole-array tree needs.
+        std::vector<course::Event> parsedEvents;
         std::string parseError;
-        if (!course::fromJson(wrapped, one, parseError)) {
+        if (!course::parseEventArrayBounded(raw.data() + slice.begin, slice.length,
+                                            parsedEvents, parseError)) {
             error = "template " + slice.name + ": " + parseError;
             return false;
         }
-        std::map<std::string, std::vector<course::Event> >::const_iterator it =
-            one.templates.find(slice.name);
-        if (it == one.templates.end()) {
-            error = "template " + slice.name + ": missing after parse";
-            return false;
-        }
-        events += it->second.size();
+        events += parsedEvents.size();
         if (events > CourseStore::kMaxTemplateEvents) {
             error = "too many template events";
             return false;
         }
-        parsed[slice.name] = it->second;
+        parsed[slice.name] = parsedEvents;
     }
     out.swap(parsed);
     totalEvents = events;
@@ -1041,13 +1133,13 @@ bool CourseStore::loadDay(std::uint32_t generation, std::uint8_t day,
             error = "day has neither template nor events";
             return false;
         }
-        if (!templatesReady(generation)) {
+        const TemplateSet* set = findTemplateSet(generation);
+        if (set == nullptr) {
             error = "templates for generation " + std::to_string(generation) +
                     " are not loaded";
             return false;
         }
-        const std::map<std::string, std::vector<course::Event> >& items =
-            templateCache().items;
+        const std::map<std::string, std::vector<course::Event> >& items = set->items;
         std::map<std::string, std::vector<course::Event> >::const_iterator it =
             items.find(resolved.templateName);
         if (it == items.end()) {
@@ -1476,7 +1568,8 @@ bool CourseStore::deleteGeneration(std::uint32_t generation,
     LittleFS.remove((tpl + ".json").c_str());
     LittleFS.remove((tpl + ".tmp").c_str());
     LittleFS.remove((tpl + ".bak").c_str());
-    if (templateCache().generation == generation) clearTemplateCache();
+    if (templateCache().active.generation == generation) templateCache().active.clear();
+    if (templateCache().draft.generation == generation) templateCache().draft.clear();
     return true;
 }
 
@@ -1571,6 +1664,89 @@ bool CourseStore::recover(std::string& error) {
                               error);
 }
 
+namespace {
+
+// Replaces writeFileWithCrc() for content that only exists as byte ranges in a
+// caller-owned buffer (the import stream). The CRC is computed in a first pass
+// over the same ranges, so nothing proportional to the file is allocated.
+bool writePartsStreamed(const std::string& base, const CourseStore::RawPart* parts,
+                        std::size_t count, std::string& error) {
+    const std::string path = base + ".json";
+    const std::string tmp = base + ".tmp";
+    const std::string bak = base + ".bak";
+
+    std::uint32_t crc = 0xFFFFFFFFu;
+    std::size_t total = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        crc = crc32Update(crc, parts[i].data, parts[i].size);
+        total += parts[i].size;
+    }
+    const std::uint32_t stored = ~crc;
+
+    File file = LittleFS.open(tmp.c_str(), "w");
+    if (!file) {
+        error = "cannot create " + tmp;
+        return false;
+    }
+    char header[24];
+    const int headerLen = std::snprintf(header, sizeof(header), "CRC32 %08lx\n",
+                                        static_cast<unsigned long>(stored));
+    bool ok = headerLen > 0 &&
+              file.write(reinterpret_cast<const uint8_t*>(header),
+                         static_cast<std::size_t>(headerLen)) ==
+                  static_cast<std::size_t>(headerLen);
+    for (std::size_t i = 0; ok && i < count; ++i) {
+        ok = file.write(reinterpret_cast<const uint8_t*>(parts[i].data), parts[i].size) ==
+             parts[i].size;
+    }
+    file.close();
+    if (!ok) {
+        LittleFS.remove(tmp.c_str());
+        error = "short write to " + tmp;
+        return false;
+    }
+
+    if (LittleFS.exists(path.c_str())) {
+        if (LittleFS.exists(bak.c_str())) LittleFS.remove(bak.c_str());
+        if (!LittleFS.rename(path.c_str(), bak.c_str())) {
+            LittleFS.remove(tmp.c_str());
+            error = "cannot back up " + path;
+            return false;
+        }
+    }
+    if (!LittleFS.rename(tmp.c_str(), path.c_str())) {
+        if (LittleFS.exists(bak.c_str())) LittleFS.rename(bak.c_str(), path.c_str());
+        error = "cannot publish " + path;
+        return false;
+    }
+    LittleFS.remove(bak.c_str());
+
+    if (!verifyFileStreamed(path, stored, total, error)) {
+        LittleFS.remove(path.c_str());
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+bool CourseStore::writeTemplatesParts(std::uint32_t generation, const RawPart* parts,
+                                      std::size_t count, std::string& error) {
+    error.clear();
+    if (generation == 0) {
+        error = "invalid generation";
+        return false;
+    }
+    if (parts == nullptr || count == 0) {
+        error = "no template fragments";
+        return false;
+    }
+    ensureGenerationDir(generation);
+    if (!writePartsStreamed(templateBase(generation), parts, count, error)) return false;
+    invalidateTemplates();
+    return true;
+}
+
 bool CourseStore::writeTemplates(
     std::uint32_t generation,
     const std::map<std::string, std::vector<course::Event> >& templates,
@@ -1610,61 +1786,84 @@ bool CourseStore::writeTemplates(
     return true;
 }
 
-bool CourseStore::prepareTemplates(std::uint32_t generation, std::string& error) {
-    error.clear();
-    TemplateCacheState& cache = templateCache();
-    if (generation == 0) {
-        clearTemplateCache();
-        error = "invalid generation";
-        return false;
-    }
-    if (cache.loaded && cache.generation == generation) return true;
+namespace {
 
-    // Any other generation drops the previous entries first, so a failed load
-    // below can never leave the previous generation's templates addressable.
-    clearTemplateCache();
-
+// Loads the template set of `generation` into `slot`. On any error the slot is
+// left empty, so a partial or foreign set can never be served.
+bool loadIntoSlot(CourseStore& store, std::uint32_t generation, TemplateSet& slot,
+                  std::string& error) {
+    slot.clear();
     CourseMeta meta;
-    if (!loadMeta(generation, meta, error)) return false;
+    if (!store.loadMeta(generation, meta, error)) return false;
     if (meta.layout != kLayoutTemplates) {
-        // Expanded generation: there is nothing to resolve, but the marker is
-        // still recorded so loadDay() can tell "no templates required".
-        cache.generation = generation;
-        cache.loaded = true;
+        // Expanded generation: nothing to resolve. The marker is still recorded
+        // so loadDay() can tell "no templates required" from "not loaded".
+        slot.generation = generation;
+        slot.loaded = true;
+        slot.events = 0;
         return true;
     }
-
     std::map<std::string, std::vector<course::Event> > items;
     std::size_t events = 0;
     if (!loadTemplateFile(generation, items, events, error)) {
-        clearTemplateCache();
+        slot.clear();
         return false;
     }
-    cache.items.swap(items);
-    cache.events = events;
-    cache.generation = generation;
-    cache.loaded = true;
+    slot.items.swap(items);
+    slot.events = events;
+    slot.generation = generation;
+    slot.loaded = true;
+    return true;
+}
+
+}  // namespace
+
+bool CourseStore::prepareTemplates(std::uint32_t generation, std::string& error) {
+    error.clear();
+    if (generation == 0) {
+        error = "invalid generation";
+        return false;
+    }
+    if (findTemplateSet(generation) != nullptr) return true;
+    // Editor/browsing loads go to the draft slot: the active set is never
+    // evicted, so a running schedule keeps resolving its own templates.
+    return loadIntoSlot(*this, generation, templateCache().draft, error);
+}
+
+bool CourseStore::prepareActiveTemplates(std::uint32_t generation,
+                                         std::string& error) {
+    error.clear();
+    if (generation == 0) {
+        error = "invalid generation";
+        return false;
+    }
+    TemplateCacheState& cache = templateCache();
+    if (cache.active.loaded && cache.active.generation == generation) return true;
+    if (!loadIntoSlot(*this, generation, cache.active, error)) return false;
+    // A draft set of another generation stays where it is; it can no longer
+    // shadow the active one because lookups match on generation.
     return true;
 }
 
 bool CourseStore::templatesReady(std::uint32_t generation) const {
-    const TemplateCacheState& cache = templateCache();
-    return generation != 0 && cache.loaded && cache.generation == generation;
+    return findTemplateSet(generation) != nullptr;
 }
 
 void CourseStore::invalidateTemplates() { clearTemplateCache(); }
 
 std::size_t CourseStore::cachedTemplateCount() const {
-    return templateCache().items.size();
+    const TemplateSet* set = activeOrDraftSet();
+    return set == nullptr ? 0 : set->items.size();
 }
 
 std::size_t CourseStore::cachedTemplateEvents() const {
-    return templateCache().events;
+    const TemplateSet* set = activeOrDraftSet();
+    return set == nullptr ? 0 : set->events;
 }
 
 std::uint32_t CourseStore::cachedTemplateGeneration() const {
-    const TemplateCacheState& cache = templateCache();
-    return cache.loaded ? cache.generation : 0;
+    const TemplateSet* set = activeOrDraftSet();
+    return set == nullptr ? 0 : set->generation;
 }
 
 namespace {

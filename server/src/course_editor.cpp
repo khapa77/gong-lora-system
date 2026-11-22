@@ -130,7 +130,8 @@ public:
 
     // v2 day object: reports whether it references a template and its name.
     // "events" wins over "template", matching parseDayV2() in the model.
-    bool scanDayObject(std::string& templateName, bool& isTemplate, std::string& error) {
+    bool scanDayObject(std::string& templateName, bool& isTemplate, Slice& events,
+                       std::string& error) {
         skipWs();
         if (atEnd() || data_[pos_] != '{') return fail(error, "v2 day must be an object");
         ++pos_;
@@ -146,7 +147,9 @@ public:
                 skipWs();
                 if (key == "events") {
                     sawEvents = true;
+                    events.begin = pos_;
                     if (!skipValue(1, error)) return false;
+                    events.length = pos_ - events.begin;
                 } else if (key == "template") {
                     sawTemplate = true;
                     if (!readString(&name, kMaxTemplateNameBytes, error)) return false;
@@ -516,7 +519,8 @@ std::string escapeJsonText(const std::string& text) {
 
 // Classifies a day slice and, for a template reference, returns its name.
 bool classifyDay(const char* data, const ScannedCourse& doc, std::size_t index,
-                 bool& isTemplate, std::string& templateName, std::string& error) {
+                 bool& isTemplate, std::string& templateName, Slice& events,
+                 std::string& error) {
     const Slice& slice = doc.days[index];
     std::size_t pos = slice.begin;
     const std::size_t end = slice.begin + slice.length;
@@ -532,6 +536,8 @@ bool classifyDay(const char* data, const ScannedCourse& doc, std::size_t index,
     if (doc.version == 1) {
         if (first == '[') {
             isTemplate = false;
+            events.begin = slice.begin;
+            events.length = slice.length;
             return true;
         }
         if (first != '"') {
@@ -547,7 +553,10 @@ bool classifyDay(const char* data, const ScannedCourse& doc, std::size_t index,
         return false;
     }
     Scanner reader(data + slice.begin, slice.length);
-    return reader.scanDayObject(templateName, isTemplate, error);
+    if (!reader.scanDayObject(templateName, isTemplate, events, error)) return false;
+    // The scanner reports positions relative to the day slice.
+    if (events.length > 0) events.begin += slice.begin;
+    return true;
 }
 
 // Wraps one raw slice into the smallest valid course document and parses it
@@ -556,78 +565,74 @@ bool parseDaySlice(const char* data, const ScannedCourse& doc, std::size_t index
                    course::Day& out, std::string& error) {
     bool isTemplate = false;
     std::string templateName;
+    Slice events;
     std::string kindError;
-    if (!classifyDay(data, doc, index, isTemplate, templateName, kindError)) {
+    if (!classifyDay(data, doc, index, isTemplate, templateName, events, kindError)) {
         error = "day " + std::to_string(index) + ": " + kindError;
         return false;
     }
-    const Slice& slice = doc.days[index];
-    const TemplateSlice* tmpl = nullptr;
+    if (!isTemplate && !templateName.empty()) {
+        // A day may not carry both a template name and its own events; the
+        // model rejects that shape and so must the bounded path.
+        error = "day " + std::to_string(index) + ": template day must not carry events";
+        return false;
+    }
     if (isTemplate) {
+        const TemplateSlice* tmpl = nullptr;
         for (std::size_t i = 0; i < doc.templates.size(); ++i) {
-            if (doc.templates[i].name == templateName) { tmpl = &doc.templates[i]; break; }
+            if (doc.templates[i].name == templateName) {
+                tmpl = &doc.templates[i];
+                break;
+            }
         }
-        if (!tmpl) {
+        if (tmpl == nullptr) {
             error = "day " + std::to_string(index) + ": unknown template: " + templateName;
             return false;
         }
+        events.begin = tmpl->body.begin;
+        events.length = tmpl->body.length;
+    } else if (events.length == 0) {
+        // v2 object without an "events" key: nothing to load.
+        error = "day " + std::to_string(index) + ": day has neither template nor events";
+        return false;
     }
 
-    std::string wrapped;
-    wrapped.reserve(slice.length + (tmpl ? tmpl->body.length : 0) + 192);
-    wrapped += "{\"format\":\"gong-course\",\"version\":";
-    wrapped += std::to_string(doc.version);
-    wrapped += ",\"templates\":{";
-    if (tmpl) {
-        wrapped += '"';
-        wrapped += escapeJsonText(tmpl->name);
-        wrapped += "\":";
-        wrapped.append(data + tmpl->body.begin, tmpl->body.length);
-    }
-    wrapped += "},\"days\":[";
-    wrapped.append(data + slice.begin, slice.length);
-    wrapped += "]}";
-
-    course::Course one;
+    // Event by event: a 32-event day peaks around 5 KB instead of the ~82 KB
+    // a whole-day tree needs.
+    std::vector<course::Event> parsed;
     std::string parseError;
-    if (!course::fromJson(wrapped, one, parseError)) {
+    if (!course::parseEventArrayBounded(data + events.begin, events.length, parsed,
+                                        parseError)) {
         error = "day " + std::to_string(index) + ": " + parseError;
         return false;
     }
-    if (one.days.size() != 1) {
-        error = "day " + std::to_string(index) + ": unexpected payload";
-        return false;
-    }
-    // Resolve before moving: resolvedEvents() reads one.days[0].
-    std::vector<course::Event> events;
-    if (!course::resolvedEvents(one, 0, events, parseError)) {
+
+    course::Day day;
+    day.hasOwnEvents = true;
+    day.events.swap(parsed);
+    // Day-level rules (limits, duplicate ids/times) come from the model, so the
+    // bounded path cannot accept something the tree parser would reject.
+    course::Course single;
+    single.name = "day";
+    single.days.push_back(day);
+    if (!course::validate(single, parseError)) {
         error = "day " + std::to_string(index) + ": " + parseError;
         return false;
     }
-    out = std::move(one.days[0]);
-    out.hasOwnEvents = true;
-    out.templateName.clear();
-    out.events = std::move(events);
+    out = std::move(single.days[0]);
     return true;
 }
 
 // Validates a template that may never be referenced, so a broken template is
-// still reported instead of being silently ignored.
+// still reported instead of being silently ignored. Bounded: one event at a
+// time, so a 32-event template no longer needs the ~82 KB tree.
 bool validateTemplate(const char* data, const ScannedCourse& doc, std::size_t index,
                       std::string& error) {
     const TemplateSlice& tmpl = doc.templates[index];
-    std::string wrapped;
-    wrapped.reserve(tmpl.body.length + 160);
-    wrapped += "{\"format\":\"gong-course\",\"version\":2,\"templates\":{\"";
-    wrapped += escapeJsonText(tmpl.name);
-    wrapped += "\":";
-    wrapped.append(data + tmpl.body.begin, tmpl.body.length);
-    wrapped += "},\"days\":[{\"template\":\"";
-    wrapped += escapeJsonText(tmpl.name);
-    wrapped += "\"}]}";
-    course::Course check;
+    std::vector<course::Event> events;
     std::string parseError;
-    if (!course::fromJson(wrapped, check, parseError)) {
+    if (!course::parseEventArrayBounded(data + tmpl.body.begin, tmpl.body.length, events,
+                                        parseError)) {
         error = "template " + tmpl.name + ": " + parseError;
         return false;
     }
@@ -1309,35 +1314,6 @@ static bool importCourseBody(const char* data, std::size_t size, std::string& er
 
 // Parses one template body into its event list. Same wrapper trick as
 // parseDaySlice(): only this template exists in RAM.
-static bool parseTemplateBody(const char* data, const ScannedCourse& doc,
-                              std::size_t index, std::vector<course::Event>& out,
-                              std::string& error) {
-    const TemplateSlice& tmpl = doc.templates[index];
-    std::string wrapped;
-    wrapped.reserve(tmpl.body.length + 160);
-    wrapped += "{\"format\":\"gong-course\",\"version\":2,\"templates\":{\"";
-    wrapped += escapeJsonText(tmpl.name);
-    wrapped += "\":";
-    wrapped.append(data + tmpl.body.begin, tmpl.body.length);
-    wrapped += "},\"days\":[{\"template\":\"";
-    wrapped += escapeJsonText(tmpl.name);
-    wrapped += "\"}]}";
-    course::Course one;
-    std::string parseError;
-    if (!course::fromJson(wrapped, one, parseError)) {
-        error = "template " + tmpl.name + ": " + parseError;
-        return false;
-    }
-    std::map<std::string, std::vector<course::Event> >::const_iterator it =
-        one.templates.find(tmpl.name);
-    if (it == one.templates.end()) {
-        error = "template " + tmpl.name + ": missing after parse";
-        return false;
-    }
-    out = it->second;
-    return true;
-}
-
 // Stage B: stores the referenced templates once and each day as a reference.
 //
 // NOT WIRED INTO THE HTTP HANDLERS ON PURPOSE. A template generation cannot be
@@ -1348,35 +1324,47 @@ static bool importCompactBody(const char* data, std::size_t size, std::string& e
     ScannedCourse doc;
     if (!scanCourse(data, size, doc, error)) return false;
 
-    std::map<std::string, std::vector<course::Event> > used;
     std::vector<bool> isReference(doc.days.size(), false);
     std::vector<std::string> referenceName(doc.days.size());
+    std::vector<const TemplateSlice*> used;
     std::size_t uniqueEvents = 0;
     for (std::size_t i = 0; i < doc.days.size(); ++i) {
         bool reference = false;
         std::string name;
-        if (!classifyDay(data, doc, i, reference, name, error)) return false;
+        Slice dayPayload;
+        if (!classifyDay(data, doc, i, reference, name, dayPayload, error)) return false;
         isReference[i] = reference;
         referenceName[i] = name;
         if (!reference) continue;
-        if (used.find(name) != used.end()) continue;  // occurrences share one copy
-        std::size_t templateIndex = 0;
-        bool found = false;
-        for (std::size_t t = 0; t < doc.templates.size(); ++t) {
-            if (doc.templates[t].name == name) {
-                templateIndex = t;
-                found = true;
+        bool seen = false;
+        for (std::size_t k = 0; k < used.size(); ++k) {
+            if (used[k]->name == name) {
+                seen = true;
                 break;
             }
         }
-        if (!found) {
+        if (seen) continue;  // occurrences share one copy
+        const TemplateSlice* slice = nullptr;
+        for (std::size_t t = 0; t < doc.templates.size(); ++t) {
+            if (doc.templates[t].name == name) {
+                slice = &doc.templates[t];
+                break;
+            }
+        }
+        if (slice == nullptr) {
             error = "day " + std::to_string(i) + ": unknown template: " + name;
             return false;
         }
-        std::vector<course::Event> events;
-        if (!parseTemplateBody(data, doc, templateIndex, events, error)) return false;
         if (used.size() >= course_store::CourseStore::kMaxTemplates) {
             error = "too many templates";
+            return false;
+        }
+        // Bounded validation and counting: one event at a time.
+        std::vector<course::Event> events;
+        std::string parseError;
+        if (!course::parseEventArrayBounded(data + slice->body.begin, slice->body.length,
+                                            events, parseError)) {
+            error = "template " + slice->name + ": " + parseError;
             return false;
         }
         uniqueEvents += events.size();
@@ -1384,7 +1372,7 @@ static bool importCompactBody(const char* data, std::size_t size, std::string& e
             error = "too many template events";
             return false;
         }
-        used[name] = events;
+        used.push_back(slice);
     }
     if (used.empty()) {
         error = "course has no template references";
@@ -1405,7 +1393,46 @@ static bool importCompactBody(const char* data, std::size_t size, std::string& e
     std::uint32_t built = 0;
     if (!store.createGeneration(built, error)) return false;
     std::string ignored;
-    if (!store.writeTemplates(built, used, error)) {
+
+    // templates.json is streamed from the input buffer: no document copy, no
+    // per-template Event vectors, nothing proportional to the course in RAM.
+    static const char kPrefix[] =
+        "{\"format\":\"gong-course-templates\",\"version\":1,\"templates\":{";
+    static const char kSuffix[] = "}}";
+    std::vector<std::string> headParts;
+    headParts.reserve(used.size());
+    std::vector<course_store::CourseStore::RawPart> parts;
+    parts.reserve(used.size() * 2 + 2);
+    course_store::CourseStore::RawPart prefixPart;
+    prefixPart.data = kPrefix;
+    prefixPart.size = sizeof(kPrefix) - 1;
+    parts.push_back(prefixPart);
+    for (std::size_t k = 0; k < used.size(); ++k) {
+        std::string head = "\"";
+        head += escapeJsonText(used[k]->name);
+        head += "\":";
+        headParts.push_back(head);
+        if (k > 0) {
+            course_store::CourseStore::RawPart comma;
+            comma.data = ",";
+            comma.size = 1;
+            parts.push_back(comma);
+        }
+        course_store::CourseStore::RawPart namePart;
+        namePart.data = headParts.back().data();
+        namePart.size = headParts.back().size();
+        parts.push_back(namePart);
+        course_store::CourseStore::RawPart bodyPart;
+        bodyPart.data = data + used[k]->body.begin;
+        bodyPart.size = used[k]->body.length;
+        parts.push_back(bodyPart);
+    }
+    course_store::CourseStore::RawPart suffixPart;
+    suffixPart.data = kSuffix;
+    suffixPart.size = sizeof(kSuffix) - 1;
+    parts.push_back(suffixPart);
+
+    if (!store.writeTemplatesParts(built, parts.data(), parts.size(), error)) {
         store.deleteGeneration(built, ignored);
         return false;
     }
@@ -1432,6 +1459,35 @@ static bool importCompactBody(const char* data, std::size_t size, std::string& e
         return false;
     }
     return commitEditingGeneration(published, built, cal, source, error);
+}
+
+bool importCourseAuto(const char* data, std::size_t size, std::string& error) {
+    error.clear();
+    // The scanner decides the storage layout, not the JSON version: a v1 or v2
+    // document that references templates is stored compactly, a document with
+    // full event lists keeps the historical expanded writer.
+    try {
+        ScannedCourse doc;
+        if (!scanCourse(data, size, doc, error)) return false;
+        for (std::size_t i = 0; i < doc.days.size(); ++i) {
+            bool reference = false;
+            std::string name;
+            Slice payload;
+            if (!classifyDay(data, doc, i, reference, name, payload, error)) return false;
+            if (reference) return importCompactBody(data, size, error);
+        }
+        return importCourseBody(data, size, error);
+    } catch (const std::bad_alloc&) {
+        error = "not enough memory to import this course";
+        return false;
+    } catch (...) {
+        error = "import failed";
+        return false;
+    }
+}
+
+bool importCourseAuto(const std::string& json, std::string& error) {
+    return importCourseAuto(json.data(), json.size(), error);
 }
 
 bool importCourseCompact(const char* data, std::size_t size, std::string& error) {

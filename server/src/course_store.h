@@ -179,10 +179,25 @@ public:
                           std::uint32_t& draftGeneration,
                           CalendarState& outState, std::string& error);
 
+    // A byte range of an existing buffer (no copy is made).
+    struct RawPart {
+        const char* data;
+        std::size_t size;
+    };
+
+    // Writes templates.json by streaming already validated fragments, so an
+    // import never builds the file in RAM. CRC is computed over the same
+    // ranges in a first pass and the result is verified by re-reading.
+    bool writeTemplatesParts(std::uint32_t generation, const RawPart* parts,
+                             std::size_t count, std::string& error);
+
     // Loads the template set of `generation` into the cache. Returns true and
     // leaves the cache usable only on complete success. A different generation
     // always invalidates the previous entries first.
     bool prepareTemplates(std::uint32_t generation, std::string& error);
+    // Loads into the *active* slot (boot / Apply / Activate). The active set is
+    // never evicted by editor or validation work.
+    bool prepareActiveTemplates(std::uint32_t generation, std::string& error);
     bool templatesReady(std::uint32_t generation) const;
     void invalidateTemplates();
     std::size_t cachedTemplateCount() const;

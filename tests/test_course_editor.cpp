@@ -1744,6 +1744,80 @@ void testCompactExportLengths() {
     }
 }
 
+// Stage E: the operational import picks the layout, and validation of a
+// maximum-size template course stays inside a device-sized heap.
+void testAutoImportLayout() {
+    resetHost();
+    std::string error;
+    // Template document -> compact generation.
+    const std::string templated = compactCourseJsonV1(14, 3, 8);
+    check(course_editor::importCourseAuto(templated, error),
+          "auto import of a template course failed: " + error);
+    course_store::CourseStore store;
+    const std::uint32_t draft = store.loadBootstrapGeneration();
+    course_store::CourseMeta meta;
+    check(store.loadMeta(draft, meta, error), "meta: " + error);
+    check(meta.layout == course_store::kLayoutTemplates,
+          "a template document must be stored compactly");
+    check(host::files().find("/course/g" + std::to_string(draft) + "/templates.json") !=
+              host::files().end(),
+          "compact storage wrote no templates.json");
+
+    // Full-event document -> expanded generation (unchanged behaviour).
+    resetHost();
+    const std::string expanded = bigCourseJsonV2(4, 5, "full events");
+    check(course_editor::importCourseAuto(expanded, error),
+          "auto import of a full-event course failed: " + error);
+    course_store::CourseStore store2;
+    const std::uint32_t draft2 = store2.loadBootstrapGeneration();
+    course_store::CourseMeta meta2;
+    check(store2.loadMeta(draft2, meta2, error), "meta2: " + error);
+    check(meta2.layout == course_store::kLayoutExpanded,
+          "a full-event document must keep the expanded layout");
+    check(host::files().find("/course/g" + std::to_string(draft2) + "/templates.json") ==
+              host::files().end(),
+          "expanded storage wrote a templates file");
+}
+
+void testTemplateValidationFitsDeviceHeap() {
+#ifndef HOST_SANITIZED
+    resetHost();
+    // 47 days, 8 templates x 32 events = 256 unique events, 1 504 occurrences.
+    std::string doc = "{\"format\":\"gong-course\",\"version\":1,\"name\":\"big\",\"templates\":{";
+    for (int t = 0; t < 8; ++t) {
+        if (t) doc += ',';
+        doc += "\"t" + std::to_string(t) + "\":[";
+        for (int e = 0; e < 32; ++e) {
+            if (e) doc += ',';
+            doc += "{\"id\":" + std::to_string(e + 1) + ",\"hour\":" +
+                   std::to_string(5 + e % 18) + ",\"min\":" + std::to_string((e * 2) % 60) +
+                   ",\"track\":1,\"loop\":1,\"vol\":20,\"en\":true,\"desc\":\"Практика " +
+                   std::to_string(t) + "-" + std::to_string(e) + "\"}";
+        }
+        doc += "]";
+    }
+    doc += "},\"days\":[";
+    for (int d = 0; d < 47; ++d) {
+        if (d) doc += ',';
+        doc += "\"t" + std::to_string(d % 8) + "\"";
+    }
+    doc += "]}";
+
+    course_editor::Inspection inspection;
+    std::string error;
+    host::heapBudgetReset(64 * 1024);
+    const bool ok = course_editor::inspectCourse(doc, inspection, error);
+    const std::size_t peak = host::heapBudget().peak;
+    host::heapBudgetReset(0);
+    std::cout << "  template validation peak=" << peak / 1024 << "KB doc=" << doc.size()
+              << "B\n";
+    check(ok, "validation under a device-sized heap failed: " + error);
+    check(inspection.length == 47, "validation length");
+    check(inspection.events == 1504, "validation event count");
+    check(peak < 32 * 1024, "validation peak is still too high for the device");
+#endif
+}
+
 int main() {
     runGroup("empty store", testEmptyStore);
     runGroup("initial reference course", testInitialReferenceCourse);
@@ -1780,6 +1854,9 @@ int main() {
     runGroup("expanded export unchanged", testExpandedExportUnchanged);
     runGroup("compact export lengths", testCompactExportLengths);
     runGroup("compact export memory", testCompactExportMemory);
+    runGroup("auto import layout", testAutoImportLayout);
+    runGroup("template validation fits device heap",
+             testTemplateValidationFitsDeviceHeap);
     runGroup("operator sized course", testOperatorSizedCourse);
     runGroup("heap budget", testHeapBudget);
     runGroup("published course ignores bootstrap", testPublishedCourseIgnoresBootstrap);

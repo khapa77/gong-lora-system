@@ -196,6 +196,13 @@ static bool courseEnsureTemplates() {
 static bool courseLoadDay(uint8_t day, course::Day& out) {
     if (courseGeneration == 0 || day >= courseLength) return false;
     std::string err;
+    // Boot, Activate, the midnight advance and recovery all end up here: the
+    // templates of the generation being executed must be in the active slot,
+    // never a draft's set.
+    if (!courseStore.prepareActiveTemplates(courseGeneration, err)) {
+        logPrintf("[COURSE] templates unavailable: %s\n", err.c_str());
+        return false;
+    }
     if (!courseStore.loadDay(courseGeneration, day, out, err)) {
         logPrintf("[COURSE] load day %u failed: %s\n", (unsigned)day, err.c_str());
         return false;
@@ -422,6 +429,12 @@ static bool courseActivate(uint8_t day) {
     mp3_stop();
     if (schedPendingSave) courseSaveActiveEntries();
     std::string err;
+    // The generation must resolve completely through its OWN template set
+    // before any day is bound.
+    if (!courseStore.prepareActiveTemplates(courseGeneration, err)) {
+        courseSuspend("templates unavailable", emergency::kActivateFailed);
+        return false;
+    }
     if (!courseStore.validateGeneration(courseGeneration, courseLength, err)) {
         courseSuspend("generation validation failed", emergency::kGenerationInvalid);
         return false;
@@ -482,6 +495,10 @@ static bool courseRecoveryCheck() {
     if (cal.active_generation == 0 || cal.course_length == 0) return false;
     if (!(cal.flags & course_store::kApplied)) return false;
     if (cal.activation_date < 19700101u) return false;
+    if (!courseStore.prepareActiveTemplates(cal.active_generation, err)) {
+        logPrintf("[COURSE] recovery: templates unavailable: %s\n", err.c_str());
+        return false;
+    }
     if (!courseStore.validateGeneration(cal.active_generation, cal.course_length, err)) {
         logPrintf("[COURSE] recovery: generation invalid: %s\n", err.c_str());
         return false;
@@ -1749,7 +1766,11 @@ bool sched_courseRename(const String& name) {
 bool sched_courseImport(const String& json) {
     schedCourseError = "";
     std::string err;
-    if (!course_editor::importCourse(json.c_str(), json.length(), err)) return courseFail(err);
+    // Layout-aware: template documents are stored compactly, full-event
+    // documents keep the expanded layout.
+    if (!course_editor::importCourseAuto(json.c_str(), json.length(), err)) {
+        return courseFail(err);
+    }
     courseReloadCalendar();
     return true;
 }
@@ -1786,6 +1807,16 @@ bool sched_courseApply() {
     activeDay = -1;
     activeDate = "";
     sys_unlock();
+    // Preload: the operator may Activate immediately. A failure here is not
+    // fatal for Apply (the course is published), but Activate and boot will
+    // refuse to run until the set can be loaded.
+    {
+        std::string tplError;
+        if (!courseStore.prepareActiveTemplates(courseGeneration, tplError)) {
+            logPrintf("[COURSE] applied generation templates unavailable: %s\n",
+                      tplError.c_str());
+        }
+    }
     logPrintf("[COURSE] draft applied: generation %u, %u days\n",
               (unsigned)courseGeneration, (unsigned)courseLength);
     return true;

@@ -83,6 +83,12 @@ bool renameCourse(const std::string& name, std::string& error);
 // scheduler cannot execute a template generation until stage E loads the
 // template cache at boot / Apply / Activate, so the operational import keeps
 // using the expanded writer above.
+// Stage E: the operational import. Chooses the compact writer when the document
+// actually uses template references, otherwise keeps the expanded writer (v2
+// compatibility). This is what the HTTP handler calls.
+bool importCourseAuto(const char* data, std::size_t size, std::string& error);
+bool importCourseAuto(const std::string& json, std::string& error);
+
 bool importCourseCompact(const char* data, std::size_t size, std::string& error);
 bool importCourseCompact(const std::string& json, std::string& error);
 

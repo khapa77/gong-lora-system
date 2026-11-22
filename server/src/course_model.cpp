@@ -848,6 +848,193 @@ bool setEventEnabled(Course& course, std::size_t dayIndex, std::uint32_t id,
     return fail(error, "event id not found");
 }
 
+// ── Bounded event-array parsing ────────────────────────────────────────────
+// The ESP32 has no PSRAM: parsing a 32-event array into the tree costs ~78 KB
+// (measured), which does not fit the largest free block of a device running
+// WiFi. This cursor slices the array element by element and parses each element
+// through the normal parser, so the peak is one event plus the event list.
+namespace {
+
+class SliceCursor {
+public:
+    SliceCursor(const char* data, std::size_t size) : data_(data), size_(size), pos_(0) {}
+
+    void skipWs() {
+        while (pos_ < size_) {
+            const char c = data_[pos_];
+            if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+                ++pos_;
+            } else {
+                break;
+            }
+        }
+    }
+    std::size_t position() const { return pos_; }
+    bool atEnd() { skipWs(); return pos_ >= size_; }
+    char peek() { skipWs(); return pos_ < size_ ? data_[pos_] : '\0'; }
+    void advance() { ++pos_; }
+
+    bool expect(char c, std::string& error) {
+        skipWs();
+        if (pos_ >= size_ || data_[pos_] != c) {
+            error = std::string("expected '") + c + "' at byte " + std::to_string(pos_);
+            return false;
+        }
+        ++pos_;
+        return true;
+    }
+
+    // Walks one JSON value without building anything.
+    bool skipValue(int depth, std::string& error) {
+        if (depth > kMaxJsonDepth) return fail(error, "JSON nesting too deep");
+        skipWs();
+        if (pos_ >= size_) return fail(error, "unexpected end of JSON");
+        const char c = data_[pos_];
+        if (c == '"') return skipString(error);
+        if (c == '{') return skipContainer('}', depth, error);
+        if (c == '[') return skipContainer(']', depth, error);
+        if (c == 't' || c == 'f' || c == 'n') {
+            const char* literal = (c == 't') ? "true" : (c == 'f') ? "false" : "null";
+            const std::size_t len = std::strlen(literal);
+            if (size_ - pos_ < len || std::strncmp(data_ + pos_, literal, len) != 0) {
+                return fail(error, "invalid JSON literal");
+            }
+            pos_ += len;
+            return true;
+        }
+        return skipNumber(error);
+    }
+
+private:
+    const char* data_;
+    std::size_t size_;
+    std::size_t pos_;
+
+    bool fail(std::string& error, const char* what) {
+        error = std::string(what) + " at byte " + std::to_string(pos_);
+        return false;
+    }
+
+    bool skipString(std::string& error) {
+        ++pos_;  // opening quote
+        while (pos_ < size_) {
+            const char c = data_[pos_++];
+            if (c == '"') return true;
+            if (static_cast<unsigned char>(c) < 0x20) {
+                return fail(error, "control character in string");
+            }
+            if (c != '\\') continue;
+            if (pos_ >= size_) return fail(error, "unterminated escape");
+            const char esc = data_[pos_++];
+            if (esc == 'u') {
+                if (size_ - pos_ < 4) return fail(error, "truncated \\u escape");
+                for (int i = 0; i < 4; ++i) {
+                    const char h = data_[pos_++];
+                    const bool hex = (h >= '0' && h <= '9') || (h >= 'a' && h <= 'f') ||
+                                     (h >= 'A' && h <= 'F');
+                    if (!hex) return fail(error, "bad \\u escape");
+                }
+            } else if (esc != '"' && esc != '\\' && esc != '/' && esc != 'b' && esc != 'f' &&
+                       esc != 'n' && esc != 'r' && esc != 't') {
+                return fail(error, "bad escape");
+            }
+        }
+        return fail(error, "unterminated string");
+    }
+
+    bool skipNumber(std::string& error) {
+        const std::size_t begin = pos_;
+        if (pos_ < size_ && (data_[pos_] == '-' || data_[pos_] == '+')) ++pos_;
+        bool digits = false;
+        while (pos_ < size_ && data_[pos_] >= '0' && data_[pos_] <= '9') { ++pos_; digits = true; }
+        if (pos_ < size_ && data_[pos_] == '.') {
+            ++pos_;
+            while (pos_ < size_ && data_[pos_] >= '0' && data_[pos_] <= '9') { ++pos_; digits = true; }
+        }
+        if (pos_ < size_ && (data_[pos_] == 'e' || data_[pos_] == 'E')) {
+            ++pos_;
+            if (pos_ < size_ && (data_[pos_] == '-' || data_[pos_] == '+')) ++pos_;
+            while (pos_ < size_ && data_[pos_] >= '0' && data_[pos_] <= '9') { ++pos_; }
+        }
+        if (!digits) {
+            pos_ = begin;
+            return fail(error, "expected a number");
+        }
+        return true;
+    }
+
+    bool skipContainer(char close, int depth, std::string& error) {
+        ++pos_;  // opening brace/bracket
+        skipWs();
+        if (pos_ < size_ && data_[pos_] == close) {
+            ++pos_;
+            return true;
+        }
+        for (;;) {
+            if (close == '}') {
+                if (peek() != '"') return fail(error, "expected an object key");
+                if (!skipString(error)) return false;
+                if (!expect(':', error)) return false;
+            }
+            if (!skipValue(depth + 1, error)) return false;
+            skipWs();
+            if (pos_ < size_ && data_[pos_] == ',') {
+                ++pos_;
+                continue;
+            }
+            break;
+        }
+        return expect(close, error);
+    }
+};
+
+}  // namespace
+
+bool parseEventArrayBounded(const char* data, std::size_t size,
+                            std::vector<Event>& events, std::string& error) {
+    error.clear();
+    events.clear();
+    if (data == nullptr || size == 0) {
+        error = "empty events array";
+        return false;
+    }
+    SliceCursor cursor(data, size);
+    if (!cursor.expect('[', error)) return false;
+    if (cursor.peek() == ']') {
+        cursor.advance();
+    } else {
+        for (;;) {
+            cursor.skipWs();
+            const std::size_t begin = cursor.position();
+            if (!cursor.skipValue(1, error)) return false;
+            const std::size_t end = cursor.position();
+            if (events.size() >= kMaxEventsPerDay) {
+                return fail(error, "too many events in one day");
+            }
+            // Only one event exists in RAM at a time. The wrapper text is tiny
+            // (bounded by the event itself) and goes straight into the parser.
+            std::string text(data + begin, end - begin);
+            JsonValue value;
+            JsonParser parser(text);
+            if (!parser.parse(value, error)) return false;
+            Event event;
+            if (!parseEvent(value, event, error)) return false;
+            events.push_back(event);
+            cursor.skipWs();
+            if (cursor.peek() == ',') {
+                cursor.advance();
+                continue;
+            }
+            break;
+        }
+        if (!cursor.expect(']', error)) return false;
+    }
+    if (!cursor.atEnd()) return fail(error, "trailing characters after the events array");
+    // Same id assignment and duplicate/limit rules as the tree parser.
+    if (!assignMissingIds(events, error)) return false;
+    return validateEventList(events, error);
+}
+
 bool fromJsonImpl(const std::string& json, Course& out, bool allowUnresolvedTemplates,
                   std::string& error) {
     JsonValue root;

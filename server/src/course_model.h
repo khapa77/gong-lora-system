@@ -111,6 +111,13 @@ bool fromJson(const std::string& json, Course& out, std::string& error);
 // The Web GUI reports which format a file uses before importing it; fromJson()
 // stays the single validating parser.
 bool formatVersion(const std::string& json, int& out, std::string& error);
+// Parses a raw JSON array of events one element at a time. Peak RAM is one
+// event plus the resulting list, so a 32-event day no longer needs the ~78 KB
+// tree the whole-document parser builds. Same rules and id assignment as the
+// course parser.
+bool parseEventArrayBounded(const char* data, std::size_t size,
+                            std::vector<Event>& events, std::string& error);
+
 // Parses a single-day (or full) document that may reference a template
 // without resolving it. Structural and event validation still apply; only the
 // "unknown template" check is skipped. Used by course_store::loadDay(), which
