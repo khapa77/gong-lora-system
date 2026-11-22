@@ -453,6 +453,84 @@ static void test_event_fires_at_time() {
     check(audioCalls == 1, "event fired at 04:00");
 }
 
+// The course length comes only from the JSON: 10 and 20 days must wrap to 00
+// with no special rules for the last day.
+static void test_wrap_10_day_course() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22);
+    check(applyCourse(makeCourse(10)), "apply 10-day course");
+    sched_setup();
+    check(sched_activateDay(9), "activate day 9 of 10");
+    host::clock() = atDate(2026, 11, 23, 3, 0);
+    sched_check();
+    check(activeDay == 0, "10-day course wraps 09 -> 00");
+    check(entries[0].description == "day0", "day 0 published after the wrap");
+}
+
+static void test_wrap_20_day_course() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22);
+    check(applyCourse(makeCourse(20)), "apply 20-day course");
+    sched_setup();
+    check(sched_activateDay(19), "activate day 19 of 20");
+    host::clock() = atDate(2026, 11, 23, 3, 0);
+    sched_check();
+    check(activeDay == 0, "20-day course wraps 19 -> 00");
+}
+
+// A reboot in the middle of a course keeps the bound day, and the cyclic index
+// still follows the activation date afterwards.
+static void test_reboot_midcourse_keeps_day() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 12, 0);
+    check(applyCourse(makeCourse(20)), "apply 20-day course");
+    sched_setup();
+    check(sched_activateDay(7), "activate day 7");
+    reboot();
+    check(courseMode && courseRunning, "course resumed after the reboot");
+    check(activeDay == 7, "mid-course day kept across the reboot");
+    host::clock() = atDate(2026, 11, 25, 3, 0);
+    sched_check();
+    check(activeDay == 10, "7 + 3 civil days = day 10");
+}
+
+static std::string courseJsonV2(int days) {
+    std::string error;
+    return course::toJsonV2(makeCourse(days), true, error);
+}
+
+// Replacing the course through the GUI path (validate -> import -> apply) must
+// not auto-activate, and the new length drives the day cycle.
+static void test_replace_course_different_length() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 3, 0);
+    check(applyCourse(makeCourse(14)), "apply initial 14-day course");
+    sched_setup();
+    check(sched_activateDay(5), "activate day 5 of 14");
+    check(audioCalls == 0, "activation itself does not ring");
+
+    const std::string json = courseJsonV2(20);
+    course_editor::Inspection inspection;
+    std::string err;
+    check(course_editor::inspectCourse(json, inspection, err), "validate 20-day JSON");
+    check(inspection.length == 20, "validation reports 20 days");
+    check(course_editor::importCourse(json, err), "import 20-day course");
+    check(course_editor::applyDraft(err), "apply 20-day course");
+    check(sched_courseApply(), "scheduler republished the draft");
+    check(courseMode && !courseRunning, "replaced course is APPLIED, not running");
+    check(activeDay == -1, "no active day after the replacement");
+    host::clock() = atDate(2026, 11, 23, 4, 0);
+    sched_check();
+    check(audioCalls == 0, "replaced course did not ring before Activate");
+
+    check(sched_activateDay(19), "activate day 19 of the new 20-day course");
+    check(courseLength == 20, "new course length is 20");
+    check(activeDay == 19, "day 19 bound");
+    host::clock() = atDate(2026, 11, 24, 3, 0);
+    sched_check();
+    check(activeDay == 0, "new 20-day course wraps 19 -> 00");
+}
+
 // ---- runner --------------------------------------------------------------
 struct TestCase { const char* name; void (*fn)(); };
 
@@ -478,6 +556,10 @@ int main() {
         {"last_fire_separate_key", test_last_fire_separate_key},
         {"47_day_simulation", test_47_day_simulation},
         {"event_fires_at_time", test_event_fires_at_time},
+        {"wrap_10_day_course", test_wrap_10_day_course},
+        {"wrap_20_day_course", test_wrap_20_day_course},
+        {"reboot_midcourse_keeps_day", test_reboot_midcourse_keeps_day},
+        {"replace_course_different_length", test_replace_course_different_length},
     };
     for (const TestCase& t : tests) {
         const int before = failures;

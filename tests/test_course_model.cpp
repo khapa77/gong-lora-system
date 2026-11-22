@@ -529,6 +529,30 @@ void template_copy_on_write() {
     check(resolved[0].description == "Wake-up", "day 2 sees original template");
 }
 
+// formatVersion() is what the Web GUI reports before importing a file: it must
+// read v1/v2 and reject anything else without parsing the days.
+void json_format_version() {
+    int version = 0;
+    std::string error;
+    check(course::formatVersion("{\"format\":\"gong-course\",\"version\":1,\"days\":[]}",
+                                version, error) && version == 1,
+          "v1 version detected");
+    check(course::formatVersion("{\"format\":\"gong-course\",\"version\":2,\"days\":[]}",
+                                version, error) && version == 2,
+          "v2 version detected");
+    version = 0;
+    check(!course::formatVersion("{\"format\":\"gong-course\",\"version\":3,\"days\":[]}",
+                                 version, error),
+          "unknown version rejected");
+    check(!course::formatVersion("{\"format\":\"other\",\"version\":1}", version, error),
+          "foreign format rejected");
+    check(!course::formatVersion("{\"version\":1}", version, error), "missing format rejected");
+    check(!course::formatVersion("{\"format\":\"gong-course\"}", version, error),
+          "missing version rejected");
+    check(!course::formatVersion("[]", version, error), "array root rejected");
+    check(!course::formatVersion("{bad", version, error), "broken JSON rejected");
+}
+
 }  // namespace
 
 int main() {
@@ -555,6 +579,7 @@ int main() {
     runGroup("simulate_47_days", simulate_47_days);
     runGroup("validation_errors", validation_errors);
     runGroup("template_copy_on_write", template_copy_on_write);
+    runGroup("json_format_version", json_format_version);
 
     std::cout << "SUMMARY pass=" << g_pass << " fail=" << g_fail << "\n";
     return g_fail == 0 ? 0 : 1;

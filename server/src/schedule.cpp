@@ -1750,10 +1750,25 @@ bool sched_courseApply() {
     return true;
 }
 
-bool sched_courseExportBegin() {
+bool sched_courseInspect(const String& json, uint8_t& days, uint16_t& events,
+                         uint8_t& version, String& name) {
+    schedCourseError = "";
+    course_editor::Inspection inspection;
+    std::string err;
+    if (!course_editor::inspectCourse(json.c_str(), inspection, err)) return courseFail(err);
+    days = inspection.length;
+    events = inspection.events;
+    version = inspection.version;
+    name = inspection.name.c_str();
+    return true;
+}
+
+bool sched_courseExportBegin(bool activeOnly) {
     schedCourseError = "";
     std::string err;
-    if (!course_editor::beginExport(err)) return courseFail(err);
+    const course_editor::ExportSource source =
+        activeOnly ? course_editor::kExportActive : course_editor::kExportDraft;
+    if (!course_editor::beginExport(source, err)) return courseFail(err);
     return true;
 }
 

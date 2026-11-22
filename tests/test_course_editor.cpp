@@ -313,7 +313,7 @@ void testExport() {
     resetHost();
     std::string error;
     check(course_editor::ensureInitialCourse(error), "course published");
-    check(course_editor::beginExport(error), "export begins");
+    check(course_editor::beginExport(course_editor::kExportDraft, error), "export begins");
     std::string document;
     bool done = false;
     int chunks = 0;
@@ -485,7 +485,7 @@ void testExportFault() {
     check(course_editor::ensureInitialCourse(error), "course published");
     course_editor::Info info;
     check(course_editor::info(info, error), "info after publish");
-    check(course_editor::beginExport(error), "export begins");
+    check(course_editor::beginExport(course_editor::kExportDraft, error), "export begins");
 
     std::string chunk;
     bool done = false;
@@ -506,7 +506,7 @@ void testExportFault() {
     course_editor::Info after;
     check(course_editor::info(after, error), "course still readable after the aborted export");
     check(after.activeGeneration == info.activeGeneration, "export did not change the course");
-    check(course_editor::beginExport(error), "a new export can start after an abort");
+    check(course_editor::beginExport(course_editor::kExportDraft, error), "a new export can start after an abort");
 }
 
 bool hasCalendar() {
@@ -753,6 +753,151 @@ void testBootstrapNvsKey() {
     check(host::nvs().visible.count("gong/crs_boot") == 0, "pointer cleared after apply");
 }
 
+// Minimal v1 course JSON with `days` calendar days, one event each.
+std::string daysJsonV1(int days, const std::string& name) {
+    std::string json = "{\"format\":\"gong-course\",\"version\":1,\"name\":\"" + name + "\",\"days\":[";
+    for (int i = 0; i < days; ++i) {
+        if (i) json += ',';
+        json += "[{\"id\":1,\"hour\":4,\"min\":" + std::to_string(i % 60) +
+                ",\"track\":1,\"loop\":1,\"vol\":5,\"en\":true,\"desc\":\"d" +
+                std::to_string(i) + "\"}]";
+    }
+    json += "]}";
+    return json;
+}
+
+std::string exportToString(course_editor::ExportSource source, std::string& error,
+                           bool& ok) {
+    ok = course_editor::beginExport(source, error);
+    std::string document;
+    bool done = false;
+    int guard = 0;
+    while (ok && !done && guard++ < 80) {
+        std::string chunk;
+        if (!course_editor::nextExportChunk(chunk, done, error)) { ok = false; break; }
+        document += chunk;
+    }
+    return document;
+}
+
+// Validation is the only thing the GUI does before the operator presses Apply,
+// so it must accept v1/v2, report the shape and never touch storage.
+void testInspectCourse() {
+    resetHost();
+    course_editor::Inspection inspection;
+    std::string error;
+
+    const std::string v1 = daysJsonV1(10, "v1 ten");
+    check(course_editor::inspectCourse(v1, inspection, error), "v1 JSON accepted");
+    check(inspection.version == 1, "v1 version reported");
+    check(inspection.length == 10, "v1 length comes from the days array");
+    check(inspection.events == 10, "v1 events counted");
+    check(inspection.name == "v1 ten", "v1 name reported");
+
+    const std::string v2 =
+        "{\"format\":\"gong-course\",\"version\":2,\"name\":\"v2 three\",\"course_length\":3,"
+        "\"templates\":{\"t\":[{\"id\":1,\"hour\":4,\"min\":0,\"track\":1,\"loop\":1,"
+        "\"vol\":5,\"en\":true,\"desc\":\"t\"}]},"
+        "\"days\":[{\"template\":\"t\"},{\"template\":\"t\"},{\"events\":[]}]}";
+    check(course_editor::inspectCourse(v2, inspection, error), "v2 JSON accepted");
+    check(inspection.version == 2, "v2 version reported");
+    check(inspection.length == 3, "v2 length from the days array");
+    check(inspection.events == 2, "v2 template events resolved and counted");
+    check(inspection.name == "v2 three", "v2 name reported");
+
+    check(!course_editor::inspectCourse("not json", inspection, error), "broken JSON rejected");
+    check(!error.empty(), "broken JSON reports an error");
+    check(!course_editor::inspectCourse("{\"format\":\"other\",\"version\":1,\"days\":[[]]}",
+                                        inspection, error),
+          "foreign format rejected");
+    check(!course_editor::inspectCourse(
+              "{\"format\":\"gong-course\",\"version\":3,\"days\":[[]]}", inspection, error),
+          "unknown version rejected");
+    check(!course_editor::inspectCourse(
+              "{\"format\":\"gong-course\",\"version\":1,\"days\":[]}", inspection, error),
+          "empty course rejected");
+
+    std::string many = "{\"format\":\"gong-course\",\"version\":1,\"days\":[";
+    for (int i = 0; i < 48; ++i) { if (i) many += ','; many += "[]"; }
+    many += "]}";
+    check(!course_editor::inspectCourse(many, inspection, error), "48 days rejected");
+
+    check(!hasCalendar(), "validation wrote no calendar");
+    check(bootstrapGeneration() == 0, "validation wrote no draft");
+    check(host::files().empty(), "validation wrote no files");
+}
+
+// The imported JSON decides the course length: 1, 10, 14, 20 and 47 days, with
+// a different length replacing the previous course.
+void testImportReplacesCourse() {
+    const int lengths[] = {1, 10, 14, 20, 47};
+    for (int length : lengths) {
+        resetHost();
+        std::string error;
+        check(course_editor::ensureInitialCourse(error), "reference course published");
+
+        check(course_editor::importCourse(daysJsonV1(length, "len" + std::to_string(length)), error),
+              "import " + std::to_string(length) + " days");
+        course_editor::Info info;
+        check(course_editor::info(info, error), "info after import");
+        check(info.length == length, "draft length " + std::to_string(length));
+        const course_store::CalendarState before = calendar();
+        check(before.course_length == 14, "active course unchanged before Apply");
+
+        check(course_editor::applyDraft(error), "apply " + std::to_string(length) + " days");
+        const course_store::CalendarState after = calendar();
+        check(after.course_length == length, "published length " + std::to_string(length));
+        check(after.flags == course_store::kApplied, "replacement is APPLIED");
+        check(after.activation_date == 0, "replacement resets the activation date");
+        check(after.day_index == 0, "replacement resets the day index");
+        std::string day;
+        check(course_editor::dayJson(0, day, error), "day 0 readable after apply");
+        check(day.find("\"d0\"") != std::string::npos, "day 0 content from the file");
+        std::string last;
+        check(course_editor::dayJson(static_cast<std::uint8_t>(length - 1), last, error),
+              "last day readable");
+    }
+
+    // v2 files with templates import the same way.
+    resetHost();
+    std::string error;
+    check(course_editor::ensureInitialCourse(error), "reference course for v2");
+    std::string jsonError;
+    const std::string v2 = course::toJsonV2(course::makeReferenceCourse(), false, jsonError);
+    check(!v2.empty(), "v2 reference document built");
+    check(course_editor::importCourse(v2, error), "v2 import with templates");
+    check(course_editor::applyDraft(error), "v2 apply");
+    check(calendar().course_length == 14, "v2 course published with 14 days");
+
+    // A second import replaces the pending draft instead of stacking drafts.
+    course_editor::Info info;
+    check(course_editor::importCourse(daysJsonV1(5, "second"), error), "second import");
+    check(course_editor::info(info, error), "info after second import");
+    check(info.length == 5, "second import replaced the draft");
+}
+
+// Export: the operator gets the published course by default, and can ask for
+// the pending draft explicitly.
+void testExportSource() {
+    resetHost();
+    std::string error;
+    check(course_editor::ensureInitialCourse(error), "reference course published");
+    check(course_editor::importCourse(daysJsonV1(3, "draft3"), error), "3-day draft imported");
+
+    bool ok = false;
+    const std::string active = exportToString(course_editor::kExportActive, error, ok);
+    check(ok, "active export completes");
+    check(active.find("\"course_length\":14") != std::string::npos,
+          "active export contains the published 14-day course");
+    check(active.find("\"draft3\"") == std::string::npos,
+          "active export is not the pending draft");
+
+    const std::string draft = exportToString(course_editor::kExportDraft, error, ok);
+    check(ok, "draft export completes");
+    check(draft.find("\"course_length\":3") != std::string::npos,
+          "draft export contains the 3-day draft");
+}
+
 // A published course must keep using its own draft pointer, never the bootstrap.
 void testPublishedCourseIgnoresBootstrap() {
     resetHost();
@@ -789,6 +934,9 @@ int main() {
     runGroup("bootstrap presets", testBootstrapPresets);
     runGroup("bootstrap discard and seed guard", testBootstrapDiscardAndSeedGuard);
     runGroup("bootstrap nvs key", testBootstrapNvsKey);
+    runGroup("json inspection", testInspectCourse);
+    runGroup("import replaces course", testImportReplacesCourse);
+    runGroup("export source", testExportSource);
     runGroup("published course ignores bootstrap", testPublishedCourseIgnoresBootstrap);
 
     std::cout << "\n" << g_pass << " checks passed, " << g_fail << " failed\n";

@@ -211,7 +211,6 @@ tr:hover td { background: rgba(79,158,248,.04); }
           <button class="btn btn-ghost btn-sm" onclick="schedNavDay(1)"  style="padding:4px 10px;font-size:1rem">&raquo;</button>
         </div>
         <span id="schedDayBadge" class="tag" style="font-size:.72rem"></span>
-        <button class="btn btn-yellow btn-sm" id="activateDayBtn" style="display:none" onclick="activateViewedDay()">Activate this day</button>
         <button class="btn btn-primary btn-sm" id="addBtn" onclick="openAddModal()">+ Add</button>
         <button class="collapse-btn" onclick="toggleCard('sectionSchedule')">&#9662;</button>
       </div>
@@ -240,89 +239,41 @@ tr:hover td { background: rgba(79,158,248,.04); }
     </div>
   </div>
 
-  <!-- ── Course ── -->
-  <div class="card" id="sectionCourse">
+  <!-- ── Courses ── -->
+  <div class="card" id="sectionCourses">
     <div class="card-title">
-      Course
-      <button class="collapse-btn" onclick="toggleCard('sectionCourse')">&#9662;</button>
+      Courses
+      <button class="collapse-btn" onclick="toggleCard('sectionCourses')">&#9662;</button>
     </div>
     <div class="card-body">
+      <div id="crStatus" style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Загрузка…</div>
+
       <div class="btn-group" style="margin-top:0">
-        <button class="btn btn-ghost" onclick="exportCourse()">&#11015; Скачать курс</button>
-        <button class="btn btn-primary" onclick="document.getElementById('courseFile').click()">&#11014; Загрузить курс</button>
-        <input type="file" id="courseFile" accept=".json,application/json" style="display:none" onchange="pickCourse(this)">
+        <button class="btn btn-primary" onclick="document.getElementById('crFile').click()">&#11014; Загрузить JSON (v1 или v2)</button>
+        <input type="file" id="crFile" accept=".json,application/json" style="display:none" onchange="crPick(this)">
+        <button class="btn btn-ghost" onclick="crExport()">&#11015; Экспорт действующего курса</button>
       </div>
-      <div id="coursePreview" style="display:none;margin-top:14px">
-        <div id="courseName" style="font-weight:600;margin-bottom:8px"></div>
-        <table>
-          <thead><tr><th>День</th><th>Шаблон</th><th>Гонгов</th><th>Время</th></tr></thead>
-          <tbody id="courseBody"></tbody>
-        </table>
-        <div class="btn-group">
-          <button class="btn btn-green" id="courseApplyBtn" onclick="applyCourse()">Залить на устройство</button>
-          <button class="btn btn-ghost" onclick="cancelCourse()">Отмена</button>
-          <span id="courseProgress" style="align-self:center;font-size:.85rem;color:var(--muted)"></span>
+
+      <div id="crPreview" style="display:none;margin-top:14px;padding:12px;border:1px solid var(--border);border-radius:8px">
+        <div id="crPreviewText" style="font-size:.85rem;line-height:1.6"></div>
+        <div class="btn-group" style="margin-top:10px">
+          <button class="btn btn-green" id="crApplyBtn" onclick="crApply()">Опубликовать (Apply)</button>
+          <button class="btn btn-ghost" onclick="crCancel()">Отмена</button>
         </div>
       </div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:16px">
+        <span style="color:var(--muted);font-size:.8rem">День для активации:</span>
+        <select id="crActivateDay" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text)"></select>
+        <button class="btn btn-yellow" id="crActivateBtn" onclick="crActivate()">Activate this day</button>
+      </div>
+
       <p style="color:var(--muted);font-size:.78rem;margin-top:10px">
-        Все дни курса одним файлом. «Скачать» — резервная копия или заготовка для правки и для других гонгов.
-        В файле одинаковые дни описаны один раз в <b>templates</b>, а <b>days</b> — список шаблонов по дням
-        (вместо имени можно вписать день целиком). Загрузка заменяет расписание всех дней сразу; текущий день
-        курса не меняется. Если связь оборвётся посередине, старый курс останется как был.
-      </p>
-    </div>
-  </div>
-
-  <!-- ── Course Editor (draft) ── -->
-  <div class="card" id="sectionCourseEditor">
-    <div class="card-title">
-      Course Editor
-      <button class="collapse-btn" onclick="toggleCard('sectionCourseEditor')">&#9662;</button>
-    </div>
-    <div class="card-body">
-      <div id="ceStatus" style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Загрузка…</div>
-
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
-        <input id="ceName" type="text" maxlength="64" placeholder="Название курса"
-               style="flex:1;min-width:180px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text)">
-        <button class="btn btn-ghost btn-sm" onclick="ceRename()">Переименовать</button>
-      </div>
-
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-        <span style="align-self:center;color:var(--muted);font-size:.8rem">Пресеты:</span>
-        <button class="btn btn-ghost btn-sm" onclick="cePreset(3)">3</button>
-        <button class="btn btn-ghost btn-sm" onclick="cePreset(10)">10</button>
-        <button class="btn btn-ghost btn-sm" onclick="cePreset(14)">14</button>
-        <button class="btn btn-ghost btn-sm" onclick="cePreset(20)">20</button>
-        <button class="btn btn-ghost btn-sm" onclick="cePreset(30)">30</button>
-        <button class="btn btn-ghost btn-sm" onclick="cePreset(45)">45</button>
-      </div>
-
-      <div id="ceDays" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
-
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-        <button class="btn btn-ghost btn-sm" onclick="ceInsert('before')">+ Перед</button>
-        <button class="btn btn-ghost btn-sm" onclick="ceInsert('after')">+ После</button>
-        <button class="btn btn-ghost btn-sm" onclick="ceInsert('copy')">+ Копия</button>
-        <button class="btn btn-ghost btn-sm" onclick="ceDeleteDay()">Удалить день</button>
-        <button class="btn btn-ghost btn-sm" onclick="ceClearDay()">Очистить расписание</button>
-      </div>
-
-      <div id="ceDayView" style="margin-bottom:12px"></div>
-
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <button class="btn btn-green" onclick="ceApply()">Apply (применить черновик)</button>
-        <button class="btn btn-yellow" onclick="ceActivate()">Activate this day</button>
-        <button class="btn btn-ghost" onclick="ceDiscard()">Отменить черновик</button>
-        <button class="btn btn-primary" onclick="document.getElementById('ceFile').click()">&#11014; Импорт JSON</button>
-        <input type="file" id="ceFile" accept=".json,application/json" style="display:none" onchange="ceImport(this)">
-        <button class="btn btn-ghost" onclick="ceExport()">&#11015; Экспорт JSON v2</button>
-      </div>
-      <p style="color:var(--muted);font-size:.78rem;margin-top:10px">
-        Структурные изменения (вставка, удаление, пресеты, импорт) сохраняются в отдельном черновике и не влияют
-        на действующий курс до Apply. После Apply курс публикуется, календарная привязка сбрасывается —
-        звонки не выполняются до ручного «Activate this day». Правка отдельных событий выполняется в карточке
-        Schedule без Apply.
+        JSON — единственный источник структуры курса: длина курса равна числу дней в файле (1–47),
+        после последнего дня снова идёт день 00. «Опубликовать» заменяет действующий курс целиком,
+        но звонки не запускает: выберите день и нажмите «Activate this day» — это задаёт точку отсчёта,
+        дальше дни переключаются автоматически и бесконечно. Обычная правка событий дня выполняется
+        в карточке Schedule без Apply.
       </p>
     </div>
   </div>
@@ -569,9 +520,9 @@ document.addEventListener('DOMContentLoaded', () => {
   initCards();
   loadTracks();
   refreshAll();
-  ceLoad();
+  crLoad();
   setInterval(refreshAll, 5000);
-  setInterval(ceLoad, 30000);
+  setInterval(crLoad, 30000);
   setInterval(updateClock, 1000);
 });
 
@@ -1097,7 +1048,6 @@ async function forgetWifi() {
 let devDirty = false;
 function applyDevice(d) {
   if (!d) return;
-  deviceInfo = d;
   const label = (d.num ? '#' + d.num : '') + (d.num && d.name ? ' · ' : '') + (d.name || '');
   document.getElementById('devLabel').textContent = label;
   document.title = 'Gong' + (label ? ' ' + label : ' Server');
@@ -1122,360 +1072,164 @@ async function saveDevice() {
 }
 
 // ─────────────────────────────────────────────
-// Course — whole-course export/import as one file. Identical days are kept
-// once in "templates"; "days" names a template per day (or holds the day's
-// entries inline). The device only knows days: the browser expands the file
-// and PUTs one day at a time, then /api/course/commit swaps them all in.
+// Courses — the loaded JSON is the only source of course structure.
+// Validate first (no side effects), then publish with Apply, then the operator
+// activates one day. Day switching after that is automatic and endless.
 // ─────────────────────────────────────────────
-let deviceInfo = null;
-let pendingCourse = null;   // {name, days: [[entry…]…], names: [template name per day]}
+let crMeta = null;      // last /api/course/meta snapshot
+let crPending = null;   // {text, name, days, events, version} ready to publish
 
-const ENTRY_KEYS = ['hour', 'min', 'track', 'loop', 'vol', 'en', 'desc'];
-function cleanEntry(e) {
-  const o = {};
-  ENTRY_KEYS.forEach(k => { if (e[k] !== undefined) o[k] = e[k]; });
-  return o;
-}
-
-function courseText(c) {
-  const j = v => JSON.stringify(v);
-  const tpl = Object.entries(c.templates).map(([k, arr]) => '    ' + j(k) + ': ' +
-    (arr.length ? '[\n' + arr.map(e => '      ' + j(e)).join(',\n') + '\n    ]' : '[]')).join(',\n');
-  return '{\n  "format": "gong-course",\n  "version": 1,\n  "name": ' + j(c.name) +
-    ',\n  "templates": {\n' + tpl + '\n  },\n  "days": ' + j(c.days) + '\n}\n';
-}
-
-async function exportCourse() {
-  let d;
-  try {
-    const r = await fetch('/api/course');
-    d = await r.json();
-  } catch { d = null; }
-  if (!d || !Array.isArray(d.days)) { toast(d?.err || 'Error', 'err'); return; }
-  // Identical days → one template, named after the first day that uses it.
-  const templates = {}, byText = {}, days = [];
-  d.days.forEach((list, i) => {
-    const entries = (list || []).map(cleanEntry);
-    const key = JSON.stringify(entries);
-    if (!byText[key]) { byText[key] = 'day' + pad(i); templates[byText[key]] = entries; }
-    days.push(byText[key]);
-  });
-  const label = deviceInfo ? ((deviceInfo.num ? 'Gong #' + deviceInfo.num : deviceInfo.ssid) +
-                              (deviceInfo.name ? ' · ' + deviceInfo.name : '')) : 'Gong';
-  const text = courseText({ name: label + ', ' + new Date().toISOString().slice(0, 10), templates, days });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
-  a.download = 'gong-course-' + (deviceInfo?.host || 'gong') + '.json';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-}
-
-// Throws an Error with a message for the operator; same rules as the device.
-function parseCourse(text) {
-  let c;
-  try { c = JSON.parse(text); } catch (e) { throw new Error('Файл не читается как JSON: ' + e.message); }
-  if (!c || typeof c !== 'object' || Array.isArray(c)) throw new Error('Ожидается объект с полями templates и days');
-  if (c.format !== 'gong-course') throw new Error('Это не файл курса (нет "format": "gong-course")');
-  if (c.version !== 1) throw new Error('Неизвестная версия формата: ' + c.version);
-  const templates = c.templates || {};
-  if (typeof templates !== 'object' || Array.isArray(templates)) throw new Error('templates должен быть объектом');
-  if (!Array.isArray(c.days)) throw new Error('days должен быть списком');
-  if (c.days.length !== dayCount)
-    throw new Error('В файле ' + c.days.length + ' дн., а на устройстве ' + dayCount);
-  const days = [], names = [];
-  c.days.forEach((ref, i) => {
-    const where = 'День ' + pad(i);
-    let list;
-    if (typeof ref === 'string') {
-      list = templates[ref];
-      if (!Array.isArray(list)) throw new Error(where + ': нет шаблона «' + ref + '»');
-      names.push(ref);
-    } else if (Array.isArray(ref)) {
-      list = ref;
-      names.push('—');
-    } else throw new Error(where + ': ожидается имя шаблона или список гонгов');
-    days.push(checkDay(list, where + (typeof ref === 'string' ? ' (шаблон «' + ref + '»)' : '')));
-  });
-  return { name: typeof c.name === 'string' ? c.name : '', days, names };
-}
-
-function checkDay(list, where) {
-  if (list.length > 32) throw new Error(where + ': больше 32 гонгов');
-  const seen = new Set();
-  return list.map((e, k) => {
-    const at = where + ', запись ' + (k + 1) + ': ';
-    if (!e || typeof e !== 'object') throw new Error(at + 'ожидается объект');
-    const int = v => Number.isInteger(v);
-    if (!int(e.hour) || !int(e.min) || e.hour < 0 || e.hour > 23 || e.min < 0 || e.min > 59)
-      throw new Error(at + 'нужны hour 0–23 и min 0–59');
-    const t = pad(e.hour) + ':' + pad(e.min);
-    if (seen.has(t)) throw new Error(at + t + ' повторяется');
-    seen.add(t);
-    const track = e.track ?? 1;
-    if (!int(track) || track < 1 || track > 99) throw new Error(at + 'track 1–99');
-    if (availableTracks.length && !availableTracks.includes(track))
-      throw new Error(at + 'трека ' + track + ' (/' + String(track).padStart(4, '0') + '.mp3) нет на устройстве');
-    for (const [k, lo, hi] of [['loop', 1, 7], ['vol', 0, 30]])
-      if (e[k] !== undefined && (!int(e[k]) || e[k] < lo || e[k] > hi)) throw new Error(at + k + ' ' + lo + '–' + hi);
-    if (e.en !== undefined && typeof e.en !== 'boolean') throw new Error(at + 'en — true или false');
-    if (e.desc !== undefined && typeof e.desc !== 'string') throw new Error(at + 'desc — строка');
-    return cleanEntry(e);
-  });
-}
-
-function pickCourse(input) {
-  const file = input.files[0];
-  input.value = '';   // the same file can be picked again after an edit
-  if (!file) return;
-  const rd = new FileReader();
-  rd.onload = () => {
-    try { pendingCourse = parseCourse(rd.result); }
-    catch (e) { pendingCourse = null; alert(e.message); cancelCourse(); return; }
-    renderCoursePreview(file.name);
-  };
-  rd.readAsText(file);
-}
-
-function renderCoursePreview(fileName) {
-  const c = pendingCourse;
-  document.getElementById('courseName').textContent = (c.name || fileName) + ' — проверка пройдена';
-  document.getElementById('courseBody').innerHTML = c.days.map((list, i) => {
-    const on = list.filter(e => e.en !== false)
-      .map(e => pad(e.hour) + ':' + pad(e.min)).sort();
-    const span = on.length ? on[0] + '–' + on[on.length - 1] : '—';
-    const act = i === activeDayNum ? ' <span class="tag tag-on">активный</span>' : '';
-    return `<tr><td>${pad(i)}${act}</td><td>${esc(c.names[i])}</td><td>${on.length}` +
-           (on.length !== list.length ? ` <span style="color:var(--muted)">(+${list.length - on.length} выкл.)</span>` : '') +
-           `</td><td>${span}</td></tr>`;
-  }).join('');
-  document.getElementById('courseProgress').textContent = '';
-  document.getElementById('courseApplyBtn').disabled = false;
-  document.getElementById('coursePreview').style.display = '';
-}
-
-function cancelCourse() {
-  pendingCourse = null;
-  document.getElementById('coursePreview').style.display = 'none';
-}
-
-async function applyCourse() {
-  const c = pendingCourse;
-  if (!c) return;
-  if (!confirm('Заменить расписание всех ' + c.days.length + ' дней?\n' +
-               'Текущий день курса (' + pad(activeDayNum) + ') не меняется, но его гонги сразу станут как в файле.')) return;
-  const btn = document.getElementById('courseApplyBtn');
-  const prog = document.getElementById('courseProgress');
-  btn.disabled = true;
-  for (let i = 0; i < c.days.length; i++) {
-    prog.textContent = 'День ' + (i + 1) + '/' + c.days.length + '…';
-    const r = await postJSON('/api/course/day', { day: i, entries: c.days[i] }, 'PUT');
-    if (!r || !r.ok) {
-      prog.textContent = '';
-      btn.disabled = false;
-      toast((r?.err || 'Нет связи') + ' — курс не изменён', 'err');
-      return;
-    }
-  }
-  prog.textContent = 'Применяю…';
-  const r = await postJSON('/api/course/commit', {});
-  btn.disabled = false;
-  if (!r || !r.ok) { prog.textContent = ''; toast(r?.err || 'Error', 'err'); return; }
-  cancelCourse();
-  toast('Курс загружен', 'ok');
-  await refreshAll();
-  await updateSchedView();   // a previewed non-active day is re-read too
-}
-
-// ─────────────────────────────────────────────
-// Course Editor (draft) — structural edits only.
-// Ordinary event editing stays in the Schedule card.
-// ─────────────────────────────────────────────
-let ceMeta = null;
-let ceDay = 0;
-
-async function ceLoad() {
+async function crLoad() {
   try {
     const r = await fetch('/api/course/meta');
     const d = await r.json();
-    if (!d || d.ok === false) { ceRenderStatus(null, d?.err); return; }
-    ceMeta = d;
-    ceRenderStatus(d);
-    ceRenderDays();
-    await ceLoadDay(ceDay);
-  } catch { ceRenderStatus(null, 'network error'); }
+    if (!d || d.ok === false) { crRenderStatus(null, d && d.err); return; }
+    crMeta = d;
+    crRenderStatus(d);
+    crRenderDays(d);
+  } catch { crRenderStatus(null, 'network error'); }
 }
 
-function ceRenderStatus(d, err) {
-  const el = document.getElementById('ceStatus');
+function crRenderStatus(d, err) {
+  const el = document.getElementById('crStatus');
   if (!el) return;
-  if (!d) { el.textContent = 'Курс недоступен: ' + (err || 'error'); return; }
+  if (!d) { el.textContent = 'Состояние курса недоступно: ' + (err || 'error'); return; }
+  if (!d.has_course) {
+    el.textContent = d.draft_dirty
+      ? 'Курс не опубликован (файл проверен, ожидает Apply).'
+      : 'Курс не опубликован. Загрузите JSON.';
+    return;
+  }
   const flags = [];
   if (d.suspended) flags.push('SUSPENDED');
   if (d.emergency) flags.push('EMERGENCY');
-  if (d.running) flags.push('RUNNING');
-  if (d.course_mode) flags.push('COURSE');
-  const dirty = d.draft_dirty ? ' · черновик изменён' : '';
-  const fails = d.failure_count ? ' · сбоев: ' + d.failure_count : '';
-  if (!d.has_course) {
-    if (!d.draft_generation) {
-      el.textContent = 'Курс не опубликован. Выберите пресет или импортируйте JSON — ' +
-        'черновик не влияет на звонки до Apply.';
-      return;
-    }
-    el.textContent = 'Черновик (не опубликован): ' + (d.name || '—') +
-      ' · дней: ' + d.length +
-      ' · поколение черновика: ' + d.draft_generation +
-      ' — нажмите Apply, чтобы опубликовать.';
-    const namePre = document.getElementById('ceName');
-    if (namePre && document.activeElement !== namePre) namePre.value = d.name || '';
-    return;
-  }
+  flags.push(d.running ? 'RUNNING' : 'APPLIED');
+  const day = d.day_index >= 0 ? ' · активный день ' + pad(d.day_index) : '';
   el.textContent = 'Курс: ' + (d.name || '—') +
     ' · дней: ' + d.length +
-    ' · активное поколение: ' + d.active_generation +
-    ' · черновик: ' + d.draft_generation +
-    ' · ' + (flags.join(' / ') || 'APPLIED') + dirty + fails;
-  if (d.emergency) {
-    el.textContent += ' — работает аварийное расписание; причина и кнопка «Проверить восстановление» в карточке Schedule.';
+    ' · поколение: ' + d.active_generation +
+    ' · ' + flags.join(' / ') + day +
+    (d.draft_dirty ? ' · черновик не опубликован' : '');
+}
+
+function crRenderDays(d) {
+  const sel = document.getElementById('crActivateDay');
+  const btn = document.getElementById('crActivateBtn');
+  const n = d && d.has_course ? d.length : 0;
+  if (sel) {
+    const keep = sel.value;
+    let html = '';
+    for (let i = 0; i < n; i++) html += '<option value="' + i + '">' + pad(i) + '</option>';
+    sel.innerHTML = html || '<option value="">—</option>';
+    if (keep !== '' && Number(keep) < n) sel.value = keep;
   }
-  const name = document.getElementById('ceName');
-  if (name && document.activeElement !== name) name.value = d.name || '';
+  if (btn) btn.disabled = !n;
 }
 
-function ceRenderDays() {
-  const box = document.getElementById('ceDays');
-  if (!box || !ceMeta) return;
-  const n = ceMeta.length || 0;
-  let html = '';
-  for (let i = 0; i < n; i++) {
-    const active = i === ceDay;
-    html += '<button class="btn btn-sm ' + (active ? 'btn-primary' : 'btn-ghost') +
-      '" onclick="ceSelectDay(' + i + ')">' + pad(i) + '</button>';
-  }
-  box.innerHTML = html || '<span style="color:var(--muted);font-size:.8rem">Нет дней</span>';
-}
-
-async function ceSelectDay(i) {
-  ceDay = i;
-  ceRenderDays();
-  await ceLoadDay(i);
-}
-
-async function ceLoadDay(i) {
-  const box = document.getElementById('ceDayView');
-  if (!box) return;
-  box.innerHTML = '<span style="color:var(--muted);font-size:.8rem">Загрузка…</span>';
-  try {
-    const r = await fetch('/api/course/draft?i=' + i);
-    const d = await r.json();
-    if (!Array.isArray(d)) {
-      box.innerHTML = '<span style="color:var(--red);font-size:.8rem">' + esc(d?.err || 'error') + '</span>';
-      return;
-    }
-    if (!d.length) {
-      box.innerHTML = '<span style="color:var(--muted);font-size:.8rem">День ' + pad(i) + ' — событий нет</span>';
-      return;
-    }
-    let rows = '';
-    d.forEach(e => {
-      rows += '<tr><td>' + pad(e.hour) + ':' + pad(e.min) + '</td><td>' + esc(e.desc || '') +
-        '</td><td>' + e.track + '</td><td>' + e.loop + '</td><td>' + e.vol + '</td><td>' +
-        (e.en === false ? 'off' : 'on') + '</td></tr>';
-    });
-    box.innerHTML = '<div style="font-size:.8rem;color:var(--muted);margin-bottom:4px">День ' + pad(i) +
-      ' (черновик, только просмотр — правка событий в карточке Schedule)</div>' +
-      '<table><thead><tr><th>Time</th><th>Description</th><th>Track</th><th>Loop</th><th>Vol</th><th>Status</th></tr></thead>' +
-      '<tbody>' + rows + '</tbody></table>';
-  } catch { box.innerHTML = '<span style="color:var(--red);font-size:.8rem">network error</span>'; }
-}
-
-async function cePost(url, body, method = 'POST') {
-  const d = await postJSON(url, body || {}, method);
-  if (d && d.ok) { toast('Готово', 'ok'); await ceLoad(); }
-  else toast(d?.err || 'Ошибка', 'err');
-  return d;
-}
-
-async function ceInsert(mode) {
-  if (!ceMeta) return;
-  const label = mode === 'before' ? 'перед' : mode === 'after' ? 'после' : 'копию';
-  if (!confirm('Вставить ' + label + ' днём ' + pad(ceDay) + '?')) return;
-  await cePost('/api/course/insert?i=' + ceDay + '&mode=' + mode);
-}
-
-async function ceDeleteDay() {
-  if (!ceMeta) return;
-  if (ceMeta.length <= 1) { toast('Нельзя удалить последний день', 'err'); return; }
-  if (!confirm('Удалить день ' + pad(ceDay) + ' из курса? Длина курса уменьшится на 1.')) return;
-  await cePost('/api/course/draft?i=' + ceDay, null, 'DELETE');
-}
-
-async function ceClearDay() {
-  if (!ceMeta) return;
-  if (!confirm('Очистить расписание дня ' + pad(ceDay) + '? День останется в курсе, события удалятся.')) return;
-  await cePost('/api/course/clear?i=' + ceDay);
-}
-
-async function cePreset(days) {
-  if (!confirm('Создать черновик курса из ' + days + ' дней? Действующий курс не изменится до Apply.')) return;
-  await cePost('/api/course/preset?days=' + days);
-}
-
-async function ceRename() {
-  const name = document.getElementById('ceName').value.trim();
-  if (!name) { toast('Введите название', 'err'); return; }
-  await cePost('/api/course/rename', { name });
-}
-
-async function ceApply() {
-  if (!confirm('Применить черновик? Действующий курс будет заменён, календарная привязка сброшена. Звонки прекратятся до ручного «Activate this day».')) return;
-  await cePost('/api/course/apply');
-}
-
-async function ceDiscard() {
-  if (!confirm('Отменить черновик и вернуться к действующему курсу?')) return;
-  await cePost('/api/course/discard');
-}
-
-async function ceActivate() {
-  if (!ceMeta) return;
-  if (!ceMeta.has_course) { toast('Сначала опубликуйте черновик (Apply)', 'err'); return; }
-  if (!confirm('Активировать день ' + pad(ceDay) + ' как текущее расписание? Текущий MP3 будет остановлен.')) return;
-  const d = await postJSON('/api/course/activate?i=' + ceDay, {});
-  if (d && d.ok) { toast('День ' + pad(ceDay) + ' активирован', 'ok'); await ceLoad(); await loadSchedules(); await loadDaysStatus(); }
-  else toast(d?.err || 'Ошибка', 'err');
-}
-
-async function ceImport(input) {
+async function crPick(input) {
   const file = input.files && input.files[0];
+  input.value = '';
   if (!file) return;
+  let text;
+  try { text = await file.text(); } catch { toast('Не удалось прочитать файл', 'err'); return; }
+  let d;
   try {
-    const text = await file.text();
-    const r = await fetch('/api/course/import', {
+    const r = await fetch('/api/course/validate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Gong-Request': '1' },
       body: text
     });
-    const d = await r.json();
-    if (d && d.ok) { toast('Импортировано в черновик', 'ok'); await ceLoad(); }
-    else toast(d?.err || 'Ошибка импорта', 'err');
-  } catch { toast('Ошибка чтения файла', 'err'); }
-  input.value = '';
+    d = await r.json();
+  } catch { toast('Нет связи с устройством', 'err'); return; }
+  const box = document.getElementById('crPreview');
+  const out = document.getElementById('crPreviewText');
+  const apply = document.getElementById('crApplyBtn');
+  if (!box || !out || !apply) return;
+  box.style.display = '';
+  if (!d || !d.ok) {
+    crPending = null;
+    apply.style.display = 'none';
+    out.innerHTML = '<b style="color:var(--red)">Файл отклонён:</b> ' + esc(d && d.err || 'неизвестная ошибка');
+    return;
+  }
+  crPending = { text: text, name: d.name || '', days: d.days, events: d.events, version: d.version };
+  apply.style.display = '';
+  apply.disabled = false;
+  out.innerHTML = '<b style="color:var(--green)">Проверка пройдена.</b><br>' +
+    'Курс: ' + esc(crPending.name || 'без имени') + '<br>' +
+    'Формат: JSON v' + esc(String(crPending.version)) +
+    ' · дней: ' + esc(String(crPending.days)) +
+    ' · событий: ' + esc(String(crPending.events)) + '<br>' +
+    '<span style="color:var(--muted)">После публикации действующий курс будет заменён. ' +
+    'Звонки не начнутся до ручной активации дня.</span>';
 }
 
-async function ceExport() {
+function crCancel() {
+  crPending = null;
+  const box = document.getElementById('crPreview');
+  if (box) box.style.display = 'none';
+}
+
+async function crApply() {
+  if (!crPending) return;
+  if (!confirm('Опубликовать курс «' + (crPending.name || 'без имени') + '» (' + crPending.days + ' дн.)?\n' +
+               'Действующий курс будет заменён. Звонки не начнутся, пока вы не нажмёте «Activate this day».')) return;
+  const btn = document.getElementById('crApplyBtn');
+  if (btn) btn.disabled = true;
   try {
-    const r = await fetch('/api/course/export');
-    if (!r.ok) { toast('Ошибка экспорта', 'err'); return; }
+    let imp;
+    try {
+      const r = await fetch('/api/course/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Gong-Request': '1' },
+        body: crPending.text
+      });
+      imp = await r.json();
+    } catch { toast('Нет связи с устройством', 'err'); return; }
+    if (!imp || !imp.ok) { toast((imp && imp.err) || 'Импорт отклонён', 'err'); return; }
+    const ap = await postJSON('/api/course/apply', {});
+    if (!ap || !ap.ok) { toast((ap && ap.err) || 'Apply не выполнен', 'err'); return; }
+    crCancel();
+    toast('Курс опубликован. Выберите день и нажмите «Activate this day».', 'ok');
+    await crLoad();
+    await loadSchedules();
+    await loadDaysStatus();
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function crExport() {
+  try {
+    const r = await fetch('/api/course/export?source=active');
+    if (!r.ok) { toast('Экспорт недоступен', 'err'); return; }
     const blob = await r.blob();
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = 'gong-course-v2.json';
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(a.href);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   } catch { toast('Ошибка экспорта', 'err'); }
+}
+
+async function crActivate() {
+  if (!crMeta || !crMeta.has_course) { toast('Сначала опубликуйте курс (Apply)', 'err'); return; }
+  const sel = document.getElementById('crActivateDay');
+  const i = sel ? Number(sel.value) : NaN;
+  if (!Number.isInteger(i) || i < 0 || i >= crMeta.length) { toast('Выберите день', 'err'); return; }
+  if (!confirm('Активировать день ' + pad(i) + ' как точку отсчёта?\n' +
+               'Дальше дни переключаются автоматически; текущий MP3 будет остановлен.')) return;
+  const d = await postJSON('/api/course/activate?i=' + i, {});
+  if (d && d.ok) {
+    toast('День ' + pad(i) + ' активирован', 'ok');
+    await crLoad();
+    await loadSchedules();
+    await loadDaysStatus();
+  } else {
+    toast((d && d.err) || 'Активация не удалась', 'err');
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -1498,7 +1252,7 @@ async function postJSON(url, body, method = 'POST') {
 // ─────────────────────────────────────────────
 // Collapsible cards
 // ─────────────────────────────────────────────
-const CARD_IDS = ['sectionSchedule','sectionCourse','sectionCourseEditor','sectionControl','sectionWifi','sectionClock','sectionDevice','sectionSecurity'];
+const CARD_IDS = ['sectionSchedule','sectionCourses','sectionControl','sectionWifi','sectionClock','sectionDevice','sectionSecurity'];
 
 function initCards() {
   CARD_IDS.forEach(id => {
@@ -1602,8 +1356,6 @@ function renderSchedDayHeader() {
       badge.style.color = 'var(--green)';
     }
   }
-  const btn = document.getElementById('activateDayBtn');
-  if (btn) btn.style.display = isPreview ? '' : 'none';
 }
 
 function renderSchedBanner() {
@@ -1615,7 +1367,7 @@ function renderSchedBanner() {
     el.style.color = 'var(--muted)';
     el.textContent = 'Редактирование шаблона Дня ' + pad(schedDayView) +
       ' — этот день сейчас НЕ активен, изменения сохранятся в шаблоне и вступят в силу, ' +
-      'когда день будет активирован (автоматически в полночь или кнопкой "Activate this day").';
+      'когда день будет активирован (автоматически в полночь или кнопкой «Activate this day» в карточке Courses).';
   } else if (courseEnded) {
     el.style.display = '';
     el.style.background = 'rgba(248,195,79,.12)';
@@ -1627,24 +1379,6 @@ function renderSchedBanner() {
   }
 }
 
-async function activateViewedDay() {
-  if (!isPreview) return;
-  const msg = 'Активировать День ' + pad(schedDayView) + ' как текущее расписание?\n' +
-    'Гонг сразу начнёт звонить по этому расписанию вместо Дня ' + pad(activeDayNum) + '.';
-  if (!confirm(msg)) return;
-  try {
-    const r = await fetch('/api/day/activate?n=' + schedDayView, { method: 'POST', headers: { 'X-Gong-Request': '1' } });
-    const d = await r.json();
-    if (d && d.ok) {
-      toast('День ' + pad(schedDayView) + ' активирован', 'ok');
-      activeDayNum = schedDayView;
-      await loadSchedules();
-      await loadDaysStatus();
-    } else {
-      toast(d?.err || 'Error', 'err');
-    }
-  } catch { toast('Error', 'err'); }
-}
 </script>
 </body>
 </html>

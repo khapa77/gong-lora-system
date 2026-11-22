@@ -789,10 +789,38 @@ static void handleCourseImport() {
     sendOK();
 }
 
+// Validation only: parses and checks a v1/v2 course JSON and reports its shape.
+// Nothing is written to LittleFS or NVS, so this is safe while a course runs.
+static void handleCourseValidate() {
+    const String& body = server.arg("plain");
+    if (body.length() == 0) { sendErr("empty body"); return; }
+    if (body.length() > 49152) { sendErr("request too large"); return; }
+    uint8_t days = 0;
+    uint16_t events = 0;
+    uint8_t version = 0;
+    String name;
+    if (!sched_courseInspect(body, days, events, version, name)) {
+        sendErr(sched_courseError().c_str());
+        return;
+    }
+    DynamicJsonDocument doc(384 + name.length());
+    doc["ok"] = true;
+    doc["name"] = name;
+    doc["days"] = days;
+    doc["events"] = events;
+    doc["version"] = version;
+    String out;
+    serializeJson(doc, out);
+    sendJSON(200, out);
+}
+
 // Streaming export. The handler owns the socket: setContentLength(UNKNOWN)
 // turns the reply into chunked transfer, so only one day is in RAM at a time.
+// ?source=active (default) exports the published course; ?source=draft exports
+// a course that has been validated/imported but not applied yet.
 static void handleCourseExport() {
-    if (!sched_courseExportBegin()) { sendErr(sched_courseError().c_str()); flushResponse(); return; }
+    const bool activeOnly = !(server.hasArg("source") && server.arg("source") == "draft");
+    if (!sched_courseExportBegin(activeOnly)) { sendErr(sched_courseError().c_str()); flushResponse(); return; }
     server.setContentLength(CONTENT_LENGTH_UNKNOWN);
     server.sendHeader("Cache-Control", "no-cache");
     server.send(200, "application/json", "");
@@ -984,6 +1012,8 @@ void web_setup() {
     route("/api/course/discard", HTTP_POST,   handleCourseDiscard,     R_WRITE | R_NOLOCK);
     route("/api/course/activate",HTTP_POST,   handleCourseActivate,    R_WRITE);
     route("/api/course/import",  HTTP_POST,   handleCourseImport,      R_WRITE | R_NOLOCK);
+    // Validation touches neither LittleFS nor NVS, so it needs no sys_lock.
+    route("/api/course/validate", HTTP_POST,  handleCourseValidate,    R_AUTH | R_NOLOCK);
     route("/api/course/export",  HTTP_GET,    handleCourseExport,      R_AUTH | R_STREAM);
     route("/api/device",        HTTP_GET,    handleDeviceGET,      R_AUTH);
     route("/api/device",        HTTP_POST,   handleDevicePOST,     R_WRITE);

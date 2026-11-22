@@ -91,9 +91,13 @@ bool sched_courseDeleteDay(uint8_t day);
 bool sched_coursePreset(uint8_t days);
 bool sched_courseRename(const String& name);
 bool sched_courseImport(const String& json);
+// Pure validation of a course JSON (v1/v2) without storing anything.
+bool sched_courseInspect(const String& json, uint8_t& days, uint16_t& events,
+                         uint8_t& version, String& name);
 bool sched_courseApply();
 bool sched_courseDiscardDraft();
-bool sched_courseExportBegin();
+// activeOnly exports the published course instead of the draft being edited.
+bool sched_courseExportBegin(bool activeOnly);
 bool sched_courseExportNext(String& chunk, bool& done);
 const String& sched_courseError();
 bool sched_courseEnabled();   // a published course owns execution

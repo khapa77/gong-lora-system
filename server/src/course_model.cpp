@@ -912,6 +912,24 @@ bool fromJson(const std::string& json, Course& out, std::string& error) {
     return true;
 }
 
+bool formatVersion(const std::string& json, int& out, std::string& error) {
+    JsonValue root;
+    JsonParser parser(json);
+    if (!parser.parse(root, error)) return false;
+    if (root.type != JsonValue::OBJECT) return fail(error, "course JSON must be an object");
+    const JsonValue* format = root.find("format");
+    if (!format) return fail(error, "missing format");
+    std::string formatText;
+    if (!readString(*format, "format", formatText, error)) return false;
+    if (formatText != kFormat) return fail(error, "unsupported format");
+    const JsonValue* versionValue = root.find("version");
+    if (!versionValue) return fail(error, "missing version");
+    long long version = 0;
+    if (!readInt(*versionValue, "version", 1, 2, version, error)) return false;
+    out = static_cast<int>(version);
+    return true;
+}
+
 std::string toJsonV2(const Course& course, bool expandTemplates,
                      std::string& error) {
     if (!validate(course, error)) return std::string();

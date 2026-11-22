@@ -14,6 +14,21 @@
 
 namespace course_editor {
 
+// Result of validating a course JSON without storing anything. The Web GUI
+// shows it before the operator publishes the file.
+struct Inspection {
+    std::string name;
+    std::uint8_t length;
+    std::uint16_t events;   // events across all days, enabled or not
+    std::uint8_t version;   // 1 or 2
+
+    Inspection();
+};
+
+// Parses and validates a v1/v2 course JSON. Pure: no files, no NVS, no RAM
+// state is touched, so it can be called while a course is running.
+bool inspectCourse(const std::string& json, Inspection& out, std::string& error);
+
 struct Info {
     bool hasCourse;
     std::uint32_t activeGeneration;
@@ -70,9 +85,18 @@ bool discardDraft(std::string& error);
 // APPLIED binding. Returns false when a calendar already exists.
 bool ensureInitialCourse(std::string& error);
 
-// Streaming export. beginExport() snapshots the draft meta, nextExportChunk()
-// yields the v2 JSON in day-sized pieces so no whole-course buffer is built.
-bool beginExport(std::string& error);
+// Which generation an export describes: the published active course, or the
+// draft the operator is editing.
+enum ExportSource {
+    kExportActive = 0,
+    kExportDraft = 1
+};
+
+// Streaming export. beginExport() snapshots the chosen generation's meta,
+// nextExportChunk() yields the v2 JSON in day-sized pieces so no whole-course
+// buffer is built. kExportActive falls back to the draft when nothing has been
+// published yet, because then the draft is all the device has.
+bool beginExport(ExportSource source, std::string& error);
 bool nextExportChunk(std::string& chunk, bool& done, std::string& error);
 
 }  // namespace course_editor

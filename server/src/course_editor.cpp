@@ -289,6 +289,33 @@ ExportState& exportState() {
 
 }  // namespace
 
+Inspection::Inspection()
+    : length(0), events(0), version(0) {}
+
+bool inspectCourse(const std::string& json, Inspection& out, std::string& error) {
+    error.clear();
+    out = Inspection();
+    course::Course parsed;
+    if (!course::fromJson(json, parsed, error)) return false;
+    int version = 0;
+    if (!course::formatVersion(json, version, error)) return false;
+    std::uint32_t events = 0;
+    for (std::size_t i = 0; i < parsed.days.size(); ++i) {
+        std::vector<course::Event> dayEvents;
+        if (!course::resolvedEvents(parsed, i, dayEvents, error)) return false;
+        events += static_cast<std::uint32_t>(dayEvents.size());
+    }
+    if (events > 0xFFFF) {
+        error = "course has too many events";
+        return false;
+    }
+    out.name = parsed.name;
+    out.length = static_cast<std::uint8_t>(parsed.days.size());
+    out.events = static_cast<std::uint16_t>(events);
+    out.version = static_cast<std::uint8_t>(version);
+    return true;
+}
+
 Info::Info()
     : hasCourse(false),
       activeGeneration(0),
@@ -755,13 +782,26 @@ bool ensureInitialCourse(std::string& error) {
     return true;
 }
 
-bool beginExport(std::string& error) {
+bool beginExport(ExportSource source, std::string& error) {
     error.clear();
     ExportState& state = exportState();
     state.active = false;
     std::uint32_t generation = 0;
-    bool published = false;
-    if (!editingGeneration(generation, published, error)) return false;
+    course_store::CourseStore store;
+    if (source == kExportActive && store.hasCalendar()) {
+        // The operator asked for what is actually published right now, not for
+        // a draft that has been imported but not applied.
+        course_store::CalendarState cal;
+        if (!loadCalendar(cal, error)) return false;
+        if (cal.active_generation == 0 || !store.generationExists(cal.active_generation)) {
+            error = "no active generation";
+            return false;
+        }
+        generation = cal.active_generation;
+    } else {
+        bool published = false;
+        if (!editingGeneration(generation, published, error)) return false;
+    }
     course_store::CourseMeta meta;
     if (!readMeta(generation, meta, error)) return false;
     state.active = true;

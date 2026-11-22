@@ -1,4 +1,4 @@
-# Следующая сессия: этап 5 закрыт, bootstrap Course Editor исправлен
+# Следующая сессия: JSON-driven Course GUI (этап 5 закрыт)
 
 Актуально на 2026-11-22 (третья сессия дня). Предыдущая архитектура в `docs/ai-handoff/SESSION_STATE.md` устарела.
 
@@ -11,9 +11,9 @@
 
 ## Где мы остановились
 
-- HEAD: `4eba3e1` (этап 5), ветка `standalone-max`, запушена в origin.
-- Текущая сессия: исправлен первый запуск Course Editor (bootstrap без опубликованного курса),
-  локальный коммит создан поверх `4eba3e1`, push не выполнялся.
+- HEAD: `4490398` (NVS-ключ bootstrap), ветка `standalone-max`, запушена в origin.
+- Текущая сессия: интерфейс упрощён до одной карточки Courses (JSON — единственный источник
+  структуры курса); локальный коммит без push.
 - Этап 6 не начат. `end` не тронут, в индекс не добавлялся.
 
 ## Что исправлено в этой сессии
@@ -60,15 +60,33 @@ legacy-планировщик активирует Day 00, а Course Editor от
 (`ESP_ERR_NVS_KEY_TOO_LONG`, `ESP_ERR_NVS_INVALID_NAME` для namespace), поэтому такой дефект
 не может снова пройти host-тесты. Проверены все NVS-ключи и namespace проекта — все ≤ 15.
 
+### Упрощение GUI: JSON-driven Course (четвёртая сессия)
+
+- В Web GUI осталась одна карточка **Courses**: загрузка JSON v1/v2 -> проверка через
+  `POST /api/course/validate` (без побочных эффектов) -> подтверждённый `Apply`
+  (`POST /api/course/import` + `POST /api/course/apply`) -> выбор дня и `Activate this day`;
+  плюс экспорт действующего курса (`GET /api/course/export?source=active`).
+- Удалены карточка Course Editor (пресеты, вставка/удаление/копирование, очистка, черновики,
+  переименование) и legacy-карточка Course (пошаговый импорт через `/api/course/day` +
+  `/api/course/commit`), которая в режиме курса отвечала `structural import is not available in
+  course mode`. Кнопка «Activate this day» из Schedule убрана — активация только в Courses.
+- Backend не переписывался: Course Model/Store/Scheduler и старые маршруты остались рабочими
+  (их используют host-тесты и совместимость). Новое: `course::formatVersion()`,
+  `course_editor::inspectCourse()`, `beginExport(kExportActive|kExportDraft)`,
+  `sched_courseInspect()`, `sched_courseExportBegin(activeOnly)`.
+- Длина курса = число дней в JSON (1..47), после последнего дня снова 00; отдельных правил
+  для 09->00/13->00/19->00 нет.
+
 ## Проверено фактическим запуском (эта сессия)
 
-- `run_course_editor_tests.py` — 357 checks, 0 FAIL; с ASan/UBSan — 357, 0 FAIL.
+- `run_course_editor_tests.py` — 456 checks, 0 FAIL; с ASan/UBSan — 456, 0 FAIL.
 - `run_active_day_state_tests.py` — 272 PASS, 0 FAIL; с UBSan — 272 PASS, 0 FAIL.
-- `run_course_tests.py` — 570 PASS, 0 FAIL.
+- `run_course_tests.py` — 578 PASS, 0 FAIL.
 - `run_course_store_tests.py` — 130 PASS, 0 FAIL.
-- `run_course_scheduler_tests.py` — 90 checks, 0 FAIL (ASan/UBSan 90, 0 FAIL).
+- `run_course_scheduler_tests.py` — 117 checks, 0 FAIL (ASan/UBSan 117, 0 FAIL).
 - `run_emergency_tests.py` — 58 checks, 0 FAIL (ASan/UBSan 58, 0 FAIL).
-- `pio run -e esp32dev` — SUCCESS, RAM 20.9%, Flash 85.3% (1342005 B). Прошивка не заливалась.
+- `pio run -e esp32dev` — SUCCESS, RAM 20.9%, Flash 85.2% (1340773 B). Прошивка не заливалась.
+- `node --check` для извлечённого `<script>` из `server/web/index.html` — JS_OK.
 - Мутационная проверка: при возврате старого условия в `sched_setup()` падает
   `T03/bootstrap_course_takes_over_and_survives_reboot` — тест первенства курса не пустой.
 

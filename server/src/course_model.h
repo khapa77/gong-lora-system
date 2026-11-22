@@ -106,6 +106,11 @@ bool setEventEnabled(Course& course, std::size_t dayIndex, std::uint32_t id,
 // writes every day as an inline event list; otherwise template references are
 // preserved where the day does not own its events.
 bool fromJson(const std::string& json, Course& out, std::string& error);
+
+// Reads only the top-level format and version (1 or 2) without parsing days.
+// The Web GUI reports which format a file uses before importing it; fromJson()
+// stays the single validating parser.
+bool formatVersion(const std::string& json, int& out, std::string& error);
 std::string toJsonV2(const Course& course, bool expandTemplates,
                      std::string& error);
 

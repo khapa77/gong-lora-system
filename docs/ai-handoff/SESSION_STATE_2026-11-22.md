@@ -119,6 +119,16 @@
 - Третья сессия дополнительно: ключ bootstrap-указателя укорочен до `crs_boot` (NVS допускает 15 символов),
   `tests/host/nvs.h` отвергает имена ключей/namespace длиннее 15, добавлены тесты лимита и отказа записи.
 
+### 3.4b. JSON-driven GUI (четвёртая сессия)
+
+GUI упрощён до одной карточки Courses: JSON v1/v2 -> `POST /api/course/validate` (чистая проверка) ->
+подтверждённый Apply (`import` + `apply`) -> выбор дня и Activate; экспорт действующего курса
+(`/api/course/export?source=active`). Карточка Course Editor и legacy-карточка Course удалены из GUI
+(одна из них отвечала `structural import is not available in course mode`). Backend, Course Model/Store
+и старые маршруты сохранены; добавлены `course::formatVersion()`, `course_editor::inspectCourse()`,
+`beginExport(kExportActive|kExportDraft)`, `sched_courseInspect()`, `sched_courseExportBegin(activeOnly)`.
+Кнопка Activate из Schedule убрана — активация только в Courses.
+
 ### 3.5. Web GUI
 
 В `server/web/index.html` добавлена карточка Course Editor: просмотр дней, выбор дня, вставка/удаление/копирование, очистка, пресеты, переименование, импорт/экспорт, Apply, Discard, Activate. Существующая карточка Schedule и её редактор событий сохранены.
@@ -127,14 +137,15 @@
 
 Подтверждено фактическим запуском в третьей сессии 2026-11-22 (после всех правок bootstrap):
 
-- `tests/run_course_editor_tests.py` — 357 checks, 0 FAIL.
-- То же с ASan/UBSan — 357 checks, 0 FAIL.
-- `tests/run_course_tests.py` — 570 PASS, 0 FAIL.
+- `tests/run_course_editor_tests.py` — 456 checks, 0 FAIL.
+- То же с ASan/UBSan — 456 checks, 0 FAIL.
+- `tests/run_course_tests.py` — 578 PASS, 0 FAIL.
 - `tests/run_course_store_tests.py` — 130 PASS, 0 FAIL (включая лимит NVS 15 символов).
-- `tests/run_course_scheduler_tests.py` — 90 checks, 0 FAIL; с ASan/UBSan — 90, 0 FAIL.
+- `tests/run_course_scheduler_tests.py` — 117 checks, 0 FAIL; с ASan/UBSan — 117, 0 FAIL.
 - `tests/run_emergency_tests.py` — 58 checks, 0 FAIL; с ASan/UBSan — 58, 0 FAIL.
 - `tests/run_active_day_state_tests.py` — 272 PASS, 0 FAIL; с UBSan — 272 PASS, 0 FAIL.
-- PlatformIO build (`pio run -e esp32dev`) — SUCCESS: RAM 20.9%, Flash 85.3% (1342005 B). Прошивка не заливалась.
+- PlatformIO build (`pio run -e esp32dev`) — SUCCESS: RAM 20.9%, Flash 85.2% (1340773 B). Прошивка не заливалась.
+- `node --check` извлечённого JS из `server/web/index.html` — OK.
 - Мутационные проверки: гейт сидирования (13 падений) и первенство курса при загрузке
   (`T03/bootstrap_course_takes_over_and_survives_reboot` падает при старом условии).
 
