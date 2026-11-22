@@ -85,5 +85,7 @@ public:
         if (it==files.end()) return false;
         files[to]=std::move(it->second); files.erase(it); return true;
     }
+    bool mkdir(const char* /*path*/) { return true; }
+    bool rmdir(const char* /*path*/) { return true; }
 };
 static HostLittleFS LittleFS;

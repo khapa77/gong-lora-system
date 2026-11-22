@@ -40,7 +40,12 @@ public:
         return nvs_commit(handle_)==ESP_OK?sizeof(value):0;
     }
     size_t putString(const char* key,const String& value) {
-        if (!started_ || nvs_set_str(handle_,key,value.c_str())!=ESP_OK) return 0;
-        return nvs_commit(handle_)==ESP_OK?value.length():0;
+        if (!started_ || nvs_set_str(handle_,key,value.c_str())!=0) return 0;
+        return nvs_commit(handle_)==0?value.length():0;
+    }
+    bool remove(const char* key) {
+        if (!started_ || !isKey(key)) return false;
+        if (nvs_erase_key(handle_,key)!=ESP_OK) return false;
+        return nvs_commit(handle_)==ESP_OK;
     }
 };

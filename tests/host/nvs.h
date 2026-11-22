@@ -134,6 +134,15 @@ inline esp_err_t nvs_set_u64(nvs_handle_t h,const char* k,uint64_t v) {
 inline esp_err_t nvs_set_str(nvs_handle_t h,const char* k,const char* v) {
     return host::set(h,k,host::Cell::string(v));
 }
+inline esp_err_t nvs_erase_key(nvs_handle_t h,const char* k) {
+    host::NvsModel& m=host::nvs();
+    const host::Action a=m.event("erase",k);
+    if (a==host::Action::CutBefore) throw host::PowerCut();
+    if (a==host::Action::ErrorBefore) return ESP_FAIL;
+    m.visible.erase(m.full(h,k));
+    if (a==host::Action::CutAfter) throw host::PowerCut();
+    return ESP_OK;
+}
 inline esp_err_t nvs_get_i32(nvs_handle_t h,const char* k,int32_t* v) {
     host::Cell c; const esp_err_t e=host::get(h,k,host::Type::I32,c);
     if (e==ESP_OK) *v=static_cast<int32_t>(c.number);
