@@ -275,3 +275,5 @@ pre-скриптом `scripts/gzip_web.py`.
   `sys_lock → cacheMutex`, обратного захвата нет.
 - Тесты: store 493 (+3 группы), editor 739, scheduler 255, course 578, active_day 275,
   emergency 58; ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 87.5 % (1 376 617 Б).
+- Ревизия поколений: `prepare*Templates` фиксирует epoch/стамп до сборки и перепроверяет под
+  блокировкой; устаревший набор не публикуется. Тесты: store 509 (+2 группы).

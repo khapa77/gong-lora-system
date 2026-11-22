@@ -1425,6 +1425,37 @@ std::uint32_t g_hookGeneration = 0;
 int g_hookCalls = 0;
 }
 
+static void cacheHookRewriteSameGeneration() {
+    course_store::setCacheCommitHook(nullptr);
+    ++g_hookCalls;
+    if (g_hookStore == nullptr) return;
+    std::map<std::string, std::vector<course::Event> > rewritten;
+    for (int i = 0; i < 2; ++i) {
+        course::Event e;
+        e.id = static_cast<std::uint32_t>(i + 1);
+        e.hour = static_cast<std::uint8_t>(9 + i);
+        e.minute = 0;
+        e.track = 1;
+        e.loop = 1;
+        e.volume = 10;
+        e.enabled = true;
+        e.description = "rewritten " + std::to_string(i);
+        rewritten["practice"].push_back(e);
+    }
+    std::string ignored;
+    g_hookStore->writeTemplates(1, rewritten, ignored);
+}
+
+static void cacheHookRewriteOtherGeneration() {
+    course_store::setCacheCommitHook(nullptr);
+    ++g_hookCalls;
+    if (g_hookStore == nullptr) return;
+    std::map<std::string, std::vector<course::Event> > other;
+    other["other"] = templateSet("other", 1)["x"];
+    std::string ignored;
+    g_hookStore->writeTemplates(2, other, ignored);
+}
+
 static void cacheHookInvalidate() {
     course_store::setCacheCommitHook(nullptr);
     ++g_hookCalls;
@@ -1471,23 +1502,77 @@ void cache_invalidate_during_commit_is_atomic() {
     check(seedTemplateGeneration(1, 3, "practice", 3, error), "seed failed: " + error);
     course_store::CourseStore store;
 
-    // The other task clears the cache while we are building; the commit must
-    // still leave either a complete set or none — never a partial one.
+    // A full clear while the set is being built means "nothing you read is
+    // current any more": the commit must be refused, not published.
     g_hookStore = &store;
     g_hookGeneration = 0;
     g_hookCalls = 0;
     course_store::setCacheCommitHook(cacheHookInvalidate);
     const bool prepared = store.prepareTemplates(1, error);
     course_store::setCacheCommitHook(nullptr);
-    check(prepared, "prepare after concurrent invalidate failed: " + error);
-    const std::size_t count = store.cachedTemplateCount();
-    check(count == 0 || count == 1, "partial template set after a concurrent invalidate");
-    if (count == 1) {
-        check(store.cachedTemplateEvents() == 3, "partial event set");
-        course::Day day;
-        check(store.loadDay(1, 0, day, error), "day load after invalidate race");
-        check(day.events.size() == 3, "day events after invalidate race");
-    }
+    check(!prepared, "a set built before a full clear must not be published");
+    check(error.find("changed while loading") != std::string::npos,
+          "unclear error: " + error);
+    check(store.cachedTemplateGeneration() == 0, "a stale set was published");
+    check(store.cachedTemplateCount() == 0, "partial template set after a clear");
+
+    // The next load starts from the new revision and works normally.
+    error.clear();
+    check(store.prepareTemplates(1, error), "reload after the clear failed: " + error);
+    course::Day day;
+    check(store.loadDay(1, 0, day, error), "day load after the clear: " + error);
+    check(day.events.size() == 3, "day events after the clear");
+}
+
+// A rewrite of the same generation between build and commit must not be
+// published: the cache would otherwise serve pre-write events.
+void cache_stale_load_is_not_republished() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 3, "practice", 3, error), "seed failed: " + error);
+    course_store::CourseStore store;
+
+    g_hookStore = &store;
+    g_hookGeneration = 1;
+    g_hookCalls = 0;
+    course_store::setCacheCommitHook(cacheHookRewriteSameGeneration);
+    error.clear();
+    const bool prepared = store.prepareTemplates(1, error);
+    course_store::setCacheCommitHook(nullptr);
+    check(!prepared, "a set loaded before the rewrite must not be published");
+    check(error.find("changed while loading") != std::string::npos,
+          "unclear error: " + error);
+    check(store.cachedTemplateGeneration() == 0, "stale template set was published");
+
+    // A fresh load sees the NEW file content.
+    error.clear();
+    check(store.prepareTemplates(1, error), "reload failed: " + error);
+    course::Day day;
+    check(store.loadDay(1, 0, day, error), "day load failed: " + error);
+    check(day.events.size() == 2, "the rewrite is not visible");
+    check(day.events[0].description == "rewritten 0", "stale events were served");
+}
+
+// Mutating a *different* generation must not abort an in-flight load.
+void cache_unrelated_write_does_not_abort() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 3, "practice", 3, error), "seed 1 failed: " + error);
+    check(seedTemplateGeneration(2, 2, "other", 2, error), "seed 2 failed: " + error);
+    course_store::CourseStore store;
+
+    g_hookStore = &store;
+    g_hookGeneration = 2;
+    g_hookCalls = 0;
+    course_store::setCacheCommitHook(cacheHookRewriteOtherGeneration);
+    error.clear();
+    const bool prepared = store.prepareTemplates(1, error);
+    course_store::setCacheCommitHook(nullptr);
+    check(prepared, "an unrelated generation write aborted the load: " + error);
+    check(store.cachedTemplateGeneration() == 1, "wrong generation published");
+    course::Day day;
+    check(store.loadDay(1, 0, day, error), "day load failed: " + error);
+    check(day.events.size() == 3, "events lost after an unrelated write");
 }
 
 void cache_lookup_returns_a_copy() {
@@ -1596,6 +1681,8 @@ int main() {
              cache_commit_rechecks_after_concurrent_load);
     runGroup("cache_invalidate_during_commit_is_atomic",
              cache_invalidate_during_commit_is_atomic);
+    runGroup("cache_stale_load_is_not_republished", cache_stale_load_is_not_republished);
+    runGroup("cache_unrelated_write_does_not_abort", cache_unrelated_write_does_not_abort);
     runGroup("cache_lookup_returns_a_copy", cache_lookup_returns_a_copy);
 
     std::cout << "PASS=" << g_pass << " FAIL=" << g_fail << "\n";

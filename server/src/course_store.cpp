@@ -637,6 +637,47 @@ TemplateCacheState& templateCache() {
     return state;
 }
 
+// Revision counters that close the "stale commit" window: a set is built
+// outside the lock, so between reading the file and installing the result the
+// generation may have been rewritten (writeTemplates) or deleted. Each mutation
+// bumps the counter of its generation; `g_globalEpoch` covers a full clear.
+// A commit is only allowed when both counters are unchanged since the load
+// started, otherwise the freshly built set is discarded instead of being
+// published with pre-write content.
+std::uint32_t g_globalEpoch = 0;
+std::map<std::uint32_t, std::uint32_t> g_generationStamp;
+
+std::uint32_t generationStamp(std::uint32_t generation) {
+    std::map<std::uint32_t, std::uint32_t>::const_iterator it =
+        g_generationStamp.find(generation);
+    return it == g_generationStamp.end() ? 0 : it->second;
+}
+
+void noteGenerationMutation(std::uint32_t generation) {
+    static std::uint32_t counter = 0;
+    ++counter;
+    if (counter == 0) counter = 1;  // 0 means "never touched"
+    g_generationStamp[generation] = counter;
+}
+
+struct CacheEpoch {
+    std::uint32_t global;
+    std::uint32_t generation;
+    CacheEpoch() : global(0), generation(0) {}
+};
+
+CacheEpoch captureEpoch(std::uint32_t generation) {
+    CacheEpoch epoch;
+    epoch.global = g_globalEpoch;
+    epoch.generation = generationStamp(generation);
+    return epoch;
+}
+
+bool epochUnchanged(const CacheEpoch& epoch, std::uint32_t generation) {
+    return g_globalEpoch == epoch.global &&
+           generationStamp(generation) == epoch.generation;
+}
+
 void clearTemplateCache() {
     templateCache().active.clear();
     templateCache().draft.clear();
@@ -1814,6 +1855,9 @@ namespace {
 void invalidateTemplatesFor(std::uint32_t generation) {
     if (generation == 0) return;
     CacheGuard guard;
+    // Mark the generation as mutated *before* dropping the entries: a load
+    // that started earlier must not re-publish what it read before the write.
+    noteGenerationMutation(generation);
     if (templateCache().active.generation == generation) templateCache().active.clear();
     if (templateCache().draft.generation == generation) templateCache().draft.clear();
 }
@@ -1914,9 +1958,12 @@ bool CourseStore::prepareTemplates(std::uint32_t generation, std::string& error)
         error = "invalid generation";
         return false;
     }
+    CacheEpoch epoch;
     {
         CacheGuard guard;
         if (findTemplateSetLocked(generation) != nullptr) return true;
+        // Remember the revision this load is based on.
+        epoch = captureEpoch(generation);
     }
     // Build outside the lock: LittleFS + parsing never run under it.
     TemplateSet loaded;
@@ -1925,6 +1972,14 @@ bool CourseStore::prepareTemplates(std::uint32_t generation, std::string& error)
 
     CacheGuard guard;
     TemplateCacheState& cache = templateCache();
+    // The generation may have been rewritten or deleted while we were reading
+    // it. Publishing the set we built would install pre-write content, so it is
+    // dropped instead.
+    if (!epochUnchanged(epoch, generation)) {
+        error = "template generation " + std::to_string(generation) +
+                " changed while loading";
+        return false;
+    }
     // Another task may have loaded it meanwhile; keep whichever set is complete.
     if (findTemplateSetLocked(generation) != nullptr) return true;
     TemplateSet& slot = cache.draft;
@@ -1944,10 +1999,12 @@ bool CourseStore::prepareActiveTemplates(std::uint32_t generation,
         error = "invalid generation";
         return false;
     }
+    CacheEpoch epoch;
     {
         CacheGuard guard;
         const TemplateCacheState& cache = templateCache();
         if (cache.active.loaded && cache.active.generation == generation) return true;
+        epoch = captureEpoch(generation);
     }
     TemplateSet loaded;
     if (!loadIntoSlot(*this, generation, loaded, error)) return false;
@@ -1955,6 +2012,11 @@ bool CourseStore::prepareActiveTemplates(std::uint32_t generation,
 
     CacheGuard guard;
     TemplateCacheState& cache = templateCache();
+    if (!epochUnchanged(epoch, generation)) {
+        error = "template generation " + std::to_string(generation) +
+                " changed while loading";
+        return false;
+    }
     if (cache.active.loaded && cache.active.generation == generation) return true;
     TemplateSet& slot = cache.active;
     slot.items.swap(loaded.items);
@@ -1993,6 +2055,8 @@ bool CourseStore::lookupTemplate(std::uint32_t generation, const std::string& na
 
 void CourseStore::invalidateTemplates() {
     CacheGuard guard;
+    ++g_globalEpoch;
+    if (g_globalEpoch == 0) g_globalEpoch = 1;
     clearTemplateCache();
 }
 
