@@ -217,3 +217,14 @@ pre-скриптом `scripts/gzip_web.py`.
   пик импорта 42 КБ, резидентных данных нет.
 - Тесты: store 368/368, editor 546, course 578, scheduler 130, active_day 275,
   emergency 58; ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 86.8 % (1 364 957 Б).
+
+## 9. Этап C (copy-on-write) выполнен
+
+- Правка ссылочного дня уже была копией (`loadDay` разрешает шаблон), добавлена загрузка
+  набора шаблонов в точках редактирования: `courseEnsureTemplates()` в `schedule.cpp`
+  (add/edit/delete/day-json), `editingGeneration()`/`ensureEditableGeneration()` в
+  `course_editor.cpp`.
+- Boot/Apply/Activate/полночь/восстановление не тронуты (этап E).
+- Тесты: store 458, editor 567, scheduler 154, course 578, active_day 275, emergency 58;
+  ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 86.8 % (1 365 185 Б).
+- Память COW: store 15 КБ, editor saveDay (с клоном черновика) 41 КБ.

@@ -1262,6 +1262,85 @@ void testCompactImportFailureKeepsCourse() {
           "the published course no longer validates: " + error);
 }
 
+// Stage C: the editor edits a reference day as its own copy.
+void testCopyOnWriteDay() {
+    resetHost();
+    std::string error;
+    course::Course course;
+    course.name = "cow course";
+    for (int i = 0; i < 3; ++i) {
+        course::Event e;
+        e.id = static_cast<std::uint32_t>(i + 1);
+        e.hour = static_cast<std::uint8_t>(5 + i);
+        e.minute = 0;
+        e.track = 1;
+        e.loop = 1;
+        e.volume = 10;
+        e.enabled = true;
+        e.description = "tpl " + std::to_string(i);
+        course.templates["practice"].push_back(e);
+    }
+    for (int d = 0; d < 4; ++d) {
+        course::Day day;
+        day.templateName = "practice";
+        course.days.push_back(day);
+    }
+    course_store::CourseStore store;
+    std::uint32_t published = 0;
+    course_store::CalendarState state;
+    check(store.applyCompactCourse(course, published, state, error),
+          "compact apply failed: " + error);
+
+    // Reading a reference day resolves it through the generation's templates,
+    // even when the cache starts empty (fresh boot).
+    store.invalidateTemplates();
+    std::string json;
+    check(course_editor::dayJson(1, json, error), "dayJson failed: " + error);
+    check(json.find("\"hour\":6") != std::string::npos,
+          "dayJson did not resolve the shared template");
+
+    // Editing writes an individual copy; the active generation stays intact.
+    const std::string edited =
+        "[{\"id\":9,\"hour\":9,\"min\":15,\"track\":1,\"loop\":1,\"vol\":10,"
+        "\"en\":true,\"desc\":\"individual\"}]";
+    check(course_editor::saveDay(1, edited, error), "saveDay failed: " + error);
+
+    course_store::CalendarState cal;
+    check(store.loadCalendar(cal, error), "calendar: " + error);
+    check(cal.active_generation == published, "the published generation changed");
+    check(cal.draft_generation != 0 && cal.draft_generation != cal.active_generation,
+          "the edit did not use a private draft generation");
+
+    check(store.prepareTemplates(cal.draft_generation, error),
+          "prepare draft failed: " + error);
+    course::Day day;
+    check(store.loadDay(cal.draft_generation, 1, day, error), "load edited: " + error);
+    check(day.events.size() == 1 && day.events[0].description == "individual",
+          "the edit was not stored as an individual day");
+    course::Day neighbour;
+    check(store.loadDay(cal.draft_generation, 2, neighbour, error), "load neighbour: " + error);
+    check(neighbour.events.size() == 3, "a neighbouring day changed");
+
+    // The published course still has the shared template everywhere.
+    check(store.prepareTemplates(published, error), "prepare active failed: " + error);
+    course::Day publishedDay;
+    check(store.loadDay(published, 1, publishedDay, error), "load published day: " + error);
+    check(publishedDay.events.size() == 3, "the published course was edited in place");
+
+    // Clearing a day is also an individual copy (an empty own-event day), and
+    // it must work with a cold cache.
+    store.invalidateTemplates();
+    check(course_editor::clearDay(3, error), "clearDay failed: " + error);
+    check(store.prepareTemplates(cal.draft_generation, error), "prepare draft: " + error);
+    course::Day cleared;
+    check(store.loadDay(cal.draft_generation, 3, cleared, error), "load cleared: " + error);
+    check(cleared.events.empty() && cleared.hasOwnEvents,
+          "a cleared day did not become an empty individual day");
+    course::Day untouched;
+    check(store.loadDay(cal.draft_generation, 0, untouched, error), "load day 0: " + error);
+    check(untouched.events.size() == 3, "clearing one day emptied another");
+}
+
 int main() {
     runGroup("empty store", testEmptyStore);
     runGroup("initial reference course", testInitialReferenceCourse);
@@ -1290,6 +1369,7 @@ int main() {
     runGroup("compact import", testCompactImport);
     runGroup("compact import rejects expanded", testCompactImportRejectsExpanded);
     runGroup("compact import failure keeps course", testCompactImportFailureKeepsCourse);
+    runGroup("copy-on-write day", testCopyOnWriteDay);
     runGroup("operator sized course", testOperatorSizedCourse);
     runGroup("heap budget", testHeapBudget);
     runGroup("published course ignores bootstrap", testPublishedCourseIgnoresBootstrap);

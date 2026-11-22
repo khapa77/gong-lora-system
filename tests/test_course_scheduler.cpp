@@ -112,6 +112,7 @@ static void resetRuntime() {
     courseLastFireValid = false;
     courseTransitionPending = false;
     courseStore = course_store::CourseStore();
+    courseStore.invalidateTemplates();
     emergency::resetRuntime();
     onScheduleTrigger = audioCallback;
     audioCalls = 0;
@@ -568,6 +569,110 @@ static void test_published_course_needs_manual_activation() {
 // ---- runner --------------------------------------------------------------
 struct TestCase { const char* name; void (*fn)(); };
 
+// Stage C: the scheduler's day editors copy a reference day before changing it.
+static void test_cow_scheduler_edits_reference_day() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22);
+
+    // Mixed tpl1 generation: day 0 has its own events (so boot and activation
+    // work before stage E), days 1..3 reference the shared template.
+    course::Course c;
+    c.name = "cow-course";
+    for (int i = 0; i < 4; ++i) {
+        course::Event e;
+        e.id = static_cast<std::uint32_t>(i + 1);
+        e.hour = static_cast<std::uint8_t>(5 + i);
+        e.minute = 0;
+        e.track = 1;
+        e.loop = 1;
+        e.volume = 10;
+        e.enabled = true;
+        e.description = "tpl" + std::to_string(i);
+        c.templates["practice"].push_back(e);
+    }
+    course::Day day0;
+    day0.hasOwnEvents = true;
+    {
+        course::Event e;
+        e.id = 1;
+        e.hour = 4;
+        e.minute = 0;
+        e.track = 1;
+        e.loop = 1;
+        e.volume = 10;
+        e.enabled = true;
+        e.description = "day0";
+        day0.events.push_back(e);
+    }
+    c.days.push_back(day0);
+    for (int d = 1; d < 4; ++d) {
+        course::Day day;
+        day.templateName = "practice";
+        c.days.push_back(day);
+    }
+
+    course_store::CourseStore store;
+    std::uint32_t generation = 0;
+    course_store::CalendarState state;
+    std::string err;
+    check(store.applyCompactCourse(c, generation, state, err),
+          "compact apply failed");
+
+    sched_setup();
+    check(sched_activateDay(0), "activate day 0");
+    check(courseRunning && activeDay == 0, "day 0 active");
+
+    // Drop the cache the way a fresh boot would (stage E loads it at boot):
+    // editing a reference day must fetch the set itself.
+    courseStore.invalidateTemplates();
+    check(store.cachedTemplateGeneration() == 0, "cache not cleared for the test");
+
+    // Add to a reference day: only that day may gain the event.
+    check(sched_addToDay(2, 21, 30, String("cow"), 1, 1, 10),
+          "add to reference day failed");
+    course::Day day2;
+    check(store.loadDay(generation, 2, day2, err), "day 2 load failed");
+    check(day2.events.size() == 5, "added event not stored on day 2");
+    course::Day day1;
+    check(store.loadDay(generation, 1, day1, err), "day 1 load failed");
+    check(day1.events.size() == 4, "adding to day 2 changed day 1");
+
+    // Edit and delete on other reference days.
+    check(sched_editInDay(1, 1, 5, 30, String("edited"), 1, 1, true, 10),
+          "edit reference day failed");
+    check(sched_delFromDay(3, 4), "delete from reference day failed");
+
+    // Reboot at the store level: the individual days and the shared template
+    // must survive exactly as written.
+    host::nvs().reboot();
+    store.invalidateTemplates();
+    check(store.prepareTemplates(generation, err), "prepare after reboot failed");
+
+    course::Day reread2;
+    check(store.loadDay(generation, 2, reread2, err), "day 2 after reboot failed");
+    check(reread2.events.size() == 5, "individual events lost across the reboot");
+    course::Day reread1;
+    check(store.loadDay(generation, 1, reread1, err), "day 1 after reboot failed");
+    check(reread1.events.size() == 4, "edit lost across the reboot");
+    check(reread1.events[0].hour == 5 && reread1.events[0].minute == 30,
+          "edited time lost across the reboot");
+    course::Day reread3;
+    check(store.loadDay(generation, 3, reread3, err), "day 3 after reboot failed");
+    check(reread3.events.size() == 3, "delete lost across the reboot");
+    course::Day reread0;
+    check(store.loadDay(generation, 0, reread0, err), "day 0 after reboot failed");
+    check(reread0.events.size() == 1, "the active day changed");
+
+    // The shared template is still the source for days nobody touched.
+    check(host::files()["/course/g" + std::to_string(generation) + "/d02.json"]
+                  .find("\"events\"") != std::string::npos,
+          "day 2 was not materialised");
+    // And the live schedule did not need a second activation.
+    check(courseRunning && activeDay == 0, "active day lost after day edits");
+    check(count == 1 && entries[0].description == "day0",
+          "the live day changed while editing other days");
+}
+
 int main() {
     TestCase tests[] = {
         {"boot_applied_no_calls", test_boot_applied_no_calls},
@@ -596,6 +701,7 @@ int main() {
         {"replace_course_different_length", test_replace_course_different_length},
         {"no_course_waits", test_no_course_waits},
         {"published_course_needs_manual_activation", test_published_course_needs_manual_activation},
+        {"cow_scheduler_edits_reference_day", test_cow_scheduler_edits_reference_day},
     };
     for (const TestCase& t : tests) {
         const int before = failures;

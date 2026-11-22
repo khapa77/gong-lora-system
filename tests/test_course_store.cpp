@@ -1136,6 +1136,252 @@ void compact_draft_does_not_publish() {
     check(store.loadDay(draft, 0, day, error), "draft day: " + error);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Stage C: copy-on-write for days that reference a shared template.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// writeAtomic() works on the base name: dNN.tmp / dNN.bak, not dNN.json.tmp.
+std::string dayBasePath(std::uint32_t generation, int day) {
+    char name[8];
+    std::snprintf(name, sizeof(name), "d%02u", static_cast<unsigned>(day));
+    return std::string("/course/g") + std::to_string(generation) + "/" + name;
+}
+
+std::string dayFile(std::uint32_t generation, int day) {
+    char name[8];
+    std::snprintf(name, sizeof(name), "d%02u", static_cast<unsigned>(day));
+    return std::string("/course/g") + std::to_string(generation) + "/" + name + ".json";
+}
+
+void cow_reference_day_becomes_individual() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 3, "practice", 4, error), "seed failed: " + error);
+    course_store::CourseStore store;
+    check(store.prepareTemplates(1, error), "prepare failed: " + error);
+    course::Day day;
+    check(store.loadDay(1, 1, day, error), "load day 1 failed: " + error);
+    check(day.events.size() == 4, "template events missing");
+
+    const std::string templatesBefore = host::files()[templatesPath(1)];
+    const std::string day0Before = host::files()[dayFile(1, 0)];
+    const std::string day2Before = host::files()[dayFile(1, 2)];
+
+    // Everything the editor changes happens on its own copy of the day.
+    day.events.push_back(event(21, 30, "individual", 9));
+    check(store.saveDayAtomic(1, 1, day, error), "save day 1 failed: " + error);
+
+    check(host::files()[templatesPath(1)] == templatesBefore,
+          "templates.json was modified by a day edit");
+    check(host::files()[dayFile(1, 0)] == day0Before, "day 0 was rewritten");
+    check(host::files()[dayFile(1, 2)] == day2Before, "day 2 was rewritten");
+    check(host::files()[dayFile(1, 1)].find("\"events\"") != std::string::npos,
+          "the edited day is not an own-event file");
+
+    // Reboot: RAM is dropped, flash is kept.
+    host::nvs().reboot();
+    store.invalidateTemplates();
+    check(store.prepareTemplates(1, error), "prepare after reboot failed: " + error);
+    course::Day reloaded;
+    check(store.loadDay(1, 1, reloaded, error), "reload day 1 failed: " + error);
+    check(reloaded.events.size() == 5, "individual event lost across the reboot");
+    check(reloaded.events[4].description == "individual", "individual payload changed");
+    course::Day neighbour;
+    check(store.loadDay(1, 0, neighbour, error), "reload day 0 failed: " + error);
+    check(neighbour.events.size() == 4, "a day sharing the template changed");
+    check(host::files()[dayFile(1, 0)].find("\"events\"") == std::string::npos,
+          "an untouched reference day became individual");
+}
+
+void cow_add_edit_disable_remove() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 3, "practice", 4, error), "seed failed: " + error);
+    course_store::CourseStore store;
+    check(store.prepareTemplates(1, error), "prepare failed: " + error);
+
+    course::Day day;
+    check(store.loadDay(1, 0, day, error), "load failed: " + error);
+
+    // add
+    day.events.push_back(event(22, 45, "added", 7));
+    check(store.saveDayAtomic(1, 0, day, error), "add failed: " + error);
+    check(store.loadDay(1, 0, day, error), "reload failed: " + error);
+    check(day.events.size() == 5, "add did not persist");
+
+    // edit
+    day.events[0].hour = 6;
+    day.events[0].minute = 10;
+    day.events[0].description = "edited";
+    check(store.saveDayAtomic(1, 0, day, error), "edit failed: " + error);
+    check(store.loadDay(1, 0, day, error), "reload failed: " + error);
+    check(day.events[0].description == "edited" && day.events[0].hour == 6,
+          "edit did not persist");
+
+    // disable
+    day.events[1].enabled = false;
+    check(store.saveDayAtomic(1, 0, day, error), "disable failed: " + error);
+    check(store.loadDay(1, 0, day, error), "reload failed: " + error);
+    check(!day.events[1].enabled, "disable did not persist");
+
+    // remove
+    day.events.erase(day.events.begin() + 2);
+    check(store.saveDayAtomic(1, 0, day, error), "remove failed: " + error);
+    check(store.loadDay(1, 0, day, error), "reload failed: " + error);
+    check(day.events.size() == 4, "remove did not persist");
+
+    // The shared template is untouched: another day on it still has 4 events.
+    course::Day other;
+    check(store.loadDay(1, 2, other, error), "load day 2 failed: " + error);
+    check(other.events.size() == 4, "removing from one day changed the template");
+    check(other.events[0].description == "tpl 0", "template payload changed");
+}
+
+void cow_multiple_individual_days() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 4, "practice", 3, error), "seed failed: " + error);
+    course_store::CourseStore store;
+    check(store.prepareTemplates(1, error), "prepare failed: " + error);
+    for (int d : {0, 3}) {
+        course::Day day;
+        check(store.loadDay(1, static_cast<std::uint8_t>(d), day, error),
+              "load failed: " + error);
+        day.events.push_back(event(23, d, "own " + std::to_string(d), 5));
+        check(store.saveDayAtomic(1, static_cast<std::uint8_t>(d), day, error),
+              "save failed: " + error);
+    }
+    for (int d : {0, 3}) {
+        course::Day own;
+        check(store.loadDay(1, static_cast<std::uint8_t>(d), own, error),
+              "reload failed: " + error);
+        check(own.events.size() == 4, "individual day lost its edit");
+    }
+    for (int d : {2, 1}) {
+        course::Day shared;
+        check(store.loadDay(1, static_cast<std::uint8_t>(d), shared, error),
+              "reload failed: " + error);
+        check(shared.events.size() == 3, "shared day changed");
+        check(host::files()[dayFile(1, d)].find("\"events\"") == std::string::npos,
+              "shared day became individual");
+    }
+}
+
+void cow_fs_failure_keeps_day() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 2, "practice", 3, error), "seed failed: " + error);
+    course_store::CourseStore store;
+    check(store.prepareTemplates(1, error), "prepare failed: " + error);
+    course::Day day;
+    check(store.loadDay(1, 1, day, error), "load failed: " + error);
+    const std::string before = host::files()[dayFile(1, 1)];
+
+    day.events.push_back(event(9, 45, "must not persist", 4));
+    host::fs().failWrite = true;
+    host::fs().path = dayBasePath(1, 1) + ".tmp";
+    check(!store.saveDayAtomic(1, 1, day, error), "a failed write must be reported");
+    host::fs().failWrite = false;
+    host::fs().path.clear();
+
+    check(host::files()[dayFile(1, 1)] == before, "a failed write changed the day file");
+    course::Day reloaded;
+    check(store.loadDay(1, 1, reloaded, error), "reload failed: " + error);
+    check(reloaded.events.size() == 3, "a failed write left changed events");
+}
+
+void cow_tmp_bak_recovery() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 2, "practice", 3, error), "seed failed: " + error);
+    course_store::CourseStore store;
+    course_store::CalendarState state;
+    state.active_generation = 1;
+    state.course_length = 2;
+    state.flags = course_store::kApplied;
+    check(store.saveCalendar(state, error), "calendar failed: " + error);
+    check(store.prepareTemplates(1, error), "prepare failed: " + error);
+
+    // An individual day was written, then the replacement was interrupted:
+    // the new content is in .tmp and the published file is damaged.
+    course::Day individual;
+    individual.hasOwnEvents = true;
+    individual.events.push_back(event(8, 0, "individual v1", 1));
+    check(store.saveDayAtomic(1, 1, individual, error), "initial save failed: " + error);
+    individual.events.push_back(event(9, 0, "individual v2", 2));
+    check(store.saveDayAtomic(1, 1, individual, error), "second save failed: " + error);
+
+    // Simulate a torn replace: valid new payload in .tmp, damaged .json.
+    const std::string good = host::files()[dayFile(1, 1)];
+    host::files()[dayBasePath(1, 1) + ".tmp"] = good;
+    host::files()[dayFile(1, 1)] = "CRC32 00000000\n{";
+
+    check(store.recover(error), "recover failed: " + error);
+    check(host::files().find(dayBasePath(1, 1) + ".tmp") == host::files().end(),
+          "recover left the tmp file behind");
+    course::Day recovered;
+    check(store.loadDay(1, 1, recovered, error), "load after recover failed: " + error);
+    check(recovered.events.size() == 2, "recover lost the individual events");
+    check(recovered.events.size() > 1 && recovered.events[1].description == "individual v2",
+          "recover restored old data");
+    course::Day shared;
+    check(store.loadDay(1, 0, shared, error), "shared day after recover failed: " + error);
+    check(shared.events.size() == 3, "recover broke a shared day");
+}
+
+void cow_cache_generation_after_clone() {
+    resetHost();
+    std::string error;
+    check(seedTemplateGeneration(1, 2, "practice", 3, error), "seed failed: " + error);
+    course_store::CourseStore store;
+    check(store.prepareTemplates(1, error), "prepare failed: " + error);
+    std::uint32_t clone = 0;
+    check(store.cloneGeneration(1, clone, error), "clone failed: " + error);
+    check(clone != 1, "clone reused the source id");
+
+    // Validating the clone loads its own set, never the source generation's.
+    check(store.cachedTemplateGeneration() == clone,
+          "the clone was not tagged in the cache");
+    course::Day day;
+    check(store.loadDay(clone, 0, day, error), "clone day load failed: " + error);
+    check(day.events.size() == 3, "clone lost the template events");
+
+    // Switch the cache back to the source generation: a load of the clone must
+    // then be refused instead of being served from another generation.
+    check(store.prepareTemplates(1, error), "prepare source failed: " + error);
+    error.clear();
+    check(!store.loadDay(clone, 0, day, error),
+          "the clone was served from the source generation's cache");
+    check(error.find("not loaded") != std::string::npos, "unclear error: " + error);
+    check(store.prepareTemplates(clone, error), "prepare clone failed: " + error);
+    check(store.loadDay(clone, 0, day, error), "clone day load after reload failed: " + error);
+}
+
+void cow_expanded_generation_unchanged() {
+    resetHost();
+    course_store::CourseStore store;
+    std::uint32_t generation = 0;
+    course_store::CalendarState state;
+    std::string error;
+    check(store.applyCourse(makeCourse(3), generation, state, error),
+          "expanded apply failed: " + error);
+    check(store.prepareTemplates(generation, error), "prepare failed: " + error);
+    course::Day day;
+    check(store.loadDay(generation, 1, day, error), "load failed: " + error);
+    day.events.push_back(event(12, 0, "extra", 5));
+    check(store.saveDayAtomic(generation, 1, day, error), "save failed: " + error);
+
+    course_store::CourseMeta meta;
+    check(store.loadMeta(generation, meta, error), "meta failed: " + error);
+    check(meta.layout == course_store::kLayoutExpanded,
+          "editing an expanded generation changed its layout");
+    check(host::files().find(templatesPath(generation)) == host::files().end(),
+          "an expanded generation gained a templates file");
+    course::Day reloaded;
+    check(store.loadDay(generation, 1, reloaded, error), "reload failed: " + error);
+    check(reloaded.events.size() == 2, "expanded day edit did not persist");
+}
+
 int main() {
     runGroup("calendar_roundtrip", calendar_roundtrip);
     runGroup("calendar_crc_corruption", calendar_crc_corruption);
@@ -1192,6 +1438,16 @@ int main() {
              compact_failures_keep_published_course);
     runGroup("compact_roundtrip_and_clone", compact_roundtrip_and_clone);
     runGroup("compact_draft_does_not_publish", compact_draft_does_not_publish);
+
+    // Stage C: copy-on-write for days that share a template.
+    runGroup("cow_reference_day_becomes_individual",
+             cow_reference_day_becomes_individual);
+    runGroup("cow_add_edit_disable_remove", cow_add_edit_disable_remove);
+    runGroup("cow_multiple_individual_days", cow_multiple_individual_days);
+    runGroup("cow_fs_failure_keeps_day", cow_fs_failure_keeps_day);
+    runGroup("cow_tmp_bak_recovery", cow_tmp_bak_recovery);
+    runGroup("cow_cache_generation_after_clone", cow_cache_generation_after_clone);
+    runGroup("cow_expanded_generation_unchanged", cow_expanded_generation_unchanged);
 
     std::cout << "PASS=" << g_pass << " FAIL=" << g_fail << "\n";
     return g_fail == 0 ? 0 : 1;

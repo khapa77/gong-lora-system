@@ -182,6 +182,17 @@ static bool courseEntryFromEvent(const course::Event& e, ScheduleEntry& s) {
     return true;
 }
 
+// Editing a day of a template generation needs that generation's template set
+// in RAM. Only the editing entry points below call this: boot, Apply, Activate
+// and the midnight advance stay untouched (stage E wires the cache there).
+static bool courseEnsureTemplates() {
+    if (courseGeneration == 0) return false;
+    std::string err;
+    if (courseStore.prepareTemplates(courseGeneration, err)) return true;
+    logPrintf("[COURSE] templates unavailable: %s\n", err.c_str());
+    return false;
+}
+
 static bool courseLoadDay(uint8_t day, course::Day& out) {
     if (courseGeneration == 0 || day >= courseLength) return false;
     std::string err;
@@ -512,6 +523,7 @@ static bool courseRecoveryCheck() {
 // and flushed through sched_saveNow()/courseSaveActiveEntries().
 static bool courseDayAddEvent(uint8_t day, uint8_t h, uint8_t m, const String& desc,
                               uint8_t track, uint8_t loop, uint8_t vol) {
+    if (!courseEnsureTemplates()) return false;
     course::Day d;
     if (!courseLoadDay(day, d)) return false;
     if (d.events.size() >= MAX_SCHEDULES) return false;
@@ -537,6 +549,7 @@ static bool courseDayAddEvent(uint8_t day, uint8_t h, uint8_t m, const String& d
 static bool courseDayEditEvent(uint8_t day, uint32_t id, uint8_t h, uint8_t m,
                                const String& desc, uint8_t track, uint8_t loop, uint8_t vol,
                                bool enabled) {
+    if (!courseEnsureTemplates()) return false;
     course::Day d;
     if (!courseLoadDay(day, d)) return false;
     for (size_t i = 0; i < d.events.size(); ++i) {
@@ -557,6 +570,7 @@ static bool courseDayEditEvent(uint8_t day, uint32_t id, uint8_t h, uint8_t m,
 }
 
 static bool courseDayDeleteEvent(uint8_t day, uint32_t id) {
+    if (!courseEnsureTemplates()) return false;
     course::Day d;
     if (!courseLoadDay(day, d)) return false;
     for (size_t i = 0; i < d.events.size(); ++i) {
@@ -569,6 +583,7 @@ static bool courseDayDeleteEvent(uint8_t day, uint32_t id) {
 }
 
 static String courseDayJson(uint8_t day) {
+    if (!courseEnsureTemplates()) return String();
     course::Day d;
     if (!courseLoadDay(day, d)) return String();
     DynamicJsonDocument doc(4096);

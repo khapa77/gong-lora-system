@@ -746,12 +746,14 @@ bool editingGeneration(std::uint32_t& generation, bool& published,
             return false;
         }
         generation = bootstrap;
-        return true;
+        // A template draft cannot be read without its own template set.
+        return store.prepareTemplates(generation, error);
     }
     published = true;
     course_store::CalendarState cal;
     if (!loadCalendar(cal, error)) return false;
-    return readGeneration(cal, generation, error);
+    if (!readGeneration(cal, generation, error)) return false;
+    return store.prepareTemplates(generation, error);
 }
 
 // A generation that may be written to. With a published course that is always
@@ -765,7 +767,10 @@ bool ensureEditableGeneration(course_store::CalendarState& cal,
     course_store::CourseStore store;
     if (store.hasCalendar()) {
         published = true;
-        return ensureDraft(cal, generation, error);
+        if (!ensureDraft(cal, generation, error)) return false;
+        // ensureDraft() may have cloned the active generation; a template
+        // generation is only editable once its own template set is loaded.
+        return store.prepareTemplates(generation, error);
     }
     return editingGeneration(generation, published, error);
 }
