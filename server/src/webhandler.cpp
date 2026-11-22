@@ -456,7 +456,7 @@ static String statusJSON() {
     doc["time_source"] = time_sourceName();   // ntp | rtc | manual | none — chosen automatically
     doc["ntp_age"]     = time_ntpAgeSec();    // s since last NTP sync, -1 = never
     doc["active_day"]  = sched_getActiveDay();
-    doc["day_count"]   = DAY_COUNT;
+    doc["day_count"]   = sched_dayCount();
     // Health — anything here that is false/true-bad means gongs may not ring.
     doc["fs_ok"]        = sys_fsOk();
     doc["sched_error"]  = sched_hasError();
@@ -512,7 +512,7 @@ static void handleAuthDisable() {
 static String daysJSON() {
     DynamicJsonDocument doc(64);
     doc["active"] = sched_getActiveDay();
-    doc["count"]  = DAY_COUNT;
+    doc["count"]  = sched_dayCount();
     doc["ended"]  = sched_courseEnded();
     String s; serializeJson(doc, s);
     return s;
@@ -522,13 +522,13 @@ static void handleDaysStatus() { sendJSON(200, daysJSON()); }
 
 static void handleDayGet() {
     int n = server.arg("n").toInt();
-    if (n < 0 || n >= DAY_COUNT) { sendErr("invalid day"); return; }
+    if (n < 0 || n >= sched_dayCount()) { sendErr("invalid day"); return; }
     sendJSON(200, sched_dayJSON((uint8_t)n));
 }
 
 static void handleDayActivate() {
     int n = server.arg("n").toInt();
-    if (n < 0 || n >= DAY_COUNT) { sendErr("invalid day"); return; }
+    if (n < 0 || n >= sched_dayCount()) { sendErr("invalid day"); return; }
     if (sched_activateDay((uint8_t)n)) sendOK();
     else sendErr("day file missing or unreadable");
 }
@@ -542,7 +542,7 @@ static void handleTracksGet() { sendJSON(200, mp3_listTracksJSON()); }
 // -------------------------------------------------------
 static void handleDayEntryPOST() {
     int day = server.arg("day").toInt();
-    if (day < 0 || day >= DAY_COUNT) { sendErr("invalid day"); return; }
+    if (day < 0 || day >= sched_dayCount()) { sendErr("invalid day"); return; }
     EntryArgs e;
     if (!parseEntry(e)) return;
     if (sched_addToDay((uint8_t)day, e.hour, e.min, e.desc, e.track, e.loop, e.vol)) sendOK();
@@ -552,7 +552,7 @@ static void handleDayEntryPOST() {
 static void handleDayEntryPUT() {
     int      day = server.arg("day").toInt();
     uint32_t id  = server.arg("id").toInt();
-    if (day < 0 || day >= DAY_COUNT) { sendErr("invalid day"); return; }
+    if (day < 0 || day >= sched_dayCount()) { sendErr("invalid day"); return; }
     if (!id) { sendErr("missing id"); return; }
     EntryArgs e;
     if (!parseEntry(e)) return;
@@ -563,7 +563,7 @@ static void handleDayEntryPUT() {
 static void handleDayEntryDELETE() {
     int      day = server.arg("day").toInt();
     uint32_t id  = server.arg("id").toInt();
-    if (day < 0 || day >= DAY_COUNT) { sendErr("invalid day"); return; }
+    if (day < 0 || day >= sched_dayCount()) { sendErr("invalid day"); return; }
     if (!id) { sendErr("missing id"); return; }
     if (sched_delFromDay((uint8_t)day, id)) sendOK();
     else sendErr("not found or day file unreadable");
@@ -592,7 +592,7 @@ static void handleCourseDayPUT() {
     if (!parseBody(doc, maxLen)) return;
     if (!doc["day"].is<int>()) { sendErr("day is required"); return; }
     int day = doc["day"];
-    if (day < 0 || day >= DAY_COUNT) { sendErr("invalid day"); return; }
+    if (day < 0 || day >= sched_dayCount()) { sendErr("invalid day"); return; }
     String err;
     if (!sched_stageDay((uint8_t)day, doc["entries"].as<JsonArrayConst>(), err)) {
         char pre[16];

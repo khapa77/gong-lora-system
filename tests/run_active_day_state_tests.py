@@ -44,7 +44,9 @@ def main() -> int:
         "-I", str(root / "tests/host"), "-I", str(json_headers),
         "-include", str(root / "tests/host/json_allocator.h"),
         str(root / "tests/test_active_day_state.cpp"),
-        str(root / "server/src/active_day_state.cpp"), "-o", str(binary),
+        str(root / "server/src/active_day_state.cpp"),
+        str(root / "server/src/course_model.cpp"),
+        str(root / "server/src/course_store.cpp"), "-o", str(binary),
     ]
     if args.sanitize:
         sanitizers = "address,undefined" if args.sanitize == "address" else "undefined"

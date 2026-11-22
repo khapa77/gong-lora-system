@@ -36,6 +36,7 @@ bool   sched_load();
 String sched_dayJSON(uint8_t day);      // read /dayNN.conf → JSON (no memory change)
 bool   sched_activateDay(uint8_t day);  // load /dayNN.conf as active schedule
 int    sched_getActiveDay();            // -1 if not set
+uint8_t sched_dayCount();               // active course length (DAY_COUNT in legacy mode)
 bool   sched_courseEnded();             // true if active day is the last day (DAY_COUNT-1)
 bool   sched_hasError();                // file/preparation or persistence failure
 active_day::Status sched_persistenceStatus();

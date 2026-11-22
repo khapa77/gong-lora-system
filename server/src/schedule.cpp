@@ -2,6 +2,7 @@
 #include "config.h"
 #include "mp3handler.h"
 #include "active_day_state.h"
+#include "course_store.h"
 #include "sysstate.h"
 #include <LittleFS.h>
 #include <time.h>
@@ -46,7 +47,27 @@ static ScheduleFileState scheduleFileState = ScheduleFileState::Unprepared;
 static active_day::Record loadedRecord;
 static active_day::Source loadedSource = active_day::Source::Error;
 
+// ── Cyclic course state (stage 3) ─────────────────────────────────────────
+// When a course_state record exists in NVS the scheduler runs from the
+// generation-based course store instead of the legacy dayNN.conf path. The
+// legacy path is kept unchanged for existing installations and host tests.
+static bool courseMode = false;
+static bool courseRunning = false;
+static bool courseSuspended = false;
+static bool courseDayValid = false;
+static uint8_t courseDay = 0;
+static uint8_t courseLength = 0;
+static uint32_t courseGeneration = 0;
+static course_store::CalendarState courseCal;
+static course_store::LastFire courseLastFire;
+static bool courseLastFireValid = false;
+static course_store::CourseStore courseStore;
+
 static bool schedulerReady() {
+    if (courseMode) {
+        return courseRunning && !courseSuspended && courseDayValid &&
+            scheduleFileState == ScheduleFileState::Ready;
+    }
     return activeStore.status() == active_day::Status::Ready && executionRunning &&
         scheduleFileState == ScheduleFileState::Ready;
 }
@@ -105,6 +126,341 @@ static int daysBetween(const String& from, const String& to) {
 
 static bool sched_parseFromPath(const char* path);
 static bool sched_saveNow();
+
+// ── Cyclic course helpers ─────────────────────────────────────────────────
+static bool courseDateFromClock(course::Date& out) {
+    struct tm ti;
+    if (!localNow(ti) || ti.tm_year < 124) return false;
+    out.year = ti.tm_year + 1900;
+    out.month = ti.tm_mon + 1;
+    out.day = ti.tm_mday;
+    return true;
+}
+
+static uint32_t courseDateNumber(const course::Date& d) {
+    return (uint32_t)d.year * 10000u + (uint32_t)d.month * 100u + (uint32_t)d.day;
+}
+
+static course::Date courseDateFromClockNow() {
+    course::Date d;
+    struct tm ti;
+    if (localNow(ti)) {
+        d.year = ti.tm_year + 1900;
+        d.month = ti.tm_mon + 1;
+        d.day = ti.tm_mday;
+    }
+    return d;
+}
+
+static void courseEventFromEntry(const ScheduleEntry& s, course::Event& e) {
+    e.id = s.id;
+    e.hour = s.hour;
+    e.minute = s.minute;
+    e.track = s.track;
+    e.loop = s.loop;
+    e.volume = s.vol;
+    e.enabled = s.enabled;
+    e.description = std::string(s.description.c_str());
+}
+
+static bool courseEntryFromEvent(const course::Event& e, ScheduleEntry& s) {
+    if (e.hour > 23 || e.minute > 59) return false;
+    s.id = e.id;
+    s.hour = e.hour;
+    s.minute = e.minute;
+    s.track = e.track;
+    s.loop = e.loop;
+    s.vol = e.volume;
+    s.enabled = e.enabled;
+    s.description = String(e.description.c_str());
+    return true;
+}
+
+static bool courseLoadDay(uint8_t day, course::Day& out) {
+    if (courseGeneration == 0 || day >= courseLength) return false;
+    std::string err;
+    if (!courseStore.loadDay(courseGeneration, day, out, err)) {
+        logPrintf("[COURSE] load day %u failed: %s\n", (unsigned)day, err.c_str());
+        return false;
+    }
+    return true;
+}
+
+// Replaces the live RAM schedule with one course day. Filesystem I/O happens
+// before the lock; only the RAM swap is locked.
+static bool coursePublishDay(uint8_t day, bool allowCalls) {
+    course::Day d;
+    if (!courseLoadDay(day, d)) return false;
+    if (d.events.size() > MAX_SCHEDULES) return false;
+    uint32_t maxId = 0;
+    sys_lock();
+    for (size_t i = 0; i < d.events.size(); ++i) {
+        ScheduleEntry s{};
+        if (!courseEntryFromEvent(d.events[i], s)) {
+            sys_unlock();
+            return false;
+        }
+        entries[i] = s;
+        if (s.id > maxId) maxId = s.id;
+    }
+    for (size_t i = d.events.size(); i < MAX_SCHEDULES; ++i) entries[i] = ScheduleEntry{};
+    count = (uint8_t)d.events.size();
+    nextId = maxId + 1;
+    activeDay = (int)day;
+    activeDate = currentDateStr();
+    executionRunning = allowCalls;
+    scheduleFileState = ScheduleFileState::Ready;
+    sys_unlock();
+    courseDay = day;
+    courseDayValid = true;
+    return true;
+}
+
+static void courseSuspend(const char* why) {
+    logPrintf("[COURSE] suspended: %s\n", why);
+    courseSuspended = true;
+    courseRunning = false;
+    executionRunning = false;
+    if (courseGeneration != 0) {
+        course_store::CalendarState next = courseCal;
+        next.flags = course_store::kSuspended;
+        if (next.failure_count < 255) next.failure_count++;
+        std::string err;
+        if (!courseStore.saveCalendar(next, err)) {
+            logPrintf("[COURSE] save suspended state failed: %s\n", err.c_str());
+        } else {
+            courseCal = next;
+        }
+    }
+}
+
+static bool courseComputeToday(course::Date& today, uint8_t& day) {
+    if (!courseDateFromClock(today)) return false;
+    const uint32_t act = courseCal.activation_date;
+    if (act < 19700101u) return false;
+    course::Date start;
+    start.year = (int)(act / 10000u);
+    start.month = (int)((act / 100u) % 100u);
+    start.day = (int)(act % 100u);
+    const long long diff = course::civilDaysBetween(start, today);
+    if (diff < 0) return false;
+    long long idx = ((long long)courseCal.day_index + diff) % (long long)courseLength;
+    if (idx < 0) idx += courseLength;
+    day = (uint8_t)idx;
+    return true;
+}
+
+// Saves the live RAM entries as the current day's file (atomic tmp+rename).
+static bool courseSaveActiveEntries() {
+    if (!courseMode || courseGeneration == 0 || !courseDayValid) return false;
+    course::Day d;
+    d.hasOwnEvents = true;
+    d.events.resize(count);
+    for (uint8_t i = 0; i < count; ++i) courseEventFromEntry(entries[i], d.events[i]);
+    std::string err;
+    if (!courseStore.saveDayAtomic(courseGeneration, courseDay, d, err)) {
+        logPrintf("[COURSE] save day %u failed: %s\n", (unsigned)courseDay, err.c_str());
+        return false;
+    }
+    schedPendingSave = false;
+    return true;
+}
+
+static bool courseTransitionPending = false;
+
+static void courseAdvance() {
+    if (!courseMode || !courseRunning || courseSuspended) return;
+    if (courseCal.flags & course_store::kSuspended) return;
+    course::Date today;
+    uint8_t day = 0;
+    if (!courseComputeToday(today, day)) return;
+    if (courseDayValid && day == courseDay) {
+        courseTransitionPending = false;
+        return;
+    }
+    if (mp3_isPlaying()) {
+        // The calendar day has changed, but the old day's schedule must not
+        // ring anymore: wait for the track to end.
+        courseTransitionPending = true;
+        return;
+    }
+    courseTransitionPending = false;
+    if (!coursePublishDay(day, true)) courseSuspend("cannot load next day");
+}
+
+static bool courseTryBoot() {
+    if (!courseStore.hasCalendar()) return false;
+    std::string err;
+    course_store::CalendarState cal;
+    if (!courseStore.loadCalendar(cal, err)) {
+        courseMode = true;
+        courseSuspended = true;
+        courseRunning = false;
+        logPrintf("[COURSE] calendar read failed: %s\n", err.c_str());
+        return true;
+    }
+    courseMode = true;
+    courseCal = cal;
+    courseGeneration = cal.active_generation;
+    courseLength = cal.course_length;
+    courseSuspended = (cal.flags & course_store::kSuspended) != 0;
+    courseRunning = false;
+    if (courseGeneration == 0 || courseLength == 0) {
+        courseSuspended = true;
+        return true;
+    }
+    course_store::LastFire lf;
+    if (courseStore.loadLastFire(lf, err) && lf.generation == courseGeneration) {
+        courseLastFire = lf;
+        courseLastFireValid = true;
+    }
+    if (cal.flags & course_store::kRunning) {
+        course::Date today;
+        uint8_t day = 0;
+        if (!courseComputeToday(today, day)) {
+            courseSuspend("cannot compute current day");
+            return true;
+        }
+        if (!coursePublishDay(day, true)) {
+            courseSuspend("cannot load active day");
+            return true;
+        }
+        courseRunning = true;
+    }
+    return true;
+}
+
+static bool courseActivate(uint8_t day) {
+    if (!courseMode) return false;
+    if (day >= courseLength) return false;
+    if (!sys_fsOk()) return false;
+    mp3_stop();
+    if (schedPendingSave) courseSaveActiveEntries();
+    std::string err;
+    if (!courseStore.validateGeneration(courseGeneration, courseLength, err)) {
+        courseSuspend("generation validation failed");
+        return false;
+    }
+    course::Day d;
+    if (!courseLoadDay(day, d)) {
+        courseSuspend("selected day missing");
+        return false;
+    }
+    course::Date today;
+    if (!courseDateFromClock(today)) return false;
+    course_store::CalendarState next = courseCal;
+    next.day_index = day;
+    next.activation_date = courseDateNumber(today);
+    next.course_length = courseLength;
+    next.flags = course_store::kSuspended;
+    if (!courseStore.saveCalendar(next, err)) {
+        courseSuspended = true;
+        courseRunning = false;
+        executionRunning = false;
+        return false;
+    }
+    courseCal = next;
+    if (!coursePublishDay(day, false)) {
+        courseSuspend("cannot publish selected day");
+        return false;
+    }
+    next.flags = course_store::kRunning;
+    next.failure_count = 0;
+    if (!courseStore.saveCalendar(next, err)) {
+        courseSuspended = true;
+        courseRunning = false;
+        executionRunning = false;
+        return false;
+    }
+    courseCal = next;
+    courseSuspended = false;
+    courseRunning = true;
+    executionRunning = true;
+    logPrintf("[COURSE] activated day %u\n", (unsigned)day);
+    return true;
+}
+
+// Ordinary event editing for non-active days. The active day is edited in RAM
+// and flushed through sched_saveNow()/courseSaveActiveEntries().
+static bool courseDayAddEvent(uint8_t day, uint8_t h, uint8_t m, const String& desc,
+                              uint8_t track, uint8_t loop, uint8_t vol) {
+    course::Day d;
+    if (!courseLoadDay(day, d)) return false;
+    if (d.events.size() >= MAX_SCHEDULES) return false;
+    for (size_t i = 0; i < d.events.size(); ++i)
+        if (d.events[i].hour == h && d.events[i].minute == m) return false;
+    uint32_t maxId = 0;
+    for (size_t i = 0; i < d.events.size(); ++i)
+        if (d.events[i].id > maxId) maxId = d.events[i].id;
+    course::Event e;
+    e.id = maxId + 1;
+    e.hour = h;
+    e.minute = m;
+    e.track = track;
+    e.loop = loop;
+    e.volume = vol;
+    e.enabled = true;
+    e.description = std::string(desc.c_str());
+    d.events.push_back(e);
+    std::string err;
+    return courseStore.saveDayAtomic(courseGeneration, day, d, err);
+}
+
+static bool courseDayEditEvent(uint8_t day, uint32_t id, uint8_t h, uint8_t m,
+                               const String& desc, uint8_t track, uint8_t loop, uint8_t vol,
+                               bool enabled) {
+    course::Day d;
+    if (!courseLoadDay(day, d)) return false;
+    for (size_t i = 0; i < d.events.size(); ++i) {
+        if (d.events[i].id != id) continue;
+        for (size_t j = 0; j < d.events.size(); ++j)
+            if (j != i && d.events[j].hour == h && d.events[j].minute == m) return false;
+        d.events[i].hour = h;
+        d.events[i].minute = m;
+        d.events[i].track = track;
+        d.events[i].loop = loop;
+        d.events[i].volume = vol;
+        d.events[i].enabled = enabled;
+        d.events[i].description = std::string(desc.c_str());
+        std::string err;
+        return courseStore.saveDayAtomic(courseGeneration, day, d, err);
+    }
+    return false;
+}
+
+static bool courseDayDeleteEvent(uint8_t day, uint32_t id) {
+    course::Day d;
+    if (!courseLoadDay(day, d)) return false;
+    for (size_t i = 0; i < d.events.size(); ++i) {
+        if (d.events[i].id != id) continue;
+        d.events.erase(d.events.begin() + i);
+        std::string err;
+        return courseStore.saveDayAtomic(courseGeneration, day, d, err);
+    }
+    return false;
+}
+
+static String courseDayJson(uint8_t day) {
+    course::Day d;
+    if (!courseLoadDay(day, d)) return String();
+    DynamicJsonDocument doc(4096);
+    JsonArray arr = doc.to<JsonArray>();
+    for (size_t i = 0; i < d.events.size(); ++i) {
+        JsonObject o = arr.createNestedObject();
+        o["id"] = d.events[i].id;
+        o["hour"] = d.events[i].hour;
+        o["min"] = d.events[i].minute;
+        o["track"] = d.events[i].track;
+        o["loop"] = d.events[i].loop;
+        o["vol"] = d.events[i].volume;
+        o["en"] = d.events[i].enabled;
+        o["desc"] = d.events[i].description.c_str();
+    }
+    if (doc.overflowed()) return String();
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
 
 // JSON pool for a day file of `fileSize` bytes, plus room for one more entry
 // (template add). Each entry is 9 pool slots (16 B on ESP32) plus its strings
@@ -213,6 +569,10 @@ static void loadActiveDay() {
 // only became available after midnight had already passed.
 // -------------------------------------------------------
 static void checkDateAdvance() {
+    if (courseMode) {
+        courseAdvance();
+        return;
+    }
     if (!schedulerReady() || activeDay < 0) return;
     String today = currentDateStr();
     if (!today.length()) return;
@@ -276,8 +636,21 @@ static void doFire(const ScheduleEntry& e, const char* why) {
     if (onScheduleTrigger) onScheduleTrigger(e.track, e.loop, e.vol);
     lastFiredKey    = e.hour * 60 + e.minute;
     lastFiredMillis = millis();
-    time_t now = time(nullptr);
-    if ((uint32_t)now > TIME_VALID_EPOCH) {
+    const time_t now = time(nullptr);
+    if (courseMode) {
+        // Sound first, then the persisted identity. A failed write is logged
+        // and the sound is not repeated (see spec 7).
+        courseLastFire.generation = courseGeneration;
+        courseLastFire.day_index = courseDay;
+        courseLastFire.minute = (uint16_t)(e.hour * 60 + e.minute);
+        courseLastFire.event_id = e.id;
+        courseLastFire.date = courseDateNumber(courseDateFromClockNow());
+        courseLastFire.timestamp = (uint32_t)now;
+        courseLastFireValid = true;
+        std::string err;
+        if (!courseStore.saveLastFire(courseLastFire, err))
+            logPrintf("[COURSE] last_fire save failed: %s\n", err.c_str());
+    } else if ((uint32_t)now > TIME_VALID_EPOCH) {
         lastFireTs = (uint32_t)now;
         firePrefs.putUInt("lastfire", lastFireTs);
     }
@@ -320,6 +693,14 @@ void sched_setup() {
     lastFireTs = firePrefs.getUInt("lastfire", 0);
 
     loadActiveDay();
+    // A course_state record takes precedence over the legacy active-day key.
+    // It is only consulted when the legacy path found no active day, so
+    // existing installations and the legacy host tests keep their behavior.
+    if (activeStore.status() == active_day::Status::Empty && courseTryBoot()) {
+        logPrintf("[COURSE] mode active, day %d, %d entries, running=%d\n",
+                  activeDay, count, courseRunning ? 1 : 0);
+        return;
+    }
     if (activeStore.status() == active_day::Status::Empty) {
         logPrintf("[SCHED] No active day set — auto-activating Day 00\n");
         sched_activateDay(0);
@@ -330,7 +711,7 @@ void sched_setup() {
     // Date first: after a reboot across midnight, catch-up must look at
     // TODAY's schedule, not yesterday's.
     if (timeIsSet()) checkDateAdvance();
-    sched_catchup();
+    if (!courseMode) sched_catchup();
 }
 
 // -------------------------------------------------------
@@ -380,6 +761,7 @@ void sched_check() {
     // /activeday.conf), so a gong at 00:00 already uses the new day's schedule.
     checkDateAdvance();
     if (!schedulerReady()) return;
+    if (courseMode && courseTransitionPending) return;
 
     // The RAM guard is lost on reboot; the persisted timestamp still protects
     // that absolute minute. Only use it before this boot's first firing:
@@ -392,6 +774,23 @@ void sched_check() {
     // Guard: prevent re-triggering within the same minute.
     // Use 65 s window (5 s margin) to handle NTP clock jitter.
     if (lastFiredKey == key && millis() - lastFiredMillis < 65000UL) return;
+
+    if (courseMode) {
+        const time_t now = mktime(&ti);
+        if (courseLastFireValid) {
+            // Clock moved backwards: do not replay a gong that may already
+            // have fired before the correction.
+            if ((uint32_t)now < courseLastFire.timestamp) return;
+            const uint32_t today = (uint32_t)(ti.tm_year + 1900) * 10000u +
+                (uint32_t)(ti.tm_mon + 1) * 100u + (uint32_t)ti.tm_mday;
+            if (courseLastFire.generation == courseGeneration &&
+                courseLastFire.day_index == courseDay &&
+                courseLastFire.minute == (uint16_t)key &&
+                courseLastFire.date == today) {
+                return;   // this minute already fired for this day/generation
+            }
+        }
+    }
 
     for (uint8_t i = 0; i < count; i++) {
         if (entries[i].enabled &&
@@ -495,6 +894,7 @@ String sched_toJSON() {
 // M-16: the actual disk write, always synchronous. sched_save() (below) is
 // the public entry point and defers to this when it's safe to write.
 static bool sched_saveNow() {
+    if (courseMode) return courseSaveActiveEntries();
     if (!schedulerReady()) return false;
     String json = sched_toJSON();
     if (json.length() == 0) {   // overflow marker from sched_toJSON
@@ -607,6 +1007,7 @@ bool sched_load() {
 // Multi-day helpers
 // -------------------------------------------------------
 String sched_dayJSON(uint8_t day) {
+    if (courseMode) return courseDayJson(day);
     char path[16];
     dayPath(day, path);
     if (!LittleFS.exists(path)) return "[]";
@@ -618,6 +1019,7 @@ String sched_dayJSON(uint8_t day) {
 }
 
 bool sched_activateDay(uint8_t day) {
+    if (courseMode) return courseActivate(day);
     if (day >= DAY_COUNT) return false;
     const active_day::Status status = activeStore.status();
     if (scheduleFileState == ScheduleFileState::Blocked ||
@@ -678,7 +1080,11 @@ bool sched_activateDay(uint8_t day) {
 }
 
 int  sched_getActiveDay() { return activeDay; }
-bool sched_hasError()     { return scheduleFileState != ScheduleFileState::Ready || activeStore.status() != active_day::Status::Ready; }
+bool sched_hasError() {
+    if (courseMode) return courseSuspended || scheduleFileState != ScheduleFileState::Ready;
+    return scheduleFileState != ScheduleFileState::Ready || activeStore.status() != active_day::Status::Ready;
+}
+uint8_t sched_dayCount() { return courseMode ? courseLength : (uint8_t)DAY_COUNT; }
 
 active_day::Status sched_persistenceStatus() { return activeStore.status(); }
 bool sched_isRunning() { return schedulerReady(); }
@@ -710,6 +1116,8 @@ bool sched_resume() {
 }
 
 bool sched_courseEnded() {
+    // A course is cyclic: the last day is followed by day 0, so it never ends.
+    if (courseMode) return false;
     return activeDay >= 0 && activeDay == DAY_COUNT - 1;
 }
 
@@ -779,6 +1187,15 @@ static bool saveDayArray(uint8_t day, DynamicJsonDocument& doc) {
 
 bool sched_addToDay(uint8_t day, uint8_t h, uint8_t m,
                      const String& desc, uint8_t track, uint8_t loop, uint8_t vol) {
+    if (courseMode) {
+        if (day >= courseLength) return false;
+        if (courseDayValid && day == courseDay) return sched_add(h, m, desc, track, loop, vol);
+        if (h > 23 || m > 59 || track < 1 || track > 99) return false;
+        if (loop < 1) loop = 1;
+        if (loop > 7) loop = 7;
+        if (vol > 30) vol = 30;
+        return courseDayAddEvent(day, h, m, desc, track, loop, vol);
+    }
     if (!schedulerReady()) return false;
     if (isActiveDay(day)) return sched_add(h, m, desc, track, loop, vol);
     if (h > 23 || m > 59 || track < 1 || track > 99) return false;
@@ -813,6 +1230,15 @@ bool sched_addToDay(uint8_t day, uint8_t h, uint8_t m,
 
 bool sched_editInDay(uint8_t day, uint32_t id, uint8_t h, uint8_t m,
                      const String& desc, uint8_t track, uint8_t loop, bool enabled, uint8_t vol) {
+    if (courseMode) {
+        if (day >= courseLength) return false;
+        if (courseDayValid && day == courseDay) return sched_edit(id, h, m, desc, track, loop, enabled, vol);
+        if (h > 23 || m > 59 || track < 1 || track > 99) return false;
+        if (loop < 1) loop = 1;
+        if (loop > 7) loop = 7;
+        if (vol > 30) vol = 30;
+        return courseDayEditEvent(day, id, h, m, desc, track, loop, vol, enabled);
+    }
     if (!schedulerReady()) return false;
     if (isActiveDay(day)) return sched_edit(id, h, m, desc, track, loop, enabled, vol);
     if (h > 23 || m > 59 || track < 1 || track > 99) return false;
@@ -847,6 +1273,11 @@ bool sched_editInDay(uint8_t day, uint32_t id, uint8_t h, uint8_t m,
 }
 
 bool sched_delFromDay(uint8_t day, uint32_t id) {
+    if (courseMode) {
+        if (day >= courseLength) return false;
+        if (courseDayValid && day == courseDay) return sched_del(id);
+        return courseDayDeleteEvent(day, id);
+    }
     if (!schedulerReady()) return false;
     if (isActiveDay(day)) return sched_del(id);
 
@@ -874,6 +1305,7 @@ bool sched_delFromDay(uint8_t day, uint32_t id) {
 // written to /dayNN.new. Nothing touches the real day files until commit.
 // -------------------------------------------------------
 bool sched_stageDay(uint8_t day, JsonArrayConst in, String& err) {
+    if (courseMode) { err = "structural import is not available in course mode"; return false; }
     if (!schedulerReady()) { err = "scheduler unavailable or paused"; return false; }
     if (day >= DAY_COUNT) { err = "invalid day"; return false; }
     if (in.isNull())      { err = "entries must be an array"; return false; }
@@ -932,6 +1364,7 @@ bool sched_stageDay(uint8_t day, JsonArrayConst in, String& err) {
 }
 
 bool sched_commitCourse(String& err) {
+    if (courseMode) { err = "structural import is not available in course mode"; return false; }
     if (!schedulerReady() || schedPendingSave) { err = "scheduler unavailable, paused or has unsaved edits"; return false; }
     char from[16], to[16];
     for (int d = 0; d < DAY_COUNT; d++) {
@@ -974,9 +1407,10 @@ bool sched_commitCourse(String& err) {
 
 String sched_courseJSON() {
     String s;
-    if (!s.reserve(DAY_COUNT * 2048)) return String();
+    const uint8_t days = sched_dayCount();
+    if (!s.reserve((size_t)days * 2048)) return String();
     s = "{\"days\":[";
-    for (int d = 0; d < DAY_COUNT; d++) {
+    for (int d = 0; d < days; d++) {
         if (d) s += ',';
         // The active day's in-memory entries are newer than its file while a
         // save is deferred.
