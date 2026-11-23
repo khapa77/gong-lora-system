@@ -1,279 +1,143 @@
-# Следующая сессия: bounded-memory JSON import и режим ожидания курса
+# Следующая сессия: аппаратное испытание шаблонных курсов (A–F)
 
-Актуально на 2026-11-22 (третья сессия дня). Предыдущая архитектура в `docs/ai-handoff/SESSION_STATE.md` устарела.
+Актуально на **2026-11-23**. HEAD / origin: `6d972f64ead591d936b16654a502f99b77596e68`,
+ветка `standalone-max`, опубликована и синхронизирована.
+
+Это единственный актуальный handoff. Историю по сессиям см. в
+`docs/ai-handoff/SESSION_STATE_2026-11-22.md` (этапы 1–5, bootstrap, bounded-memory) и
+`docs/ai-handoff/SESSION_STATE_2026-11-23.md` (этапы A–F, синхронизация кэша).
 
 ## Сначала прочитать
 
 1. `AGENTS.md` — обязательные правила безопасности.
-2. `docs/DYNAMIC_COURSE_SPEC.md` — окончательная спецификация.
-3. `docs/DYNAMIC_COURSE_PLAN.md` — поэтапный план.
-4. `docs/ai-handoff/SESSION_STATE_2026-11-22.md` — состояние, Git, решения, дефекты.
+2. `docs/DYNAMIC_COURSE_TEMPLATE_PLAN.md` — архитектура хранения шаблонов, этапы A–F, §15.
+3. `docs/DYNAMIC_COURSE_HARDWARE_TEST.md` — процедура испытаний на стенде.
+4. `docs/ai-handoff/SESSION_STATE_2026-11-23.md` — детали решений, дефектов и измерений.
 
-## Где мы остановились
+`docs/DYNAMIC_COURSE_SPEC.md` и `docs/DYNAMIC_COURSE_PLAN.md` описывают раннюю архитектуру
+(до шаблонов); они не противоречат реализации, но в части хранения устарели — ориентир
+шаблонного плана.
 
-- HEAD: `af1bd82` (JSON-driven GUI), ветка `standalone-max`, запушена в origin.
-- Текущая сессия: исправлен kernel panic при Validate/Import большого JSON (bounded-память),
-  устранён скрытый запуск legacy-расписания на чистой установке, Activate защищён.
-  Локальный коммит без push.
-- Этап 6 не начат. `end` не тронут, в индекс не добавлялся.
+## Состояние кода
 
-## Что исправлено в этой сессии
+| Что | Значение |
+|---|---|
+| HEAD | `6d972f6` (epoch-проверка кэша шаблонов) |
+| Ветка | `standalone-max`, синхронизирована с origin |
+| Сборка | PlatformIO `esp32dev`: SUCCESS, RAM 21.0 %, Flash 87.6 % (1 377 857 Б) |
+| Host-тесты | store 509, editor 739, scheduler 255, course 578, active_day 275, emergency 58 |
+| ASan/UBSan | все наборы чисто (editor под sanitizer 725 из-за отключённого heap-бюджета) |
+| Прошивка на ESP32 | **не обновлялась**: на устройстве прошивка до шаблонной архитектуры |
 
-### Причина
+## Что готово (этапы A–F)
 
-`courseTryBoot()` не публикует эталонный курс, если на устройстве есть legacy-файлы
-(`gong.conf`, `dayNN.conf`) — это защита существующих установок. В результате после чистой
-установки прошивки с legacy-расписанием `course_state` отсутствует, `course_mode=false`,
-legacy-планировщик активирует Day 00, а Course Editor отвечал `no course has been published`,
-потому что `course_editor::loadCalendar()` требовал существующий `course_state`.
+- **JSON v1 с `templates`/`days`** — штатный формат: уникальные шаблоны хранятся один раз,
+  дни ссылаются на них (`"t3"`) либо несут собственные события. JSON v2 с полными списками
+  событий импортируется по-прежнему и хранится развёрнуто (`layout=expanded`).
+- **Этап A** (`6d48e95`): `templates.json` с CRC и tmp/bak, `CourseMeta::layout`, разрешение
+  ссылок в `loadDay`, восстановление, валидация, удаление/клонирование шаблонных поколений.
+- **Этап B** (`101912f`): компактная запись поколения (`writeCompactGeneration`,
+  `applyCompactCourse`, `saveCompactDraft`), потоковые `putDayReference` /
+  `finishCompactGeneration`; в тот момент намеренно не подключена к HTTP.
+- **Этап C** (`7636996`): copy-on-write — правка ссылочного дня материализует только его,
+  `templates.json` и соседние дни не меняются; правка активного дня без повторной активации.
+- **Этап D** (`5b80d68`): компактный экспорт v1 (`templates` + ссылки), развёрнутый экспорт v2
+  для старых поколений; экспорт не трогает кэш, календарь и LittleFS.
+- **Этап E** (`b416318`): `importCourseAuto` подключён к `/api/course/import`, два слота
+  кэша (active/draft), bounded-разбор событий, оптимизации памяти, выбор active-набора в
+  boot/Apply/Activate/полночь/восстановлении.
+- **Этап F** (`78feb67`): аудит, `docs/DYNAMIC_COURSE_HARDWARE_TEST.md`, фикс инвалидации
+  кэша и пересчёт guard импорта.
+- **Синхронизация** (`032dae4`, `6d972f6`): мьютекс кэша `CacheGuard` + ревизия поколений
+  (`generationStamp`/`globalEpoch`), чтобы устаревший набор не публиковался.
 
-### Решение
+## Ключевые инварианты (не ломать)
 
-1. **Bootstrap-черновик без календаря.** Поколение-черновик до первого Apply хранится
-   в отдельном NVS-ключе `crs_boot` (`CourseStore::loadBootstrapGeneration()` /
-   `saveBootstrapGeneration()`). `course_state` не создаётся, ничего не исполняется.
-2. **Bootstrap-aware редактор.** `course_editor` умеет работать без календаря:
-   пресеты 1..47 (GUI: 3/10/14/20/30/45) и импорт создают bootstrap-поколение;
-   чтение/правка дня, вставка, удаление, очистка, переименование и экспорт работают от него;
-   `info()` сообщает `hasCourse=false` и параметры черновика.
-3. **Первый Apply — атомарная публикация.** `applyDraft()` при отсутствии календаря проверяет
-   поколение и записывает один `course_state` blob: `active=draft=N`, `flags=APPLIED`,
-   `activation_date=0`, `day_index=0`. Указатель bootstrap очищается. До ручного Activate
-   звонков нет.
-4. **Первенство курса на загрузке.** `sched_setup()` теперь вызывает `courseTryBoot()`
-   при наличии `course_state` **или** пустом legacy-состоянии. Раньше курс читался только при
-   пустом legacy; из-за этого после публикации курса перезагрузка возвращала legacy-расписание.
-   Для APPLIED-курса legacy-RAM (entries/activeDay/activeDate) очищается. Устройства без
-   `course_state` сохраняют legacy-поведение без изменений.
-5. **Защита от случайной legacy-активации:** `POST /api/course/activate` до первого Apply
-   отвечает `apply the draft first` (иначе кнопка редактора активировала legacy-день).
-6. **Автосидирование не затирает черновик:** `ensureInitialCourse()` отказывает, если
-   существует bootstrap-указатель.
-7. **GUI:** карточка Course Editor показывает «черновик не опубликован» с длиной и поколением,
-   подсказывает Apply, а Activate до публикации не отправляет запрос.
+1. После Apply: `APPLIED`, `running=false`, `activation_date=0`, `day_index=-1`, звонков нет.
+2. Activate — единственная точка привязки календаря; день выбирается валидным индексом.
+3. Цикл: `day_index = (activated_day_index + elapsed_civil_days) % course_length`, 1–47 дней,
+   переход последнего дня в 00 без специальных правил.
+4. Кэш шаблонов строго помечен поколением; active-слот не вытесняется работой с черновиком.
+5. Порядок блокировок: `sys_lock → cacheMutex`; обратного захвата нет, LittleFS под мьютексом
+   не читается.
+6. Материализация дня при правке — только этого дня (copy-on-write); шаблон неизменен.
+7. Публикация атомарна: `templates.json` → дни → `meta.json` → NVS.
+8. При любой ошибке (CRC, нет файла, нет шаблона, нет памяти) — SUSPENDED/EMERGENCY без
+   неверных звонков и без частичной публикации.
+9. Старые развёрнутые поколения и `layout=expanded` работают без изменений.
 
-### Инцидент KEY_TOO_LONG (реальная ESP32)
+## Следующая задача: аппаратное испытание `6d972f6`
 
-Ключ `course_bootstrap` содержит 16 символов, а NVS допускает 15 (`NVS_KEY_NAME_MAX_SIZE` = 16
-с завершающим нулём). Первое создание курса на железе падало с
-`nvs_set_u32 fail: course_bootstrap KEY_TOO_LONG`. Ключ заменён на `crs_boot` (8).
-Гостевой мок `tests/host/nvs.h` теперь сам отвергает имена длиннее 15
-(`ESP_ERR_NVS_KEY_TOO_LONG`, `ESP_ERR_NVS_INVALID_NAME` для namespace), поэтому такой дефект
-не может снова пройти host-тесты. Проверены все NVS-ключи и namespace проекта — все ≤ 15.
+Полная процедура — `docs/DYNAMIC_COURSE_HARDWARE_TEST.md`. Кратко:
 
-### Упрощение GUI: JSON-driven Course (четвёртая сессия)
+1. На MacBook: `git pull` (ветка `standalone-max`, HEAD `6d972f6`).
+2. **Проверить `server/platformio.ini` — сейчас это блокер.** В коммите `24447ef`
+   (`board`) строка `board = esp32dev` заменена на `board = esp32-s3-devkitc-1`
+   (старая закомментирована). Устройство по отчётам — ESP32-D0WD-V3 (классический ESP32),
+   а сборка `env:esp32dev` сейчас целится в S3. Прошивка, собранная как есть, на D0WD-V3
+   не запустится. **Решение принимает оператор**: вернуть `board = esp32dev` (правка
+   `platformio.ini` — изменение аппаратной конфигурации, без разрешения не делается) или
+   подтвердить, что стенд на самом деле S3. До этого пункта аппаратные результаты
+   недействительны.
+3. `cd server && pio run -e esp32dev` — собрать.
+4. Сохранить текущий статус устройства: `curl /api/course/status`, `curl /api/status`,
+   экспорт действующего курса, лог Serial.
+5. Прошить **только firmware**: `pio run -e esp32dev -t upload`. Никаких `erase_flash` и
+   `uploadfs` — файловая система и NVS должны остаться.
+6. Проверить совместимость старого поколения 3 (см. п. 4 hardware-документа).
+7. Загрузить компактный JSON v1 с шаблонами, пройти Validate → Import → Apply → Activate →
+   Reboot → полночь → Copy-on-Write → Export.
+8. Зафиксировать heap/largest/stack из логов `[WEB] ...` и все строки `[COURSE]`.
 
-- В Web GUI осталась одна карточка **Courses**: загрузка JSON v1/v2 -> проверка через
-  `POST /api/course/validate` (без побочных эффектов) -> подтверждённый `Apply`
-  (`POST /api/course/import` + `POST /api/course/apply`) -> выбор дня и `Activate this day`;
-  плюс экспорт действующего курса (`GET /api/course/export?source=active`).
-- Удалены карточка Course Editor (пресеты, вставка/удаление/копирование, очистка, черновики,
-  переименование) и legacy-карточка Course (пошаговый импорт через `/api/course/day` +
-  `/api/course/commit`), которая в режиме курса отвечала `structural import is not available in
-  course mode`. Кнопка «Activate this day» из Schedule убрана — активация только в Courses.
-- Backend не переписывался: Course Model/Store/Scheduler и старые маршруты остались рабочими
-  (их используют host-тесты и совместимость). Новое: `course::formatVersion()`,
-  `course_editor::inspectCourse()`, `beginExport(kExportActive|kExportDraft)`,
-  `sched_courseInspect()`, `sched_courseExportBegin(activeOnly)`.
-- Длина курса = число дней в JSON (1..47), после последнего дня снова 00; отдельных правил
-  для 09->00/13->00/19->00 нет.
+## Текущее состояние устройства (из прошлой сессии)
 
-### Bounded-memory JSON и режим ожидания (пятая сессия)
+- ESP32-D0WD-V3 без PSRAM, IP `192.168.1.197`.
+- Успешно загружен операторский курс **Gong #2**: 14 дней, 136 календарных событий,
+  опубликованное поколение **3**, активирован **день 07**, активация пережила перезагрузку.
+- Прошивка на устройстве — **до** шаблонной архитектуры (этап 5 + bounded-memory,
+  `dcb2603`). Новая архитектура A–F на железе **не проверялась**.
+- `templates.json` на устройстве отсутствует — поколение 3 развёрнутое, должно читаться
+  новым кодом как `layout=expanded`.
 
-**Причина panic.** `handleCourseValidate` -> `sched_courseInspect` -> `inspectCourse` передавал
-`String` как `const std::string&` (полная копия ~50 КБ) и вызывал `course::fromJson`, который строит
-дерево всего документа: ~300 байт на узел, для операторского файла это сотни КБ. На ESP32 без PSRAM
-`operator new` бросал `std::bad_alloc`, обработчика не было -> `std::terminate` -> `abort`.
-Host-тесты этого не видели: обычная куча хоста не ограничена.
-
-**Исправление.**
-- Новый сканер `Scanner` в `course_editor.cpp`: один проход по буферу, запоминает только байтовые
-  диапазоны дней и шаблонов (до 47 дней, 64 шаблона, имя <= 128 Б, имя шаблона <= 32 Б, глубина <= 32,
-  день <= 8 КБ). Это замена `fromJson` для всего документа.
-- Каждый день разбирается отдельным маленьким документом через существующий `course::fromJson`
-  (шаблон подставляется в обёртку), затем `resolvedEvents`; пик памяти — один день.
-  Шаблоны, на которые никто не ссылается, тоже проверяются (по одному).
-- `course_editor::inspectCourse/importCourse` получили форму `(const char*, size_t)`, обёртки
-  `std::string` только делегируют — копии всего документа больше нет. `importCourse` пишет дни
-  по одному в новое поколение, старый курс не трогается.
-- `inspectCourse`/`importCourse` ловят `std::bad_alloc` и возвращают обычную ошибку.
-- `webhandler`: `courseMemoryOk()` (нужно `2*body + 80 КБ` свободной кучи и непрерывный блок
-  `body + 8 КБ`), `try/catch` вокруг validate/import/apply, лог свободной кучи, largest block и
-  stack high-water mark до/после; в ответ validate добавлены `heap_free`/`heap_largest`.
-- Измерено на хосте: старый путь (дерево всего 43 КБ файла) не укладывается в 96 КБ и бросает
-  `bad_alloc`; новый путь на том же файле — пик 84 КБ при худшем дне из 32 событий, типичный день
-  5–10 событий заметно меньше.
-
-**Чистая установка / legacy.** `sched_setup()` больше не активирует Day 00 сам: если курса нет и
-legacy-привязки в NVS нет, устройство переходит в режим `waiting` (ничего не звонит) и ждёт JSON.
-Устройства с существующей legacy-привязкой (`active`/`aday`) работают как раньше. Фактический режим
-виден в API: `/api/status` и `/api/course/status` отдают `run_mode` (`course`/`legacy`/`waiting`),
-`waiting_for_course`, `course_active`.
-
-**GUI.** Кнопка Activate изначально `disabled`, включается только при опубликованном курсе и валидном
-индексе; сервер повторно проверяет курс и диапазон (`apply the draft first` / `invalid day`).
-В статусе показывается `run_mode`, в алертах — сообщение о ожидании JSON или legacy-режиме.
-
-## Проверено фактическим запуском (эта сессия)
-
-- `run_course_editor_tests.py` — 495 checks, 0 FAIL; с ASan/UBSan — 490, 0 FAIL (бюджет heap не измеряется под sanitizer).
-- `run_active_day_state_tests.py` — 275 PASS, 0 FAIL; с UBSan — 275 PASS, 0 FAIL.
-- `run_course_tests.py` — 578 PASS, 0 FAIL.
-- `run_course_store_tests.py` — 130 PASS, 0 FAIL.
-- `run_course_scheduler_tests.py` — 130 checks, 0 FAIL (ASan/UBSan 130, 0 FAIL).
-- `run_emergency_tests.py` — 58 checks, 0 FAIL (ASan/UBSan 58, 0 FAIL).
-- `pio run -e esp32dev` — SUCCESS, RAM 20.9%, Flash 86.1% (1354221 B). Прошивка не заливалась.
-- `node --check` для извлечённого `<script>` из `server/web/index.html` — JS_OK.
-- Мутационная проверка: при возврате старого условия в `sched_setup()` падает
-  `T03/bootstrap_course_takes_over_and_survives_reboot` — тест первенства курса не пустой.
-
-## Новые тесты
-
-`tests/test_course_editor.cpp`:
-- bootstrap без курса: пустое состояние, отказы до появления черновика, пресет 14,
-  правка/вставка/удаление/переименование в bootstrap-черновике;
-- bootstrap apply: атомарная публикация, APPLIED, очистка указателя, перезагрузка, повторный Apply;
-- bootstrap import (v1) без курса и последующий Apply;
-- bootstrap presets: 3, 10, 14, 20, 30, 45 — создание и публикация;
-- bootstrap failures: отказ NVS при Apply (черновик цел, повтор проходит), отказ записи meta,
-  повреждённый meta, «висячий» указатель на отсутствующее поколение;
-- bootstrap discard и запрет автосидирования при наличии черновика;
-- опубликованный курс не использует bootstrap-ключ.
-
-`tests/active_day_review_cases.h`:
-- `T03/bootstrap_course_takes_over_and_survives_reboot` — публикация на legacy-устройстве,
-  отсутствие звонков до Activate, перезагрузка, Activate, звонок 19:45, legacy-файлы целы;
-- `T03/unpublished_draft_keeps_legacy_running` — черновик не меняет legacy-поведение,
-  переживает перезагрузку.
-
-`tests/test_active_day_state.cpp`: `resetRam()` теперь сбрасывает и RAM-состояние курса
-(корректная симуляция перезагрузки).
-
-## Что осталось и требует решения заказчика
-
-1. **`GET/PUT /api/course/template?name=...` (спец. 11) не реализованы.** Шаблоны живут только
-   в импортируемом JSON; в поколении хранятся материализованные дни. Нужна переработка
-   хранилища (этап 2) — без отдельного разрешения не делалась.
-2. **Legacy NVS-ключи не очищаются.** После публикации курса они просто игнорируются
-   (первенство курса). Старые `dayNN.conf`/`gong.conf` не удаляются — так требует спецификация.
-3. **`--sanitize address` для `active_day_state` не линкуется** (дубль `operator new`, clang 10).
-   Ограничение существовало до сессии; UBSan проходит.
-4. **Реальный Web GUI и железо не проверялись** (нет стенда): LittleFS/NVS при обрыве,
-   DS3231, I2S, LoRa, пик heap — NOT TESTED.
-5. `docs/DYNAMIC_COURSE_SPEC.md` не синхронизирован с реализацией по `last_fire`, маршрутам
-   и bootstrap-черновику.
-
-## Точные команды проверки
+## Точные команды проверки (host)
 
 ```bash
 cd /root/gong-lora-system
-python3 -B tests/run_course_editor_tests.py --build-dir /tmp/gong-course-editor-tests
-python3 -B tests/run_course_editor_tests.py --build-dir /tmp/gong-course-editor-tests-asan --sanitize
-python3 -B tests/run_course_tests.py --build-dir /tmp/gong-course-tests
-python3 -B tests/run_course_store_tests.py --build-dir /tmp/gong-course-store-tests
-python3 -B tests/run_course_scheduler_tests.py --build-dir /tmp/gong-course-scheduler-tests
-python3 -B tests/run_emergency_tests.py --build-dir /tmp/gong-emergency-tests
-python3 -B tests/run_active_day_state_tests.py --build-dir /tmp/gong-active-day-tests
+python3 -B tests/run_course_store_tests.py     --build-dir /tmp/t-store
+python3 -B tests/run_course_editor_tests.py    --build-dir /tmp/t-editor
+python3 -B tests/run_course_scheduler_tests.py --build-dir /tmp/t-sched
+python3 -B tests/run_course_tests.py           --build-dir /tmp/t-course
+python3 -B tests/run_active_day_state_tests.py --build-dir /tmp/t-active
+python3 -B tests/run_emergency_tests.py        --build-dir /tmp/t-emerg
 ```
 
-ASan/UBSan: те же раннеры с `--sanitize` (для `active_day_state` — только `--sanitize undefined`).
+ASan/UBSan: те же раннеры с `--sanitize` (для `active_day_state` — `--sanitize undefined`,
+`--sanitize address` не линкуется: дубль `operator new` с runtime clang 10 — ограничение
+существовало до шаблонной работы).
 
 PlatformIO: `cd server && pio run -e esp32dev`. `server/web/gz/index.html.gz` пересобирается
-pre-скриптом `scripts/gzip_web.py`.
+pre-скриптом и в git не входит.
 
 ## Запреты
 
-- Не менять `config.h`, GPIO, audio, LoRa, WiFi.
-- Не прошивать ESP32.
-- Не стирать NVS/LittleFS.
-- Не удалять старые `dayNN.conf` и `gong.conf`.
-- Не делать push/reset/clean без разрешения. Локальные коммиты — только `-c core.hooksPath=/dev/null`.
-- Не запускать субагентов без разрешения.
-- Не трогать `end` и не добавлять его в коммит.
+- Не менять `config.h`, GPIO, MP3/I2S, RTC, LoRa, WiFi без отдельного разрешения.
+- Не прошивать ESP32 автоматически и не выполнять `erase_flash`/`uploadfs`.
+- Не стирать NVS/LittleFS, не удалять старые `dayNN.conf`/`gong.conf`.
+- Не выполнять push/force push, reset/clean без разрешения.
+- Локальные коммиты — только `git -c core.hooksPath=/dev/null commit` (pre-commit-hook делает
+  `git add -A`, post-commit — `git push`).
+- Не трогать файл `end` и не добавлять его в коммит.
+- Не запускать субагентов и не начинать новые этапы разработки без разрешения.
+- Не ослаблять тесты ради PASS.
 
-## 7. Этап A шаблонов выполнен (2026-11-23)
+## Открытые риски (для аппаратной проверки)
 
-- План: `docs/DYNAMIC_COURSE_TEMPLATE_PLAN.md` (§8 — что сделано).
-- `course_store`: `templates.json` (CRC+tmp/bak), `CourseMeta::layout` ("tpl1"),
-  `prepareTemplates/templatesReady/invalidateTemplates`, разрешение ссылок в `loadDay`,
-  восстановление и валидация, удаление и клонирование шаблонных поколений.
-- `course_model`: аддитивные `toJsonTemplates`, `fromJsonUnresolved`; `fromJson`/`validate`
-  без изменений.
-- Импорт/публикация/экспорт/планировщик не менялись. Этапы B–F не начаты.
-- Тесты: store 220/220; course 578; editor 495; scheduler 130; active_day 275; emergency 58;
-  ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 86.8 % (1 364 757 Б).
-- Память: prepareTemplates — пик 39 КБ / резидентно 4,8 КБ (4×12 событий);
-  пик 101 КБ / 12,1 КБ (4×32 события). При этапе E нужен guard по largest free block
-  и вызов prepare в точках смены поколения до публикации дня.
-
-## 8. Этап B (компактная запись) выполнен
-
-- `course_store`: `writeCompactGeneration`, `applyCompactCourse`, `saveCompactDraft`,
-  `putDayReference`, `finishCompactGeneration`. Только используемые шаблоны; лимиты по
-  уникальным событиям.
-- `course_editor::importCourseCompact` — не подключён к HTTP: до этапа E штатный импорт
-  и Apply продолжают писать развёрнутые поколения.
-- Измерено: 14 дней / 40 уникальных событий / 140 вхождений — 15 130 Б → 5 779 Б (0,38×),
-  пик импорта 42 КБ, резидентных данных нет.
-- Тесты: store 368/368, editor 546, course 578, scheduler 130, active_day 275,
-  emergency 58; ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 86.8 % (1 364 957 Б).
-
-## 9. Этап C (copy-on-write) выполнен
-
-- Правка ссылочного дня уже была копией (`loadDay` разрешает шаблон), добавлена загрузка
-  набора шаблонов в точках редактирования: `courseEnsureTemplates()` в `schedule.cpp`
-  (add/edit/delete/day-json), `editingGeneration()`/`ensureEditableGeneration()` в
-  `course_editor.cpp`.
-- Boot/Apply/Activate/полночь/восстановление не тронуты (этап E).
-- Тесты: store 458, editor 567, scheduler 154, course 578, active_day 275, emergency 58;
-  ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 86.8 % (1 365 185 Б).
-- Память COW: store 15 КБ, editor saveDay (с клоном черновика) 41 КБ.
-
-## 10. Этап D (компактный экспорт) выполнен
-
-- `CourseStore`: `loadDayDescriptor`, `openTemplateExport`/`nextTemplateExportChunk`,
-  `templateExportNames` — экспорт без разрешения ссылок и без затрагивания кэша.
-- `course_editor`: v1-экспорт для `layout=tpl1` (templates + ссылки/свои события),
-  прежний v2 для `expanded`; `exportGeneration()` не подготавливает кэш.
-- Размеры: 14 дней — 1 546 Б против 5 884 Б развёрнуто (3,8×); худший случай 47 дней /
-  256 уникальных событий — 25 155 Б, 58 чанков, макс. чанк 3 106 Б, пик 73 КБ.
-- Тесты: editor 727, store 458, scheduler 154, course 578, active_day 275, emergency 58;
-  ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 87.0 % (1 367 941 Б).
-
-## 11. Этап E (интеграция) выполнен
-
-- Кэш шаблонов: два слота (active/draft), строгая привязка к поколению; active не
-  вытесняется работой с черновиком. Boot/Apply/Activate/полночь/восстановление грузят
-  active-слот; ошибка → SUSPENDED, без чужих событий.
-- Импорт: `importCourseAuto` (compact для документов со ссылками, expanded для полных),
-  подключён к `sched_courseImport`.
-- Память: validate 47 дней/256 событий — 8–10 КБ (было 77–101 КБ); день/шаблон 32 события —
-  5 КБ (было 82 КБ); import — 94 КБ с host-моком FS (≈60 КБ на устройстве).
-- Новые примитивы: `course::parseEventArrayBounded`, потоковые read/write с CRC,
-  `writeTemplatesParts` (templates.json из диапазонов входа).
-- Тесты: editor 739, store 458, scheduler 224, course 578, active_day 275, emergency 58;
-  ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 87.5 % (1 375 741 Б).
-- На железе не проверено: реальные пики heap при импорте 27 КБ JSON, поведение при
-  фрагментированной куче, обрыв питания при записи templates.json.
-
-## 12. Этап F (аудит) выполнен
-
-- Инструкция для стенда: `docs/DYNAMIC_COURSE_HARDWARE_TEST.md`.
-- Исправлено: инвалидация кэша затрагивала оба слота (импорт вытеснял набор работающего
-  курса) — теперь только поколение записи; guard импорта требовал `2×body + 80 КБ` —
-  пересчитан на `2×body + 24 КБ` по измерениям.
-- Тесты: editor 739, store 469, scheduler 255, course 578, active_day 275, emergency 58;
-  ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 87.5 % (1 375 765 Б); node --check OK.
-- На железе не проверено ничего из нового документа; список блокеров — в отчёте этапа F.
-
-## 13. Синхронизация кэша шаблонов
-
-- Аудит: `R_NOLOCK`-маршруты (import/apply/draft-правки) меняли кэш вне `sys_lock`, пока
-  controlTask читал его под `sys_lock` — гонка была реальной.
-- Решение: листовой мьютекс `CacheGuard`; сборка набора вне блокировки, короткая замена
-  `swap` под ней с перепроверкой; `lookupTemplate()` копирует события. Порядок
-  `sys_lock → cacheMutex`, обратного захвата нет.
-- Тесты: store 493 (+3 группы), editor 739, scheduler 255, course 578, active_day 275,
-  emergency 58; ASan/UBSan чисто; PlatformIO RAM 21.0 %, Flash 87.5 % (1 376 617 Б).
-- Ревизия поколений: `prepare*Templates` фиксирует epoch/стамп до сборки и перепроверяет под
-  блокировкой; устаревший набор не публикуется. Тесты: store 509 (+2 группы).
+1. Реальные пики heap при импорте 27-КБ JSON (host: validate 8–10 КБ, import ≈60 КБ на
+   устройстве) и largest free block.
+2. Фрагментированная куча после длительной работы WiFi.
+3. Обрыв питания в момент записи `templates.json` (tmp/bak проверены только на host-моке).
+4. Конкурентный доступ к кэшу подтверждён статически и покрыт регрессиями, но не проверен в
+   реальном времени (Activate в момент полуночи, импорт во время RUNNING).
+5. Усечение экспорта при ошибке чтения в середине потока: клиент получает частичный JSON
+   (повторная валидация его отвергнет, но явного маркера ошибки в потоке нет).
+6. Конкурентный `handleCourseExport` (R_STREAM) с импортом: экспорт не берёт `sys_lock`.
