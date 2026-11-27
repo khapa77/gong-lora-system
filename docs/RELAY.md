@@ -204,3 +204,20 @@ Warm-up и Hold after, обратный отсчёт ручного режима
 `prewarm_cancel`, `play_reports_deferral`, `busy_appears_during_hold`, LED без
 тавтологии. Итог: 3110 проверок / 0 падений (relay 136, button 536,
 scheduler 279, остальные без изменений).
+
+## 10. Третий раунд ревью (26726b5)
+
+| Замечание | Статус | Исправление |
+|---|---|---|
+| Apply публикует старое поколение при полуночном `sched_check` | FIXED | `courseApplyInProgress` блокирует `sched_check`/`courseAdvance`/`courseSuspend` между записью календаря и `sys_lock`-переключением |
+| Ошибка перечитывания календаря маскируется | FIXED | `courseReloadCalendar()` → `bool`; при отказе Apply возвращает ошибку, расписание остаётся SUSPENDED |
+| Отметка `last_fire` не привязана к запросу | FIXED | тег на каждый `relay_play()`; подтверждение только `relay_lastStartedTag()==tag`, чужой старт/замена очереди — отмена без отметки |
+| Подтверждался вызов `mp3_play()`, а не старт | FIXED | `mp3_play()/mp3_start()/startNow()` возвращают `bool` (нет файла / `connecttoFS` false → не подтверждено) |
+| `pending → playing`: терялись `busy` и защита реле (`hold=0`) | FIXED | `startNow()` сразу обновляет кэш аудио; реле и `busy` не «простаивают» ни один тик |
+| Частичное применение NVS | FIXED | `saveConfig(mode,pre,hold)` из аргументов, RAM меняется только после успешной записи |
+| Рост `pre` не сбрасывал `warm` | FIXED | при увеличении порога `warm=false`, если реле ещё не «доиграло» новый warm-up |
+| Prewarm видел вчерашнее событие | FIXED | `sched_msToNext()` возвращает -1 при `courseTransitionPending` |
+| Ответ Save стирал более новую правку | FIXED | dirty снимается только если поле всё ещё равно отправленному значению |
+
+Тесты: 3131 проверка / 0 падений (relay 136+17, button 536, scheduler 283,
+остальные без изменений). ASan+UBSan: relay, scheduler, button, emergency — чисто.
