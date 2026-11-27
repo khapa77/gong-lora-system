@@ -84,7 +84,7 @@ String sched_courseJSON();   // {"days":[[...], ...]}; String() on out-of-memory
 // true — звук начался; false — трек поставлен в очередь на прогрев реле.
 // Расписание отмечает событие прозвучавшим только после фактического старта,
 // поэтому перезагрузка во время прогрева не теряет гонг.
-extern bool (*onScheduleTrigger)(uint8_t track, uint8_t loop, uint8_t vol);
+extern bool (*onScheduleTrigger)(uint8_t track, uint8_t loop, uint8_t vol, uint32_t* outTag);
 
 // ── Course editor facade (stage 5) ────────────────────────────────────────
 // The draft course is edited through course_editor; these wrappers keep the

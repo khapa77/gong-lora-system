@@ -45,13 +45,13 @@ bool mp3_isPlaying() { return audioPlaying; }
 void mp3_stop() { audioPlaying=false; }
 // schedule.cpp calls relay_stop() for a full stop (see run_relay_tests.py).
 void relay_stop() { audioPlaying=false; }
-uint32_t relay_startCount() { return 0; }
-bool relay_isPendingStart() { return false; }
+uint32_t relay_pendingTag() { return 0; }
+uint32_t relay_lastStartedTag() { return 0; }
 bool sys_fsOk() { return filesystemAvailable; }
 void sys_lock() { ++lockDepth; }
 void sys_unlock() { if (!lockDepth) std::abort(); --lockDepth; }
 bool mp3_trackExists(uint8_t track) { return track==1 || track==2; }
-static bool audioCallback(uint8_t track,uint8_t,uint8_t) {
+static bool audioCallback(uint8_t track,uint8_t,uint8_t, uint32_t*) {
     ++audioCalls;
     audioTracks.push_back(track);
     return true;

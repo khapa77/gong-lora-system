@@ -50,14 +50,18 @@ static bool audioPlaying = false;
 
 // Relay stubs: the scheduler must commit a gong only after the audio really
 // started. gRelayStarts simulates relay_startCount(), gRelayPending the queue.
-static uint32_t gRelayStarts = 0;
-static bool     gRelayPending = false;
+static uint32_t gTagSeq = 0;
+static uint32_t gRelayPendingTag = 0;
+static uint32_t gRelayLastTag = 0;
 static bool     gDeferCallback = false;
 
-static bool audioCallback(uint8_t, uint8_t, uint8_t) {
+static bool audioCallback(uint8_t, uint8_t, uint8_t, uint32_t* outTag) {
     ++audioCalls;
-    if (gDeferCallback) { gRelayPending = true; return false; }
-    ++gRelayStarts;
+    const uint32_t tag = ++gTagSeq;
+    if (outTag) *outTag = tag;
+    if (gDeferCallback) { gRelayPendingTag = tag; return false; }
+    gRelayPendingTag = 0;
+    gRelayLastTag = tag;
     return true;
 }
 
@@ -68,8 +72,8 @@ void mp3_stop() { audioPlaying = false; }
 // pending warm-up); the relay itself is exercised by run_relay_tests.py.
 void relay_stop() { audioPlaying = false; }
 // Schedule asks the relay whether a queued gong actually started.
-uint32_t relay_startCount() { return gRelayStarts; }
-bool relay_isPendingStart() { return gRelayPending; }
+uint32_t relay_pendingTag() { return gRelayPendingTag; }
+uint32_t relay_lastStartedTag() { return gRelayLastTag; }
 bool mp3_trackExists(uint8_t) { return true; }
 bool sys_fsOk() { return true; }
 void sys_lock() {}
@@ -131,8 +135,8 @@ static void resetRuntime() {
     courseStore = course_store::CourseStore();
     courseStore.invalidateTemplates();
     emergency::resetRuntime();
-    gRelayStarts = 0;
-    gRelayPending = false;
+    gRelayPendingTag = 0;
+    gRelayLastTag = 0;
     gDeferCallback = false;
     onScheduleTrigger = audioCallback;
     audioCalls = 0;
@@ -1055,8 +1059,8 @@ static void test_deferred_fire_commits_after_start() {
     sched_check();                         // same minute: no repeat while queued
     check(audioCalls == 1, "no repeat while queued");
 
-    ++gRelayStarts;                        // the relay really started the track
-    gRelayPending = false;
+    gRelayLastTag = gRelayPendingTag;      // the relay really started OUR track
+    gRelayPendingTag = 0;
     gDeferCallback = false;
     sched_check();                         // deferred fire resolves + commits
 
@@ -1064,6 +1068,30 @@ static void test_deferred_fire_commits_after_start() {
     sched_setup();
     sched_check();
     check(audioCalls == 0, "watermark committed: no replay after reboot");
+}
+
+static void test_deferred_fire_not_credited_to_foreign_start() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 4, 0);
+    check(applyCourse(makeCourse(14)), "apply course");
+    sched_setup();
+    check(sched_activateDay(0), "activate day 0");
+
+    audioCalls = 0;
+    gDeferCallback = true;
+    sched_check();                         // our gong is queued (tag T)
+    check(audioCalls == 1, "trigger invoked");
+
+    // Another request (web/button) replaces the queue and starts instead.
+    gRelayPendingTag = 0;
+    gRelayLastTag = 999;
+    gDeferCallback = false;
+    sched_check();                         // must NOT credit our event
+
+    resetRuntime();                        // reboot in the same minute
+    sched_setup();
+    sched_check();
+    check(audioCalls == 1, "foreign start must not mark our event as fired");
 }
 
 static void test_deferred_fire_cancelled_is_not_marked() {
@@ -1078,7 +1106,7 @@ static void test_deferred_fire_cancelled_is_not_marked() {
     sched_check();                         // queued
     check(audioCalls == 1, "trigger invoked");
 
-    gRelayPending = false;                 // STOP cancelled the warm-up
+    gRelayPendingTag = 0;                  // STOP cancelled the warm-up
     gDeferCallback = false;
     sched_check();                         // resolves as cancelled, no watermark
 
@@ -1132,6 +1160,7 @@ int main() {
         {"ms_to_next_disabled_emergency", test_msToNext_ignores_disabled_and_handles_emergency},
         {"deferred_fire_commits", test_deferred_fire_commits_after_start},
         {"deferred_fire_cancelled", test_deferred_fire_cancelled_is_not_marked},
+        {"deferred_fire_foreign_start", test_deferred_fire_not_credited_to_foreign_start},
     };
     for (const TestCase& t : tests) {
         const int before = failures;

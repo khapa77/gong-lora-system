@@ -393,7 +393,7 @@ bool tick() {
         if (onScheduleTrigger) {
             // Emergency keeps its own watermark; a deferred warm-up here is an
             // accepted deviation (the built-in table is not user JSON).
-            (void)onScheduleTrigger(e.track, e.plays, e.volume);
+            (void)onScheduleTrigger(e.track, e.plays, e.volume, nullptr);
         }
         gState.lastFireDate = today;
         gState.lastFireMinute = minute;

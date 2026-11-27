@@ -28,7 +28,7 @@ static int  starts = 0, stops = 0;
 static bool playing = false;
 
 void mp3_setVolume(uint8_t) {}
-void mp3_play(uint8_t, uint8_t) { ++starts; playing = true; }
+bool mp3_play(uint8_t, uint8_t) { ++starts; playing = true; return true; }
 void mp3_stop() { ++stops; playing = false; }
 bool mp3_isPlaying() { return playing; }
 

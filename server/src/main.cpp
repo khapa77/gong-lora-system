@@ -58,11 +58,11 @@ static bool ledProblem() {
 // the track once the relay has had its warm-up. MAX98357A is powered all the
 // time, so the gong itself never depends on the relay.
 // -------------------------------------------------------
-static bool onGongFire(uint8_t track, uint8_t loop, uint8_t vol) {
+static bool onGongFire(uint8_t track, uint8_t loop, uint8_t vol, uint32_t* tag) {
     logPrintf("[MAIN] Schedule fired: track=%d loop=%d vol=%d\n", track, loop, vol);
     // false = трек ждёт прогрева реле; расписание отметит событие только после
     // фактического старта (см. resolveDeferredFire).
-    return relay_play(track, vol, loop);
+    return relay_play(track, vol, loop, tag);
 }
 
 // -------------------------------------------------------

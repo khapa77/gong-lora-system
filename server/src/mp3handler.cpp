@@ -51,7 +51,7 @@ bool mp3_trackExists(uint8_t track) {
 }
 
 // Caller must hold audioMtx.
-static void _startPlay(uint8_t track) {
+static bool _startPlay(uint8_t track) {
     if (audio.isRunning()) audio.stopSong();
     ramping = false;
 
@@ -74,7 +74,7 @@ static void _startPlay(uint8_t track) {
         if (!LittleFS.exists(path)) {
             logPrintf("[MP3] File not found: %s\n", path);
             loopRemain = 0;
-            return;
+            return false;
         }
     }
 
@@ -83,10 +83,11 @@ static void _startPlay(uint8_t track) {
         ramping   = true;
         rampStart = millis();
         logPrintf("[MP3] Playing: %s\n", path);
-    } else {
-        logPrintf("[MP3] Failed to start: %s\n", path);
-        loopRemain = 0;
+        return true;
     }
+    logPrintf("[MP3] Failed to start: %s\n", path);
+    loopRemain = 0;
+    return false;
 }
 
 void mp3_setup() {
@@ -122,19 +123,20 @@ uint8_t mp3_getVolume() {
     return v;
 }
 
-void mp3_play(uint8_t track, uint8_t loops) {
+bool mp3_play(uint8_t track, uint8_t loops) {
     if (loops < 1) loops = 1;
     logPrintf("[MP3] mp3_play track=%d loops=%d\n", track, loops);
-    if (!audioLock()) return;
+    if (!audioLock()) return false;
     loopTrack  = track;
     loopRemain = loops - 1;  // first play counts as one
-    _startPlay(track);
+    const bool started = _startPlay(track);
     audioUnlock();
+    return started;
 }
 
-void mp3_start(uint8_t track, uint8_t vol, uint8_t loops) {
+bool mp3_start(uint8_t track, uint8_t vol, uint8_t loops) {
     mp3_setVolume(vol);
-    mp3_play(track, loops);
+    return mp3_play(track, loops);
 }
 
 bool mp3_manualPlay(int track, int vol, int loop) {

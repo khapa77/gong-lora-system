@@ -35,7 +35,9 @@ void   relay_loop();     // каждый проход controlTask
 // true — звук начался сразу; false — трек поставлен в очередь на прогрев
 // (расписание использует это, чтобы не отмечать событие прозвучавшим раньше
 // фактического старта).
-bool   relay_play(uint8_t track, uint8_t vol, uint8_t loop);
+// outTag (необязательный) — уникальный тег запроса: по нему расписание
+// отличает старт ИМЕННО этого гонга от чужого (кнопка/веб).
+bool   relay_play(uint8_t track, uint8_t vol, uint8_t loop, uint32_t* outTag = nullptr);
 void   relay_stop();     // стоп звука + отмена отложенного старта
 
 // Предвключение (только AUTO): включить реле за msUntilGong до гонга, чтобы к
@@ -60,7 +62,8 @@ bool     relay_isOn();
 // (не чаще RELAY_POLL_PERIOD_MS), а не из audioMtx на каждый вызов.
 bool     relay_isBusy();
 bool     relay_isPendingStart();   // трек поставлен в очередь, но ещё не начался
-uint32_t relay_startCount();       // монотонный счётчик фактических стартов
+uint32_t relay_pendingTag();       // тег ожидающего трека (0 — очереди нет)
+uint32_t relay_lastStartedTag();   // тег последнего РЕАЛЬНО стартовавшего трека
 bool     relay_isEnabled();    // RELAY_PIN >= 0
 uint32_t relay_preMs();
 uint32_t relay_holdMs();

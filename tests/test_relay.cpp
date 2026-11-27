@@ -47,11 +47,14 @@ static uint8_t lastTrack = 0, lastVol = 0, lastLoop = 0;
 static bool    playing = false;
 
 void mp3_setVolume(uint8_t vol) { lastVol = vol; }
-void mp3_play(uint8_t track, uint8_t loops) {
+static bool fileMissing = false;   // simulate a missing/corrupt track
+bool mp3_play(uint8_t track, uint8_t loops) {
     ++starts;
     lastTrack = track;
     lastLoop  = loops;
+    if (fileMissing) return false;
     playing   = true;
+    return true;
 }
 void mp3_stop() { ++stops; playing = false; }
 bool mp3_isPlaying() { return playing; }
@@ -387,8 +390,58 @@ static void test_save_error_is_reported() {
     // The "pre" write fails: the setter must not claim success.
     host::nvs().inject("set", "pre", host::Action::ErrorBefore);
     CHECK(!relay_setTiming(2000, 4000));
-    // The in-RAM value is applied, but the caller was told the store failed.
-    CHECK_EQ((int)relay_preMs(), 2000);
+    // RAM is NOT updated on a failed save: otherwise the device would run with a
+    // new warm-up and, after reboot, silently fall back to a mixed configuration.
+    CHECK_EQ((int)relay_preMs(), RELAY_DEFAULT_PRE_MS);
+    CHECK_EQ((int)relay_holdMs(), RELAY_DEFAULT_HOLD_MS);
+
+    // A failure on the second key must not leave 2000/3000 behind either.
+    resetDevice();
+    boot();
+    host::nvs().inject("set", "hold", host::Action::ErrorBefore);
+    CHECK(!relay_setTiming(2000, 4000));
+    CHECK_EQ((int)relay_preMs(), RELAY_DEFAULT_PRE_MS);
+    CHECK_EQ((int)relay_holdMs(), RELAY_DEFAULT_HOLD_MS);
+    resetDevice();                       // reboot: nothing half-written is loaded
+    boot();
+    CHECK_EQ((int)relay_preMs(), RELAY_DEFAULT_PRE_MS);
+    CHECK_EQ((int)relay_holdMs(), RELAY_DEFAULT_HOLD_MS);
+}
+
+static void test_failed_start_is_not_confirmed() {
+    resetDevice();
+    boot();
+    relay_play(1, 30, 1);                // second, queued track
+    advance(800);
+    fileMissing = true;                  // decoder cannot start the file
+    const uint32_t before = relay_lastStartedTag();
+    CHECK(!relay_play(4, 30, 1));        // synchronous path reports the failure
+    CHECK(relay_lastStartedTag() == before);    // nothing was confirmed
+    fileMissing = false;
+}
+
+static void test_start_sets_busy_and_holds_relay() {
+    resetDevice();
+    boot();
+    CHECK(relay_setTiming(RELAY_DEFAULT_PRE_MS, 0));   // hold = 0
+    relay_play(1, 30, 1);
+    advance(800);                        // pending -> playing inside this tick
+    CHECK(playing);
+    CHECK(relay_isBusy());               // busy is true at once, not 50 ms later
+    CHECK(relayActive());                // the relay must not drop at start
+    advance(10);
+    CHECK(relayActive());
+}
+
+static void test_longer_warmup_reapplies_to_warm_relay() {
+    resetDevice();
+    boot();
+    CHECK(relay_setManual(true));
+    advance(900);                        // relay warm under the old 800 ms rule
+    CHECK(relay_setTiming(30000, 3000)); // new warm-up is much longer
+    CHECK(!relay_play(3, 30, 1));        // must queue, not start immediately
+    advance(30000);
+    CHECK_EQ((int)lastTrack, 3);
 }
 
 static void test_legacy_import_keeps_file_when_save_fails() {
@@ -474,6 +527,9 @@ int main() {
         { "manual_keeps_audio_hold",         test_manual_does_not_hide_audio_hold },
         { "prewarm_cancel",                  test_prewarm_can_be_cancelled },
         { "play_reports_deferral",           test_play_reports_deferral },
+        { "longer_warmup_reapplies",         test_longer_warmup_reapplies_to_warm_relay },
+        { "failed_start_not_confirmed",      test_failed_start_is_not_confirmed },
+        { "start_sets_busy_and_holds",       test_start_sets_busy_and_holds_relay },
     };
     for (const Case& c : cases) {
         const int before = failures;

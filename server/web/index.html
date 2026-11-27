@@ -1058,11 +1058,14 @@ async function saveRelayTiming() {
   if (!Number.isFinite(pre) || !Number.isFinite(hold)) {
     toast('Warm-up и Hold — числа в миллисекундах', 'err'); return;
   }
+  const preEl = document.getElementById('relayPre'), holdEl = document.getElementById('relayHold');
+  const sentPre = preEl ? preEl.value : null, sentHold = holdEl ? holdEl.value : null;
   const r = await postJSON('/api/relay', { pre, hold });
   if (r && r.mode) {
-    const preEl = document.getElementById('relayPre'), holdEl = document.getElementById('relayHold');
-    if (preEl)  delete preEl.dataset.dirty;
-    if (holdEl) delete holdEl.dataset.dirty;
+    // Clear the dirty flag only if the field still holds what was sent: a value
+    // typed while the request was in flight must survive the Save response.
+    if (preEl && preEl.value === sentPre) delete preEl.dataset.dirty;
+    if (holdEl && holdEl.value === sentHold) delete holdEl.dataset.dirty;
     applyRelay(r);
     toast('Relay timing saved', 'ok');
   } else toast(r?.err || 'Error', 'err');

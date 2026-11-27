@@ -43,9 +43,12 @@ uint32_t  manualSince = 0;
 bool      lastAudioPlaying = false;
 uint32_t  lastPollMs       = 0;
 
-// Монотонный счётчик фактических стартов: расписание отличает «поставлено в
-// очередь» от «звук реально начался».
-uint32_t  startCount = 0;
+// Каждый запрос звука получает тег; подтверждение старта привязано к тегу,
+// поэтому чужой старт (кнопка/веб) не может засчитать отменённый гонг как
+// прозвучавший.
+uint32_t  tagCounter     = 0;
+uint32_t  pendingTag     = 0;   // тег трека, ждущего прогрева
+uint32_t  lastStartedTag = 0;   // тег последнего фактически стартовавшего трека
 
 bool      ready = false;
 
@@ -86,13 +89,15 @@ bool timingValid(uint32_t pre, uint32_t hold) {
 
 // Настройки в NVS (раньше /relay.conf). true — все три поля записаны и
 // подтверждены; при ошибке ни одна настройка не считается сохранённой.
-bool saveConfig() {
+// Пишет ВСЕ три ключа из аргументов (не из RAM), чтобы при отказе посередине
+// не осталось смеси новых и старых значений: RAM меняется только после успеха.
+bool saveConfig(RelayMode m, uint32_t pre, uint32_t hold) {
     if (!kRelayPresent) return true;
     Preferences p;
     if (!p.begin("relay", false)) return false;
-    const bool ok = p.putUChar("mode", (uint8_t)mode) != 0 &&
-                    p.putUInt("pre",  preMs) != 0 &&
-                    p.putUInt("hold", holdMs) != 0;
+    const bool ok = p.putUChar("mode", (uint8_t)m) != 0 &&
+                    p.putUInt("pre",  pre) != 0 &&
+                    p.putUInt("hold", hold) != 0;
     p.end();
     if (!ok) logPrintf("[RELAY] NVS save FAILED (mode/pre/hold)\n");
     return ok;
@@ -125,7 +130,7 @@ void importLegacyConfig() {
     if (relay_parseMode(String((const char*)(doc["mode"] | "auto")), m)) mode = m;
     applyTiming(doc["pre"]  | RELAY_DEFAULT_PRE_MS,
                 doc["hold"] | RELAY_DEFAULT_HOLD_MS, RELAY_CONFIG_FILE);
-    if (!saveConfig()) {
+    if (!saveConfig(mode, preMs, holdMs)) {
         logPrintf("[RELAY] %s import not committed — file kept for the next boot\n",
                   RELAY_CONFIG_FILE);
         return;
@@ -152,11 +157,17 @@ void loadConfig() {
     if (!have) importLegacyConfig();
 }
 
-void startNow(uint8_t track, uint8_t vol, uint8_t loop) {
+// true — декодер реально стартовал (файл найден и connecttoFS успешен).
+bool startNow(uint8_t track, uint8_t vol, uint8_t loop, uint32_t tag) {
     mp3_setVolume(vol);
-    mp3_play(track, loop);
+    const bool started = mp3_play(track, loop);
     lastActiveMs = millis();
-    ++startCount;
+    // Обновляем кэш сразу: иначе busy/relay на мгновение ложно «простаивают»
+    // и реле с hold=0 успевает выключиться в момент старта.
+    lastAudioPlaying = started;
+    lastPollMs       = millis();
+    if (started) lastStartedTag = tag;
+    return started;
 }
 
 }  // namespace
@@ -168,7 +179,8 @@ void relay_setup() {
     relayOn          = false;
     warm             = false;
     lastAudioPlaying = false;
-    startCount       = 0;
+    pendingTag       = 0;
+    lastStartedTag   = 0;
     lastActiveMs     = millis();
     lastPollMs       = millis();
     preMs            = RELAY_DEFAULT_PRE_MS;
@@ -194,7 +206,7 @@ void relay_setup() {
     // только явная команда оператора после старта.
     if (mode == RelayMode::ON) {
         mode = RelayMode::AUTO;
-        if (!saveConfig())
+        if (!saveConfig(mode, preMs, holdMs))
             logPrintf("[RELAY] Could not persist AUTO after reboot — mode is RAM-only\n");
         logPrintf("[RELAY] Always ON was persisted — not restored after reboot (safe OFF)\n");
     }
@@ -205,27 +217,30 @@ void relay_setup() {
               (unsigned)preMs, (unsigned)holdMs);
 }
 
-bool relay_play(uint8_t track, uint8_t vol, uint8_t loop) {
+bool relay_play(uint8_t track, uint8_t vol, uint8_t loop, uint32_t* outTag) {
+    const uint32_t tag = ++tagCounter;
+    if (outTag) *outTag = tag;
+
     if (!kRelayPresent || !ready) {   // без реле — тот же звук, без задержки
-        startNow(track, vol, loop);
-        return true;
+        return startNow(track, vol, loop, tag);
     }
 
     // ON/OFF — реле от звука не зависит, ждать нечего.
-    if (mode != RelayMode::AUTO) { startNow(track, vol, loop); return true; }
+    if (mode != RelayMode::AUTO) return startNow(track, vol, loop, tag);
 
     drive(true);
     const uint32_t onFor = (uint32_t)(millis() - onSince);
     // `warm` снимает зависимость от переполнения onSince: реле, проработавшее
     // дольше preMs, остаётся готовым до физического выключения.
-    if (!pending && (warm || onFor >= preMs)) { startNow(track, vol, loop); return true; }
+    if (!pending && (warm || onFor >= preMs)) return startNow(track, vol, loop, tag);
 
-    // Повторный запрос во время ожидания заменяет параметры, но не сдвигает
-    // момент старта: таймер идёт от включения реле.
+    // Повторный запрос во время ожидания заменяет параметры и тег, но не
+    // сдвигает момент старта: таймер идёт от включения реле.
     if (!pending)
         logPrintf("[RELAY] Amp warm-up %ums before track %d\n",
                   (unsigned)(preMs - onFor), track);
     pending = true;
+    pendingTag = tag;
     pTrack = track; pVol = vol; pLoop = loop;
     lastActiveMs = millis();
     return false;   // поставлено в очередь, звук ещё не начался
@@ -277,7 +292,7 @@ void relay_loop() {
     if (pending && (uint32_t)(now - onSince) >= preMs) {
         pending = false;
         warm    = true;
-        startNow(pTrack, pVol, pLoop);
+        startNow(pTrack, pVol, pLoop, pendingTag);
     }
     if (prewarm && (int32_t)(now - prewarmUntil) >= 0) prewarm = false;
     if (relayOn && !warm && (uint32_t)(now - onSince) >= preMs) warm = true;
@@ -306,27 +321,38 @@ void relay_loop() {
 
 bool relay_setMode(RelayMode m) {
     if (!kRelayPresent) return false;
+    if (!saveConfig(m, preMs, holdMs)) {
+        logPrintf("[RELAY] Mode NOT changed: NVS save failed\n");
+        return false;
+    }
     mode     = m;
     manualOn = false;     // явный выбор режима в вебе отменяет включение кнопкой
     prewarm  = false;     // AUTO снова — следующая секунда расписания включит заново
     // Уход из AUTO во время ожидания — звук запускаем сразу, а не теряем.
-    if (pending && m != RelayMode::AUTO) { pending = false; startNow(pTrack, pVol, pLoop); }
+    if (pending && m != RelayMode::AUTO) { pending = false; startNow(pTrack, pVol, pLoop, pendingTag); }
     lastActiveMs = millis();   // AUTO после ON — отпустить через holdMs, не мгновенно
-    const bool saved = saveConfig();
     relay_loop();
-    logPrintf("[RELAY] Mode = %s%s\n", modeName(mode), saved ? "" : " (NVS save FAILED)");
-    return saved;
+    logPrintf("[RELAY] Mode = %s\n", modeName(mode));
+    return true;
 }
 
 bool relay_setTiming(uint32_t pre, uint32_t hold) {
     if (!kRelayPresent) return false;
     if (!timingValid(pre, hold)) return false;
+    // RAM не меняется при отказе записи: иначе после перезагрузки получилась бы
+    // смесь нового warm-up со старым hold.
+    if (!saveConfig(mode, pre, hold)) {
+        logPrintf("[RELAY] Timing NOT changed: NVS save failed\n");
+        return false;
+    }
+    const bool longerWarmUp = pre > preMs;
     preMs  = pre;
     holdMs = hold;
-    const bool saved = saveConfig();
-    logPrintf("[RELAY] Timing: pre=%ums hold=%ums%s\n", (unsigned)preMs, (unsigned)holdMs,
-              saved ? "" : " (NVS save FAILED)");
-    return saved;
+    // Увеличенный warm-up применяется и к уже включённому реле: иначе трек
+    // стартовал бы по прежнему, более короткому порогу.
+    if (longerWarmUp && relayOn && (uint32_t)(millis() - onSince) < preMs) warm = false;
+    logPrintf("[RELAY] Timing: pre=%ums hold=%ums\n", (unsigned)preMs, (unsigned)holdMs);
+    return true;
 }
 
 bool relay_setManual(bool on) {
@@ -351,7 +377,8 @@ bool     relay_isManual()      { return manualOn; }
 bool     relay_isOn()          { return relayOn; }
 bool     relay_isEnabled()     { return kRelayPresent; }
 bool     relay_isPendingStart() { return pending; }
-uint32_t relay_startCount()    { return startCount; }
+uint32_t relay_pendingTag()    { return pending ? pendingTag : 0; }
+uint32_t relay_lastStartedTag() { return lastStartedTag; }
 uint32_t relay_preMs()         { return preMs; }
 uint32_t relay_holdMs()        { return holdMs; }
 

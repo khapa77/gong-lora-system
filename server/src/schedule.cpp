@@ -27,7 +27,9 @@
 // are sized by the file (dayPoolSize) so they fit a fragmented heap.
 #define SCHED_JSON_CAPACITY 12288
 
-bool (*onScheduleTrigger)(uint8_t track, uint8_t loop, uint8_t vol) = nullptr;
+// outTag — тег запроса к аудиобэкенду: по нему расписание понимает, начался
+// ли ИМЕННО этот гонг (а не чужой старт кнопки/веба).
+bool (*onScheduleTrigger)(uint8_t track, uint8_t loop, uint8_t vol, uint32_t* outTag) = nullptr;
 
 static ScheduleEntry entries[MAX_SCHEDULES];
 static uint8_t       count   = 0;
@@ -61,6 +63,12 @@ static bool courseRunning = false;
 static bool waitingForCourse = false;
 static bool courseRecoveryCheck();
 static bool courseSuspended = false;
+
+// True while sched_courseApply() is between the NVS publish (applyDraft) and the
+// sys_lock section. The control task must not fire, suspend or advance the old
+// schedule in that window: it would write the stale RAM calendar over the newly
+// published generation.
+static volatile bool courseApplyInProgress = false;
 static bool courseDayValid = false;
 static uint8_t courseDay = 0;
 static uint8_t courseLength = 0;
@@ -242,6 +250,11 @@ static bool coursePublishDay(uint8_t day, bool allowCalls) {
 }
 
 static void courseSuspend(const char* why, uint8_t reason = emergency::kNone) {
+    if (courseApplyInProgress) {
+        // Never persist a suspend derived from the pre-Apply calendar.
+        logPrintf("[COURSE] suspend deferred (%s): Apply in progress\n", why);
+        return;
+    }
     logPrintf("[COURSE] suspended: %s\n", why);
     courseSuspended = true;
     courseRunning = false;
@@ -302,6 +315,7 @@ static bool courseSaveActiveEntries() {
 static bool courseTransitionPending = false;
 
 static void courseAdvance() {
+    if (courseApplyInProgress) return;
     if (!courseMode || !courseRunning || courseSuspended) return;
     if (courseCal.flags & course_store::kSuspended) return;
     course::Date today;
@@ -799,7 +813,7 @@ static void checkDateAdvance() {
 struct DeferredFire {
     bool     active   = false;
     int      key      = -1;
-    uint32_t baseline = 0;      // relay_startCount() на момент постановки
+    uint32_t tag      = 0;      // тег запроса: подтверждение привязано к нему
     uint32_t eventId  = 0;
     uint32_t generation = 0;
     uint8_t  day      = 0;
@@ -836,14 +850,17 @@ static void commitFire(int key, uint32_t eventId, bool course, uint32_t generati
 // фиксируем; старт отменён (pending снят STOP/Apply/Activate) — не фиксируем.
 static void resolveDeferredFire() {
     if (!deferred.active) return;
-    if (deferred.baseline != relay_startCount()) {
+    // Стартовал ИМЕННО наш трек (тот же тег) — фиксируем.
+    if (relay_lastStartedTag() == deferred.tag) {
         commitFire(deferred.key, deferred.eventId, deferred.course, deferred.generation,
                    deferred.day, deferred.date, deferred.timestamp);
         logPrintf("[SCHED] queued gong started — watermark committed\n");
         deferred.active = false;
         return;
     }
-    if (!relay_isPendingStart()) {
+    // Наш запрос больше не ждёт старта: отменён, вытеснен кнопкой/вебом или
+    // декодер не запустился. Отметку НЕ ставим.
+    if (relay_pendingTag() != deferred.tag) {
         logPrintf("[SCHED] queued gong cancelled before start — not marked as fired\n");
         deferred.active = false;
     }
@@ -852,7 +869,8 @@ static void resolveDeferredFire() {
 static void doFire(const ScheduleEntry& e, const char* why) {
     logPrintf("[SCHED] %s %02d:%02d '%s' track=%d loop=%d vol=%d\n",
               why, e.hour, e.minute, e.description.c_str(), e.track, e.loop, e.vol);
-    const bool started = onScheduleTrigger ? onScheduleTrigger(e.track, e.loop, e.vol) : false;
+    uint32_t tag = 0;
+    const bool started = onScheduleTrigger ? onScheduleTrigger(e.track, e.loop, e.vol, &tag) : false;
     lastFiredKey    = e.hour * 60 + e.minute;
     lastFiredMillis = millis();
     const time_t now = time(nullptr);
@@ -861,7 +879,7 @@ static void doFire(const ScheduleEntry& e, const char* why) {
         // persisted watermark — только после старта.
         deferred.active     = true;
         deferred.key        = e.hour * 60 + e.minute;
-        deferred.baseline   = relay_startCount();
+        deferred.tag        = tag;
         deferred.eventId    = e.id;
         deferred.course     = courseMode;
         deferred.generation = courseGeneration;
@@ -980,6 +998,9 @@ void sched_setup() {
 // call. Nothing is scheduled or cached here.
 // -------------------------------------------------------
 long sched_msToNext() {
+    // While the midnight switch is deferred (a track is still playing), the old
+    // day's schedule will not execute — pre-warming for it is pointless.
+    if (courseMode && courseTransitionPending) return -1;
     // Nothing will ring: not running, suspended, emergency, or no course.
     if (!schedulerReady()) return -1;
     if (emergency::isActive()) return -1;
@@ -1003,6 +1024,8 @@ long sched_msToNext() {
 // in the web UI — see timesync.h.
 // -------------------------------------------------------
 void sched_check() {
+    // Apply is publishing a new generation: do not touch course state meanwhile.
+    if (courseApplyInProgress) return;
     // A deferred gong (relay warm-up) becomes fired only when the audio really
     // started, or is dropped when the start was cancelled.
     resolveDeferredFire();
@@ -1758,8 +1781,8 @@ static bool courseFail(const std::string& err) {
 // The draft operations rewrite the NVS calendar's draft_generation. Refresh
 // the in-RAM copy so a later suspend/activation cannot write back a stale
 // pointer.
-static void courseReloadCalendar() {
-    if (!courseStore.hasCalendar()) return;
+static bool courseReloadCalendar() {
+    if (!courseStore.hasCalendar()) return true;
     course_store::CalendarState cal;
     std::string err;
     // A calendar read is one short NVS blob, so it is taken under the lock
@@ -1771,6 +1794,7 @@ static void courseReloadCalendar() {
     if (loaded) courseCal = cal;
     sys_unlock();
     if (!loaded) logPrintf("[COURSE] calendar reload failed: %s\n", err.c_str());
+    return loaded;
 }
 
 bool sched_courseInfoJSON(String& out) {
@@ -1889,7 +1913,11 @@ bool sched_courseDiscardDraft() {
 bool sched_courseApply() {
     schedCourseError = "";
     std::string err;
-    if (!course_editor::applyDraft(err)) return courseFail(err);
+    courseApplyInProgress = true;
+    if (!course_editor::applyDraft(err)) {
+        courseApplyInProgress = false;
+        return courseFail(err);
+    }
     // Apply replaces the calendar binding with APPLIED: no day is bound and
     // nothing may ring until an explicit Activate. The whole switch — stop (which
     // also cancels an armed warm-up), calendar reload and RAM publication — is
@@ -1899,7 +1927,18 @@ bool sched_courseApply() {
     // the same recursive mutex, so the NVS read stays inside this section.
     sys_lock();
     relay_stop();
-    courseReloadCalendar();
+    const bool reloaded = courseReloadCalendar();
+    if (!reloaded) {
+        // The new generation is published in NVS but cannot be read back: do not
+        // claim success and do not publish a stale RAM copy as if it were applied.
+        courseRunning = false;
+        executionRunning = false;
+        courseSuspended = true;
+        courseDayValid = false;
+        sys_unlock();
+        courseApplyInProgress = false;
+        return courseFail("applied, but the new calendar could not be reloaded — reboot required");
+    }
     courseMode = true;
     waitingForCourse = false;
     courseGeneration = courseCal.active_generation;
@@ -1915,6 +1954,7 @@ bool sched_courseApply() {
     activeDay = -1;
     activeDate = "";
     sys_unlock();
+    courseApplyInProgress = false;
     // Preload: the operator may Activate immediately. A failure here is not
     // fatal for Apply (the course is published), but Activate and boot will
     // refuse to run until the set can be loaded.

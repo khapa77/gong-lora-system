@@ -11,10 +11,10 @@ void    mp3_loop();
 void    mp3_startAudioTask();
 
 // track=1 → /0001.mp3, track=2 → /0002.mp3
-void    mp3_play(uint8_t track, uint8_t loops = 1);  // loops=1 → play once
+bool    mp3_play(uint8_t track, uint8_t loops = 1);  // false — файла нет/декодер не стартовал
 
 // Громкость + трек одним вызовом — общий вход для расписания, кнопки и веба.
-void    mp3_start(uint8_t track, uint8_t vol, uint8_t loops);
+bool    mp3_start(uint8_t track, uint8_t vol, uint8_t loops);   // true — звук реально начался
 
 // ── Единственный путь ручного воспроизведения ──────────────────────────────
 // Его вызывают И /api/play, И физическая кнопка: правила проверки и
