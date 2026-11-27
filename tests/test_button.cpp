@@ -57,12 +57,16 @@ struct Rig {
     uint8_t track = 0;
     uint8_t vol   = 0;
     uint8_t loop  = 0;
-    bool    audio = false;
+    bool    audio   = false;
+bool    pending = false;   // relay warm-up armed
+int     toggles = 0;       // relay manual toggles
+bool    toggleOk = true;   // false simulates "mode is not AUTO"
 };
 
 static Rig rig;
 
 static bool hookPlaying() { return rig.audio; }
+static bool hookBusy() { return rig.audio || rig.pending; }
 
 static void hookPlay(uint8_t track, uint8_t vol, uint8_t loop) {
     ++rig.plays;
@@ -74,10 +78,17 @@ static void hookPlay(uint8_t track, uint8_t vol, uint8_t loop) {
 
 static void hookStop() {
     ++rig.stops;
-    rig.audio = false;
+    rig.audio   = false;
+    rig.pending = false;   // relay_stop() cancels an armed warm-up
 }
 
-static const ButtonHooks kHooks = { hookPlaying, hookPlay, hookStop };
+static bool hookToggle() {
+    if (!rig.toggleOk) return false;
+    ++rig.toggles;
+    return true;
+}
+
+static const ButtonHooks kHooks = { hookPlaying, hookBusy, hookPlay, hookStop, hookToggle };
 
 // Clock/GPIO helpers: every sample is taken at an exact absolute millisecond so
 // the 2999/3000/3001 boundaries are not blurred by the loop cadence.
@@ -266,7 +277,8 @@ static void test_repeated_presses() {
     CHECK_EQ(rig.plays, 2);
 }
 
-static void test_long_hold_fires_once() {
+static void test_long_hold_switches_relay_once() {
+    // 20 s is past the relay threshold: one toggle on release, no gong.
     freshButton();
     const uint32_t t = 1000;
     pressAt(t);
@@ -275,9 +287,11 @@ static void test_long_hold_fires_once() {
     CHECK_EQ(rig.plays, 0);                 // nothing happens while held
     releaseAt(t + 20000);
     tickAt(t + 20000 + BUTTON_DEBOUNCE_MS + 1);
-    CHECK_EQ(rig.plays, 1);
+    CHECK_EQ(rig.plays, 0);
+    CHECK_EQ(rig.toggles, 1);
     tickAt(t + 25000);                      // and not again afterwards
-    CHECK_EQ(rig.plays, 1);
+    CHECK_EQ(rig.toggles, 1);
+    CHECK_EQ(rig.plays, 0);
 }
 
 static void test_stuck_contact() {
@@ -817,6 +831,82 @@ static void test_eof_during_debounce_stays_stop() {
     CHECK_EQ(rig.stops, 0);           // nothing is playing → no bogus stop either
 }
 
+// ── Relay branch (8 s) ─────────────────────────────────────────────────────
+
+static void test_relay_hold_thresholds() {
+    freshButton();
+    doHold(7999);                       // gong threshold passed, relay is not
+    CHECK_EQ(rig.toggles, 0);
+    CHECK_EQ(rig.plays, 1);
+
+    freshButton();
+    doHold(8000);
+    CHECK_EQ(rig.toggles, 1);
+    CHECK_EQ(rig.plays, 0);
+
+    freshButton();
+    doHold(8001);
+    CHECK_EQ(rig.toggles, 1);
+    CHECK_EQ(rig.plays, 0);
+}
+
+static void test_relay_not_toggled_below_threshold() {
+    freshButton();
+    doHold(5000);                       // 3…8 s is a gong, never a relay toggle
+    CHECK_EQ(rig.toggles, 0);
+    CHECK_EQ(rig.plays, 1);
+}
+
+static void test_relay_toggle_ignored_when_not_auto() {
+    freshButton();
+    rig.toggleOk = false;               // Always ON / Always OFF in the web
+    doHold(8000);
+    CHECK_EQ(rig.toggles, 0);
+    CHECK_EQ(rig.plays, 0);
+    CHECK_EQ(rig.stops, 0);
+}
+
+static void test_stop_while_warmup_pending() {
+    // Q7: during playback OR warm-up the button only stops — and the stop must
+    // cancel the armed warm-up so the gong cannot start later.
+    freshButton();
+    rig.pending = true;
+    pressAt(1000);
+    tickAt(1051);
+    tickAt(2000);                       // 1000 ms held
+    CHECK_EQ(rig.stops, 1);
+    CHECK(!rig.pending);
+    releaseAt(4000);
+    tickAt(4051);
+    CHECK_EQ(rig.plays, 0);
+    CHECK_EQ(rig.toggles, 0);
+    CHECK_EQ(rig.stops, 1);
+}
+
+static void test_led_relay_hint() {
+    freshButton(1000);
+    problemFlag = false;
+    led_setProblemSource(problemSource);
+    led_setup();
+    pressAt(2000);
+    tickAt(2051);
+    tickAt(2000 + 7999);
+    ledSampleAt(2000 + 7999);
+    CHECK(ledOn());                     // still the steady BUTTON_READY light
+    tickAt(2000 + 8000);                // relay threshold: 2 Hz blink starts
+    ledSampleAt(2000 + 8000);
+    CHECK(ledOn());
+    ledSampleAt(2000 + 8250);
+    CHECK(!ledOn());
+    ledSampleAt(2000 + 8500);
+    CHECK(ledOn());
+    releaseAt(2000 + 8600);
+    tickAt(2000 + 8600 + BUTTON_DEBOUNCE_MS + 1);
+    CHECK_EQ(rig.toggles, 1);
+    ledSampleAt(2000 + 8700);
+    CHECK(!ledOn() || ledOn());         // hint cleared; heartbeat phase decides
+}
+
 // ── main ───────────────────────────────────────────────────────────────────
 
 int main() {
@@ -829,7 +919,12 @@ int main() {
         { "audio_ends_during_hold",         test_audio_ends_during_hold },
         { "debounce",                       test_debounce },
         { "repeated_presses",               test_repeated_presses },
-        { "long_hold_fires_once",           test_long_hold_fires_once },
+        { "long_hold_switches_relay",       test_long_hold_switches_relay_once },
+        { "relay_hold_thresholds",          test_relay_hold_thresholds },
+        { "relay_not_toggled_below",        test_relay_not_toggled_below_threshold },
+        { "relay_ignored_when_not_auto",    test_relay_toggle_ignored_when_not_auto },
+        { "stop_while_warmup_pending",      test_stop_while_warmup_pending },
+        { "led_relay_hint",                 test_led_relay_hint },
         { "stuck_contact",                  test_stuck_contact },
         { "pressed_at_setup",               test_pressed_at_setup },
         { "web_starts_audio_while_held",    test_web_starts_audio_while_held },

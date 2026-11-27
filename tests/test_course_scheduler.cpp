@@ -53,6 +53,9 @@ static void audioCallback(uint8_t, uint8_t, uint8_t) { ++audioCalls; }
 void logPrintf(const char*, ...) {}
 bool mp3_isPlaying() { return audioPlaying; }
 void mp3_stop() { audioPlaying = false; }
+// schedule.cpp routes "stop everything" through relay_stop() (it also cancels a
+// pending warm-up); the relay itself is exercised by run_relay_tests.py.
+void relay_stop() { audioPlaying = false; }
 bool mp3_trackExists(uint8_t) { return true; }
 bool sys_fsOk() { return true; }
 void sys_lock() {}
@@ -972,6 +975,54 @@ static void test_audit_import_during_running() {
     check(audioCalls == 1, "schedule stopped ringing after a draft import");
 }
 
+// ── Relay pre-warm helper ──────────────────────────────────────────────────
+// sched_msToNext() is the only thing the relay uses; the schedule itself must
+// not change because of it.
+static void test_msToNext_lifecycle() {
+    freshEnvironment();
+    check(sched_msToNext() == -1, "no course: nothing to pre-warm");
+
+    host::clock() = atDate(2026, 11, 22, 3, 58);
+    check(applyCourse(makeCourse(14)), "apply course");
+    sched_setup();
+    check(sched_msToNext() == -1, "APPLIED (not activated): nothing will ring");
+
+    check(sched_activateDay(0), "activate day 0");
+    const long ms = sched_msToNext();
+    check(ms == 2L * 60L * 1000L, "03:58 → 120000 ms to 04:00");
+
+    // After the event fired there is no second event today: no pre-warm.
+    host::clock() = atDate(2026, 11, 22, 4, 0);
+    sched_check();
+    check(sched_msToNext() == -1, "nothing else today after 04:00");
+}
+
+static void test_msToNext_ignores_disabled_and_handles_emergency() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 3, 0);
+    check(applyCourse(makeCourse(2)), "apply course");
+    sched_setup();
+    check(sched_activateDay(0), "activate day 0");
+    check(sched_msToNext() == 60L * 60L * 1000L, "one hour to 04:00");
+
+    // Disabling the only event removes the pre-warm target.
+    check(sched_edit(1, 4, 0, "day0", 1, 1, false, 10), "disable the event");
+    check(sched_msToNext() == -1, "disabled event: nothing to pre-warm");
+
+    // Emergency stops normal execution; the relay must not be pre-warmed by a
+    // schedule that will not run.
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 3, 0);
+    check(applyCourse(makeCourse(2)), "apply course");
+    sched_setup();
+    check(sched_activateDay(0), "activate day 0");
+    emergency::recordFailure(emergency::kBootFailed);
+    emergency::recordFailure(emergency::kBootFailed);
+    emergency::recordFailure(emergency::kBootFailed);
+    check(sched_emergencyActive(), "emergency latched");
+    check(sched_msToNext() == -1, "emergency: no pre-warm");
+}
+
 int main() {
     TestCase tests[] = {
         {"boot_applied_no_calls", test_boot_applied_no_calls},
@@ -1012,6 +1063,8 @@ int main() {
         {"audit_midnight_broken_next_day", test_audit_midnight_broken_next_day},
         {"audit_length_one_and_47", test_audit_length_one_and_47},
         {"audit_import_during_running", test_audit_import_during_running},
+        {"ms_to_next_lifecycle", test_msToNext_lifecycle},
+        {"ms_to_next_disabled_emergency", test_msToNext_ignores_disabled_and_handles_emergency},
     };
     for (const TestCase& t : tests) {
         const int before = failures;

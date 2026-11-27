@@ -122,6 +122,9 @@ static_assert(VOLUME_LIMIT >= 1 && VOLUME_LIMIT <= 30, "VOLUME_LIMIT: 1–30");
 #ifndef BUTTON_STOP_HOLD_MS
 #define BUTTON_STOP_HOLD_MS     1000UL // порог остановки уже играющего звука
 #endif
+#ifndef BUTTON_RELAY_HOLD_MS
+#define BUTTON_RELAY_HOLD_MS    8000UL // порог переключения реле без звука
+#endif
 #ifndef BUTTON_AUTH_RESET_HOLD_MS
 #define BUTTON_AUTH_RESET_HOLD_MS 10000UL  // удержание при включении питания
 #endif
@@ -178,6 +181,13 @@ static_assert(VOLUME_LIMIT >= 1 && VOLUME_LIMIT <= 30, "VOLUME_LIMIT: 1–30");
 #ifndef LED_ERROR_PERIOD_MS
 #define LED_ERROR_PERIOD_MS     200UL  // половина периода = 100 мс → 5 Гц
 #endif
+// Подсказка «отпустите — переключится реле»: 2 Гц, намеренно отличимо от 5 Гц
+// ошибки. Период должен делить фазовый период LED_HEARTBEAT_MS без остатка.
+#ifndef LED_RELAY_PERIOD_MS
+#define LED_RELAY_PERIOD_MS     500UL
+#endif
+static_assert(LED_HEARTBEAT_MS % LED_RELAY_PERIOD_MS == 0,
+              "LED_HEARTBEAT_MS must be a multiple of LED_RELAY_PERIOD_MS");
 static_assert(LED_HEARTBEAT_ON_MS > 0 && LED_HEARTBEAT_ON_MS < LED_HEARTBEAT_MS,
               "LED_HEARTBEAT_ON_MS must be a short flash inside the period");
 static_assert(LED_ERROR_PERIOD_MS >= 20, "LED_ERROR_PERIOD_MS: too fast to see");
@@ -185,6 +195,54 @@ static_assert(LED_ERROR_PERIOD_MS >= 20, "LED_ERROR_PERIOD_MS: too fast to see")
 #if STATUS_LED_PIN >= 0 && !GONG_GPIO_VALID(STATUS_LED_PIN)
 #error "STATUS_LED_PIN does not exist on the configured target: confirm the board in server/platformio.ini first"
 #endif
+
+// ── Реле внешнего усилителя (relayhandler.h) ───────────────────────────────
+// Реле коммутирует нагрузку ВНЕ платы (разъём J3, модуль 5 В с оптроном:
+// 1=+5V, 2=GND, 3=RELAY_OUT). MAX98357A питается независимо (+5V_AUDIO через
+// FB1), поэтому реле не управляет встроенным звуком: Always OFF глушит только
+// внешний усилитель, гонг из MAX98357A продолжает звучать.
+//
+// -1 = реле отключено, и это значение ПО УМОЛЧАНИЮ: воспроизведение идёт
+// напрямую, без прогрева и без таймеров реле. GPIO27 — кандидат по схеме
+// (R10 100 Ом, R11 pull-down / R12 pull-up), но физическая активация — только
+// после подтверждения модели платы и полярности модуля.
+#ifndef RELAY_PIN
+#define RELAY_PIN               -1
+#endif
+#ifndef RELAY_ACTIVE_LOW
+#define RELAY_ACTIVE_LOW        0      // 1 — модуль с оптроном, активный LOW
+#endif
+#define RELAY_CONFIG_FILE       "/relay.conf"  // устаревшее: с 6.2 — в NVS
+// AUTO: реле включается ДО звука (внешнему усилителю нужно время выйти на
+// режим) и держится после трека; гонг по расписанию получает предвключение.
+#define RELAY_DEFAULT_PRE_MS    800UL
+#define RELAY_DEFAULT_HOLD_MS   3000UL
+#define RELAY_MAX_PRE_MS        30000UL
+#define RELAY_PREWARM_GRACE_MS  5000UL
+#define RELAY_MAX_HOLD_MS       20000UL
+// Ручное включение кнопкой не сохраняется и само снимается через 30 минут.
+#define RELAY_MANUAL_MAX_MS     (30UL * 60 * 1000)
+// mp3_isPlaying() берёт audioMtx, которую декодер держит на время audio.loop();
+// опрос чаще, чем раз в 50 мс, ставил бы controlTask в очередь за декодером.
+#define RELAY_POLL_PERIOD_MS    50UL
+
+// Проверка номера вывода: только существование у чипа, не доступность.
+// ESP32-S3: GPIO22–25 отсутствуют; GPIO26–32 существуют, но на модулях с
+// octal PSRAM/Flash часть из них занята внутри модуля — это проверяется по
+// конкретной плате, а не этой маской.
+#if RELAY_PIN >= 0 && !GONG_GPIO_VALID(RELAY_PIN)
+#error "RELAY_PIN does not exist on the configured target: confirm the board in server/platformio.ini first"
+#endif
+#if RELAY_PIN >= 0 && RELAY_PIN == BUTTON_PIN
+#error "RELAY_PIN and BUTTON_PIN must differ"
+#endif
+#if RELAY_PIN >= 0 && RELAY_PIN == STATUS_LED_PIN
+#error "RELAY_PIN and STATUS_LED_PIN must differ"
+#endif
+#if RELAY_PIN >= 0 && (RELAY_PIN == I2S_BCLK || RELAY_PIN == I2S_LRC || RELAY_PIN == I2S_DOUT)
+#error "RELAY_PIN collides with an I2S pin"
+#endif
+
 
 // ── Расписание ────────────────────────────────────────────────────────────
 #define MAX_SCHEDULES     32

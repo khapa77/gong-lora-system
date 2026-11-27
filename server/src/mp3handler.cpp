@@ -1,5 +1,6 @@
 #include "mp3handler.h"
 #include "config.h"
+#include "relayhandler.h"
 #include <LittleFS.h>
 #include <Audio.h>
 #include <freertos/FreeRTOS.h>
@@ -138,7 +139,9 @@ void mp3_start(uint8_t track, uint8_t vol, uint8_t loops) {
 
 bool mp3_manualPlay(int track, int vol, int loop) {
     if (!mp3_manualTrackValid(track)) return false;
-    mp3_start((uint8_t)track, mp3_manualVolume(vol), mp3_manualLoops(loop));
+    // Единственный путь ручного воспроизведения: реле включается заранее и
+    // звук ждёт прогрева (или стартует сразу, если реле отключено/уже греется).
+    relay_play((uint8_t)track, mp3_manualVolume(vol), mp3_manualLoops(loop));
     return true;
 }
 

@@ -14,6 +14,7 @@
 #include "device.h"
 #include "buttonhandler.h"
 #include "statusled.h"
+#include "relayhandler.h"
 
 // -------------------------------------------------------
 // Physical button and status LED ports.
@@ -25,7 +26,14 @@
 // -------------------------------------------------------
 static bool buttonAudioPlaying() { return mp3_isPlaying(); }
 
-static void buttonStopAudio() { mp3_stop(); }
+// "Busy" для кнопки — звук ИЛИ ожидание прогрева реле: в обоих случаях
+// нажатие означает STOP, а не новое действие (Q7).
+static bool buttonBusy() { return relay_isBusy(); }
+
+static void buttonStopAudio() { relay_stop(); }
+
+// Переключение реле без звука (удержание >= 8 с). false — режим не AUTO.
+static bool buttonRelayToggle() { return relay_setManual(!relay_isManual()); }
 
 static void buttonPlayManual(uint8_t track, uint8_t vol, uint8_t loop) {
     // Тот же путь, что /api/play: никаких собственных проверок поверх
@@ -45,12 +53,14 @@ static bool ledProblem() {
 }
 
 // -------------------------------------------------------
-// Called when a schedule entry fires. MAX98357A is powered all the time —
-// the sound starts right away, no amplifier warm-up.
+// Called when a schedule entry fires (normal course or emergency). Goes through
+// the relay module: in AUTO it powers the external amplifier first and starts
+// the track once the relay has had its warm-up. MAX98357A is powered all the
+// time, so the gong itself never depends on the relay.
 // -------------------------------------------------------
 static void onGongFire(uint8_t track, uint8_t loop, uint8_t vol) {
     logPrintf("[MAIN] Schedule fired: track=%d loop=%d vol=%d\n", track, loop, vol);
-    mp3_start(track, vol, loop);
+    relay_play(track, vol, loop);
 }
 
 // -------------------------------------------------------
@@ -85,8 +95,18 @@ static void controlTask(void*) {
         uint32_t now = millis();
         if (now - lastSchedCheck >= 1000) {
             sched_check();
+            // Pre-warm: the relay closes preMs before the next event so the
+            // external amplifier is ready and the sound starts exactly on time.
+            // +1 s covers the once-per-second clock granularity. The answer is
+            // recomputed from the live entries, so day transitions, cancelled
+            // events, Apply/Activate, emergency and clock corrections are all
+            // handled by sched_msToNext() itself.
+            const long toGong = sched_msToNext();
+            if (toGong > 0 && (uint32_t)toGong <= relay_preMs() + 1000UL)
+                relay_prewarm((uint32_t)toGong);
             lastSchedCheck = now;
         }
+        relay_loop();
         led_loop();
         sys_unlock();
         vTaskDelay(pdMS_TO_TICKS(CONTROL_PERIOD_MS));
@@ -178,7 +198,9 @@ void setup() {
                             : "credentials NOT reset (released early or erase failed)");
     }
 
-    const ButtonHooks buttonHooks = { buttonAudioPlaying, buttonPlayManual, buttonStopAudio };
+    const ButtonHooks buttonHooks = { buttonAudioPlaying, buttonBusy,
+                                      buttonPlayManual, buttonStopAudio,
+                                      buttonRelayToggle };
     button_setup(buttonHooks);
     led_setProblemSource(ledProblem);
 
@@ -188,6 +210,7 @@ void setup() {
     time_setup();    // TZ + DS3231 → system clock (NTP starts once STA is up)
     mp3_setup();
     mp3_startAudioTask();
+    relay_setup();   // before sched_setup(): a catch-up gong may fire from it
     sched_setup();
     device_setup();  // number + label → AP name / mDNS host (before wifi_setup)
     wifi_setup();    // own AP always + STA if a network is saved

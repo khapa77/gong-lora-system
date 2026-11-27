@@ -1,6 +1,7 @@
 #include "schedule.h"
 #include "config.h"
 #include "mp3handler.h"
+#include "relayhandler.h"
 #include "active_day_state.h"
 #include "course_store.h"
 #include "course_editor.h"
@@ -426,7 +427,9 @@ static bool courseActivate(uint8_t day) {
     if (!courseMode) return false;
     if (day >= courseLength) return false;
     if (!sys_fsOk()) return false;
-    mp3_stop();
+    // Also cancels a relay warm-up that belonged to the previous day: its
+    // pending track must never fire after the day has been switched.
+    relay_stop();
     if (schedPendingSave) courseSaveActiveEntries();
     std::string err;
     // The generation must resolve completely through its OWN template set
@@ -895,6 +898,32 @@ void sched_setup() {
     // TODAY's schedule, not yesterday's.
     if (timeIsSet()) checkDateAdvance();
     if (!courseMode) sched_catchup();
+}
+
+// -------------------------------------------------------
+// Milliseconds to the next enabled event of the ACTIVE day.
+// Used only for relay pre-warming. In course mode entries[] holds the published
+// day of the running course, so this automatically follows day transitions,
+// course edits, event cancellation, an Activate/Apply and clock corrections:
+// the answer is recomputed from the live entries and the live clock on every
+// call. Nothing is scheduled or cached here.
+// -------------------------------------------------------
+long sched_msToNext() {
+    // Nothing will ring: not running, suspended, emergency, or no course.
+    if (!schedulerReady()) return -1;
+    if (emergency::isActive()) return -1;
+
+    struct tm ti;
+    if (!localNow(ti) || ti.tm_year < 124) return -1;
+    const long nowSec = ti.tm_hour * 3600L + ti.tm_min * 60L + ti.tm_sec;
+
+    long best = -1;
+    for (uint8_t i = 0; i < count; i++) {
+        if (!entries[i].enabled) continue;
+        long d = (long)entries[i].hour * 3600L + (long)entries[i].minute * 60L - nowSec;
+        if (d > 0 && (best < 0 || d < best)) best = d;
+    }
+    return best < 0 ? -1 : best * 1000L;
 }
 
 // -------------------------------------------------------
@@ -1789,7 +1818,8 @@ bool sched_courseApply() {
     if (!course_editor::applyDraft(err)) return courseFail(err);
     // Apply replaces the calendar binding with APPLIED: no day is bound and
     // nothing may ring until an explicit Activate.
-    mp3_stop();
+    // relay_stop() (not mp3_stop()) so an armed warm-up cannot fire later.
+    relay_stop();
     courseReloadCalendar();
     sys_lock();
     courseMode = true;

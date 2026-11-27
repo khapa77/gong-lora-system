@@ -19,6 +19,11 @@ struct ScheduleEntry {
 void   sched_setup();
 void   sched_check();     // call every second from main loop
 
+// Milliseconds to the next enabled event of the ACTIVE day, or -1 when nothing
+// will fire (not ready, emergency, time not set, no upcoming event). Used only
+// for relay pre-warming: the schedule itself is untouched.
+long   sched_msToNext();
+
 bool   sched_add(uint8_t h, uint8_t m, const String& desc, uint8_t track, uint8_t loop, uint8_t vol = DEFAULT_VOLUME);
 bool   sched_edit(uint32_t id, uint8_t h, uint8_t m,
                   const String& desc, uint8_t track, uint8_t loop, bool enabled, uint8_t vol = DEFAULT_VOLUME);

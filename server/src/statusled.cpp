@@ -56,6 +56,11 @@ void led_loop() {
         writeLed(true);
         return;
     }
+    if (hint == LedHint::RelayReady) {
+        // 2 Гц: период вдвое короче фазового, 250 мс вкл / 250 мс выкл.
+        writeLed((phaseMs % LED_RELAY_PERIOD_MS) < (LED_RELAY_PERIOD_MS / 2));
+        return;
+    }
 
     const bool problem = problemSource ? problemSource() : true;
     if (problem) {

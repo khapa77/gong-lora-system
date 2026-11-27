@@ -54,6 +54,17 @@ public:
         if (started_ && nvs_get_u32(handle_,key,&value)==ESP_OK) return value!=0;
         return fallback;
     }
+    // Arduino stores uint8_t as a U8 cell; the host model keeps the same 0..255
+    // range in a U32 cell so range bugs (e.g. mode > 2) are still visible.
+    size_t putUChar(const char* key, uint8_t value) {
+        if (!started_ || nvs_set_u32(handle_,key,value)!=ESP_OK) return 0;
+        return nvs_commit(handle_)==ESP_OK?sizeof(value):0;
+    }
+    uint8_t getUChar(const char* key, uint8_t fallback=0) const {
+        uint32_t value=fallback;
+        if (started_ && nvs_get_u32(handle_,key,&value)==ESP_OK) return (uint8_t)value;
+        return fallback;
+    }
     bool remove(const char* key) {
         if (!started_ || !isKey(key)) return false;
         if (nvs_erase_key(handle_,key)!=ESP_OK) return false;

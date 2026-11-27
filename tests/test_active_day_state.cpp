@@ -43,6 +43,8 @@ static unsigned lockDepth=0;
 void logPrintf(const char*, ...) {}
 bool mp3_isPlaying() { return audioPlaying; }
 void mp3_stop() { audioPlaying=false; }
+// schedule.cpp calls relay_stop() for a full stop (see run_relay_tests.py).
+void relay_stop() { audioPlaying=false; }
 bool sys_fsOk() { return filesystemAvailable; }
 void sys_lock() { ++lockDepth; }
 void sys_unlock() { if (!lockDepth) std::abort(); --lockDepth; }

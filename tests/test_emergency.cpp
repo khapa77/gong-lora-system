@@ -60,6 +60,9 @@ static void rebootCallback() { ++rebootCalls; }
 void logPrintf(const char*, ...) {}
 bool mp3_isPlaying() { return audioPlaying; }
 void mp3_stop() { audioPlaying = false; }
+// schedule.cpp routes "stop everything" through relay_stop() (it also cancels a
+// pending warm-up); the relay itself is exercised by run_relay_tests.py.
+void relay_stop() { audioPlaying = false; }
 bool mp3_trackExists(uint8_t) { return true; }
 bool sys_fsOk() { return true; }
 void sys_lock() {}

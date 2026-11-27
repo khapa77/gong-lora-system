@@ -54,7 +54,8 @@ bool     hooksValid   = false;
 
 void button_setup(const ButtonHooks& port) {
     hooks      = port;
-    hooksValid = port.audioPlaying && port.playManual && port.stopAudio;
+    hooksValid = port.audioPlaying && port.busy && port.playManual &&
+                 port.stopAudio && port.relayToggle;
 
     // Идемпотентно: button_bootProbe() уже настроил вход, но button_setup()
     // обязан работать и без него (host-тесты, повторная инициализация).
@@ -80,9 +81,10 @@ void button_setup(const ButtonHooks& port) {
         logPrintf("[BTN] GPIO%d reads PRESSED at start — waiting for release, no action\n",
                   BUTTON_PIN);
     } else {
-        logPrintf("[BTN] GPIO%d ready (hold %lus = manual gong, %lus = stop)\n",
+        logPrintf("[BTN] GPIO%d ready (%lus = manual gong, %lus = relay toggle, %lus = stop)\n",
                   BUTTON_PIN,
                   (unsigned long)(BUTTON_PLAY_HOLD_MS / 1000),
+                  (unsigned long)(BUTTON_RELAY_HOLD_MS / 1000),
                   (unsigned long)(BUTTON_STOP_HOLD_MS / 1000));
     }
 }
@@ -138,10 +140,10 @@ void onStableRelease() {
 
     if (pressWasStop) {
         pressWasStop = false;
-        if (heldMs >= BUTTON_STOP_HOLD_MS && hooksValid && hooks.audioPlaying()) {
+        if (heldMs >= BUTTON_STOP_HOLD_MS && hooksValid && hooks.busy()) {
             // Отпускание пришлось ровно на порог: живой путь не увидел закрытый
-            // контакт на 1000-й мс, но жест был именно «стоп». Стоп выдаём
-            // только если звук ещё играет — иначе команда бессмысленна.
+            // контакт на 1000-й мс, но жест был именно «стоп». Стоп выдаём,
+            // только если ещё есть что останавливать (звук или прогрев).
             logPrintf("[BTN] Released at %lums — stop\n", (unsigned long)heldMs);
             hooks.stopAudio();
             return;
@@ -150,6 +152,15 @@ void onStableRelease() {
         // превращать это нажатие в запуск гонга нельзя.
         logPrintf("[BTN] Released after %lums — audio ended while held, no action\n",
                   (unsigned long)heldMs);
+        return;
+    }
+
+    if (heldMs >= BUTTON_RELAY_HOLD_MS) {
+        // Переключение реле без звука (только в режиме AUTO; режим ON/OFF из
+        // веба главнее — модуль сам вернёт false).
+        const bool ok = hooksValid && hooks.relayToggle();
+        logPrintf("[BTN] Held %lums — relay toggle %s\n",
+                  (unsigned long)heldMs, ok ? "applied" : "ignored (mode is not AUTO)");
         return;
     }
 
@@ -174,7 +185,7 @@ void button_loop() {
     // дребезга: если трек закончился в первые 50 мс удержания, жест всё равно
     // остаётся стопом, а не превращается в запуск.
     if (previousRaw != LEVEL_PRESSED && debounce.raw == LEVEL_PRESSED)
-        rawWasStop = hooksValid && hooks.audioPlaying();
+        rawWasStop = hooksValid && hooks.busy();
 
     if (changed) {
         if (debounce.stable == LEVEL_PRESSED) onStablePress();
@@ -195,7 +206,7 @@ void button_loop() {
         // Стоп срабатывает сразу, не дожидаясь отпускания: оператору нужно
         // немедленно прекратить звук. Если трек уже закончился сам — стопить
         // нечего, нажатие останется без последствий.
-        if (heldMs >= BUTTON_STOP_HOLD_MS && hooksValid && hooks.audioPlaying()) {
+        if (heldMs >= BUTTON_STOP_HOLD_MS && hooksValid && hooks.busy()) {
             fired = true;
             led_hint(LedHint::None);
             logPrintf("[BTN] Held %lums — stop\n", (unsigned long)heldMs);
@@ -214,8 +225,10 @@ void button_loop() {
         return;
     }
 
-    // Подсказка «отпустите — будет гонг»: ровный свет после порога.
-    led_hint(heldMs >= BUTTON_PLAY_HOLD_MS ? LedHint::ButtonReady : LedHint::None);
+    // Подсказки: 3…8 с — ровный свет («будет гонг»), ≥8 с — 2 Гц («реле»).
+    if (heldMs >= BUTTON_RELAY_HOLD_MS)      led_hint(LedHint::RelayReady);
+    else if (heldMs >= BUTTON_PLAY_HOLD_MS)  led_hint(LedHint::ButtonReady);
+    else                                     led_hint(LedHint::None);
 }
 
 // ── Автомат восстановления пароля при включении питания ────────────────────
