@@ -429,16 +429,19 @@ static void test_led_error_recovers() {
     CHECK(ledOn());                      // phase 4000 % 200 == 0 → on
 }
 
-static void test_led_hint_priority() {
-    freshLed(1000, true);                // error state
+static void test_led_error_beats_hint() {
+    freshLed(1000, true);                // active device error
     led_hint(LedHint::ButtonReady);
     ledSampleAt(1050);
-    CHECK(ledOn());                      // steady: the operator must see the threshold
+    CHECK(ledOn());                      // 50 ms into the 200 ms blink → on
     ledSampleAt(1100);
-    CHECK(ledOn());                      // even where the blink would be off
-    led_hint(LedHint::None);
+    CHECK(!ledOn());                     // 100 ms → off: the hint must NOT mask ERROR
+    led_hint(LedHint::RelayReady);
     ledSampleAt(1150);
-    CHECK(!ledOn());                     // error blink resumes immediately (150 % 200)
+    CHECK(!ledOn());                     // 150 % 200 → off: neither hint nor 2 Hz
+    led_hint(LedHint::None);
+    ledSampleAt(1100 + 200);             // 300 % 200 = 100 → off
+    CHECK(!ledOn());                     // still the 5 Hz blink
 }
 
 static void test_led_no_false_ready() {
@@ -957,7 +960,7 @@ int main() {
         { "led_heartbeat",                  test_led_heartbeat },
         { "led_error_blink",                test_led_error_blink },
         { "led_error_recovers",             test_led_error_recovers },
-        { "led_hint_priority",              test_led_hint_priority },
+        { "led_error_beats_hint",              test_led_error_beats_hint },
         { "led_no_false_ready",             test_led_no_false_ready },
         { "led_wrap",                       test_led_wrap },
         { "led_phase_rollover",             test_led_phase_rollover },

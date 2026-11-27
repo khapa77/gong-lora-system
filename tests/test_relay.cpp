@@ -155,7 +155,7 @@ static void test_legacy_config_import() {
     resetDevice();
     host::files()["/relay.conf"] = "{\"mode\":\"off\",\"pre\":1200,\"hold\":4000}";
     boot();
-    CHECK_EQ((int)relay_preMs(), 1200);
+    CHECK_EQ((int)relay_preMs(), (int)RELAY_MIN_PRE_MS);   // 1200 < 3000 → normalised
     CHECK_EQ((int)relay_holdMs(), 4000);
     CHECK(host::files().count("/relay.conf") == 0);
     const SavedCfg c = readCfg();
@@ -169,9 +169,9 @@ static void test_play_cold_relay_waits_for_warmup() {
     relay_play(3, 20, 2);
     CHECK(relayActive());                        // relay closed first
     CHECK_EQ(starts, 0);                         // no sound yet
-    advance(790);
+    advance(2990);
     CHECK_EQ(starts, 0);
-    advance(20);                                 // crosses 800 ms
+    advance(20);                                 // crosses 3000 ms
     CHECK_EQ(starts, 1);
     CHECK_EQ((int)lastTrack, 3);
     CHECK_EQ((int)lastVol, 20);
@@ -182,7 +182,7 @@ static void test_play_on_warm_relay_starts_immediately() {
     resetDevice();
     boot();
     CHECK(relay_setManual(true));
-    advance(1000);                       // the relay has been closed long enough
+    advance(3000);                       // the relay has been closed long enough
     relay_play(1, 30, 1);
     CHECK_EQ(starts, 1);                 // already warm → no extra delay
     CHECK(relayActive());
@@ -192,9 +192,9 @@ static void test_repeat_play_during_warmup_replaces_request() {
     resetDevice();
     boot();
     relay_play(1, 30, 1);
-    advance(300);
+    advance(1000);
     relay_play(2, 25, 3);
-    advance(490);                                // total 790 from relay ON
+    advance(1990);                               // total 2990 from relay ON
     CHECK_EQ(starts, 0);
     advance(20);
     CHECK_EQ(starts, 1);
@@ -207,7 +207,7 @@ static void test_audio_end_holds_then_releases() {
     resetDevice();
     boot();
     relay_play(1, 30, 1);
-    advance(800);
+    advance(3000);
     CHECK_EQ(starts, 1);
     playing = false;                             // track finished
     advance((uint32_t)RELAY_DEFAULT_HOLD_MS - 100);
@@ -232,7 +232,7 @@ static void test_stop_during_playback() {
     resetDevice();
     boot();
     relay_play(1, 30, 1);
-    advance(800);
+    advance(3000);
     CHECK_EQ(starts, 1);
     relay_stop();
     CHECK_EQ(stops, 1);
@@ -245,9 +245,11 @@ static void test_prewarm_holds_until_gong_then_releases() {
     resetDevice();
     boot();
     relay_prewarm(20000);
-    CHECK(relayActive());
+    CHECK(!relayActive());                       // 17 s still to go
+    advance(17000);
+    CHECK(relayActive());                        // relay ON exactly at event − 3000
     CHECK_EQ(starts, 0);
-    advance(20000);
+    advance(3000);
     CHECK(relayActive());                        // grace window
     advance((uint32_t)RELAY_PREWARM_GRACE_MS + (uint32_t)RELAY_DEFAULT_HOLD_MS + 200);
     CHECK(!relayActive());
@@ -256,9 +258,10 @@ static void test_prewarm_holds_until_gong_then_releases() {
 static void test_prewarm_gong_starts_without_delay() {
     resetDevice();
     boot();
-    relay_prewarm(2000);
-    advance(1000);
-    relay_play(1, 30, 1);                        // gong arrives while pre-warmed
+    relay_prewarm(10000);                        // relay ON after 7 s
+    advance(7000);                               // relay closes exactly here
+    advance(3000);                               // ...and is fully warm by the gong
+    relay_play(1, 30, 1);                        // gong arrives on time
     CHECK_EQ(starts, 1);                         // already warm → immediate
 }
 
@@ -314,15 +317,21 @@ static void test_always_off_does_not_stop_audio() {
 static void test_timing_validation() {
     resetDevice();
     boot();
-    CHECK(!relay_setTiming((uint32_t)RELAY_MAX_PRE_MS + 1, 1000));
-    CHECK(!relay_setTiming(1000, (uint32_t)RELAY_MAX_HOLD_MS + 1));
-    CHECK(relay_setTiming(2000, 5000));
-    CHECK_EQ((int)relay_preMs(), 2000);
-    CHECK_EQ((int)relay_holdMs(), 5000);
+    // Both ends of the window, both fields.
+    CHECK(!relay_setTiming((uint32_t)RELAY_MIN_PRE_MS - 1, 5000));
+    CHECK(!relay_setTiming((uint32_t)RELAY_MAX_PRE_MS + 1, 5000));
+    CHECK(!relay_setTiming(5000, (uint32_t)RELAY_MIN_HOLD_MS - 1));
+    CHECK(!relay_setTiming(5000, (uint32_t)RELAY_MAX_HOLD_MS + 1));
+    CHECK(!relay_setTiming(0, 0));                       // old 0/800 are invalid
+    CHECK(relay_setTiming(3000, 3000));
+    CHECK(relay_setTiming(20000, 20000));
+    CHECK(relay_setTiming(5000, 7000));
+    CHECK_EQ((int)relay_preMs(), 5000);
+    CHECK_EQ((int)relay_holdMs(), 7000);
     const SavedCfg c = readCfg();
     CHECK(c.ok);
-    CHECK_EQ((int)c.pre, 2000);
-    CHECK_EQ((int)c.hold, 5000);
+    CHECK_EQ((int)c.pre, 5000);
+    CHECK_EQ((int)c.hold, 7000);
 }
 
 static void test_mode_parsing() {
@@ -342,7 +351,7 @@ static void test_busy_semantics() {
     CHECK(!relay_isBusy());
     relay_play(1, 30, 1);                        // pending warm-up
     CHECK(relay_isBusy());
-    advance(800);
+    advance(3000);
     advance(60);                                 // let the 50 ms audio poll see it
     CHECK(relay_isBusy());                       // playing
     playing = false;
@@ -358,7 +367,7 @@ static void test_millis_wrap() {
     CHECK(relayActive());
     advance(300);                                // crosses 2^32
     CHECK_EQ(starts, 0);
-    advance(520);                                // 820 ms total
+    advance(2720);                               // 3020 ms total
     CHECK_EQ(starts, 1);
     playing = false;
     advance((uint32_t)RELAY_DEFAULT_HOLD_MS + 100);
@@ -373,7 +382,7 @@ static void test_json_fields() {
     CHECK(j.find("\"enabled\":true") != std::string::npos);
     CHECK(j.find("\"mode\":\"auto\"") != std::string::npos);
     CHECK(j.find("\"pending\":true") != std::string::npos);
-    CHECK(j.find("\"pre\":800") != std::string::npos);
+    CHECK(j.find("\"pre\":3000") != std::string::npos);
     CHECK(j.find("\"hold\":3000") != std::string::npos);
     CHECK(j.find("\"pin\":27") != std::string::npos);
     CHECK(j.find("\"state\":\"warmup\"") != std::string::npos);
@@ -385,7 +394,7 @@ static void test_no_audio_still_releases_relay() {
     resetDevice();
     boot();
     relay_play(9, 30, 1);
-    advance(800);                                // startNow called
+    advance(3000);                               // startNow called
     playing = false;                             // decoder never ran
     advance((uint32_t)RELAY_DEFAULT_HOLD_MS + 200);
     CHECK(!relayActive());
@@ -398,7 +407,7 @@ static void test_save_error_is_reported() {
     boot();
     // The single "cfg" record cannot be written: the setter must not claim success.
     host::nvs().inject("set", "cfg", host::Action::ErrorBefore);
-    CHECK(!relay_setTiming(2000, 4000));
+    CHECK(!relay_setTiming(12000, 4000));
     // RAM is NOT updated on a failed save: otherwise the device would run with a
     // new warm-up and, after reboot, silently fall back to a mixed configuration.
     CHECK_EQ((int)relay_preMs(), RELAY_DEFAULT_PRE_MS);
@@ -407,14 +416,14 @@ static void test_save_error_is_reported() {
     // A saved configuration stays fully intact when the update is rejected.
     resetDevice();
     boot();
-    CHECK(relay_setTiming(900, 3500));
+    CHECK(relay_setTiming(3000, 3500));
     host::nvs().inject("set", "cfg", host::Action::ErrorBefore);
-    CHECK(!relay_setTiming(2000, 4000));
-    CHECK_EQ((int)relay_preMs(), 900);
+    CHECK(!relay_setTiming(12000, 4000));
+    CHECK_EQ((int)relay_preMs(), 3000);
     CHECK_EQ((int)relay_holdMs(), 3500);
     host::nvs().reboot();                // power cycle: durable NVS survives
     relay_setup();                       // module re-init only
-    CHECK_EQ((int)relay_preMs(), 900);   // no 2000/3500 mix
+    CHECK_EQ((int)relay_preMs(), 3000);  // no 12000/3500 mix
     CHECK_EQ((int)relay_holdMs(), 3500);
 }
 
@@ -433,9 +442,9 @@ static void test_failed_start_is_not_confirmed() {
 static void test_start_sets_busy_and_holds_relay() {
     resetDevice();
     boot();
-    CHECK(relay_setTiming(RELAY_DEFAULT_PRE_MS, 0));   // hold = 0
+    CHECK(relay_setTiming(RELAY_DEFAULT_PRE_MS, RELAY_MIN_HOLD_MS));
     relay_play(1, 30, 1);
-    advance(800);                        // pending -> playing inside this tick
+    advance(3000);                       // pending -> playing inside this tick
     CHECK(playing);
     CHECK(relay_isBusy());               // busy is true at once, not 50 ms later
     CHECK(relayActive());                // the relay must not drop at start
@@ -447,10 +456,10 @@ static void test_longer_warmup_reapplies_to_warm_relay() {
     resetDevice();
     boot();
     CHECK(relay_setManual(true));
-    advance(900);                        // relay warm under the old 800 ms rule
-    CHECK(relay_setTiming(30000, 3000)); // new warm-up is much longer
+    advance(3000);                       // relay warm under the 3 s rule
+    CHECK(relay_setTiming(20000, 3000)); // new warm-up is much longer
     CHECK(!relay_play(3, 30, 1));        // must queue, not start immediately
-    advance(30000);
+    advance(20000);
     CHECK_EQ((int)lastTrack, 3);
 }
 
@@ -459,14 +468,14 @@ static void test_legacy_import_keeps_file_when_save_fails() {
     host::files()["/relay.conf"] = "{\"mode\":\"auto\",\"pre\":1200,\"hold\":4000}";
     host::nvs().inject("set", "cfg", host::Action::ErrorBefore);
     boot();
-    CHECK_EQ((int)relay_preMs(), 1200);              // RAM has the imported value
+    CHECK_EQ((int)relay_preMs(), (int)RELAY_MIN_PRE_MS);  // 1200 normalised in RAM
     CHECK(host::files().count("/relay.conf") == 1);  // but the file was NOT deleted
 
     // Next boot (fault cleared) imports it again and only then drops the file.
     resetDevice();
     host::files()["/relay.conf"] = "{\"mode\":\"auto\",\"pre\":1200,\"hold\":4000}";
     boot();
-    CHECK_EQ((int)relay_preMs(), 1200);
+    CHECK_EQ((int)relay_preMs(), (int)RELAY_MIN_PRE_MS);
     CHECK(host::files().count("/relay.conf") == 0);
 }
 
@@ -474,7 +483,7 @@ static void test_manual_does_not_hide_audio_hold() {
     resetDevice();
     boot();
     CHECK(relay_setManual(true));
-    advance(1000);                       // relay is warm
+    advance(3000);                       // relay is warm
     relay_play(1, 30, 1);
     CHECK_EQ(starts, 1);
     playing = true;
@@ -492,9 +501,10 @@ static void test_prewarm_can_be_cancelled() {
     resetDevice();
     boot();
     relay_prewarm(20000);
-    CHECK(relayActive());
+    advance(5000);
+    CHECK(!relayActive());               // still before event − 3000
     relay_cancelPrewarm();               // target disappeared
-    advance((uint32_t)RELAY_DEFAULT_HOLD_MS + 200);
+    advance(20000);
     CHECK(!relayActive());
 }
 
@@ -502,9 +512,90 @@ static void test_play_reports_deferral() {
     resetDevice();
     boot();
     CHECK(!relay_play(1, 30, 1));        // queued for warm-up
-    advance(800);
+    advance(3000);
     CHECK(relay_play(2, 30, 1));         // warm now: starts synchronously
     CHECK_EQ((int)lastTrack, 2);
+}
+
+// ── Absolute pre-warm (event − warm-up) ─────────────────────────────────────
+
+static void test_prewarm_lead_matches_warmup() {
+    // Event distance = warm-up + lead, so the relay must close exactly `lead`
+    // milliseconds before the gong.
+    const uint32_t cases[3] = {3000, 12000, 20000};
+    for (unsigned i = 0; i < 3; ++i) {
+        resetDevice();
+        boot();
+        CHECK(relay_setTiming(3000, 3000));
+        const uint32_t lead = cases[i];
+        relay_prewarm(lead + 3000);                // gong `lead + 3 s` away
+        if (lead > 10) {
+            advance(lead - 10);
+            CHECK(!relayActive());                 // one tick before its moment
+            advance(20);
+        } else {
+            advance(20);
+        }
+        CHECK(relayActive());                      // ON exactly at event − warm-up
+    }
+}
+
+static void test_prewarm_zero_lead_switches_on_at_once() {
+    resetDevice();
+    boot();
+    relay_prewarm(3000);                           // event is exactly one warm-up away
+    CHECK(!relayActive());                         // loop has not run yet
+    advance(10);
+    CHECK(relayActive());
+}
+
+static void test_prewarm_recomputed_when_warmup_grows() {
+    resetDevice();
+    boot();
+    relay_prewarm(20000);                          // would switch on in 17 s
+    advance(5000);
+    CHECK(!relayActive());
+    CHECK(relay_setTiming(12000, 3000));           // operator raises warm-up
+    relay_prewarm(15000);                          // event at +15 s → ON at +3 s
+    advance(10);
+    CHECK(!relayActive());                         // still not time
+    advance(3000);
+    CHECK(relayActive());                          // recomputed from the new warm-up
+}
+
+static void test_sequential_gongs_keep_relay_on() {
+    resetDevice();
+    boot();
+    relay_play(1, 30, 1);                          // first gong
+    advance(3000);
+    CHECK_EQ(starts, 1);
+    playing = false;                               // track ends at 3000
+    // Second gong is 1 s later: pre-warm target already reached.
+    relay_prewarm(1000);
+    advance(10);
+    CHECK(relayActive());                          // never dropped between gongs
+    relay_play(2, 30, 1);
+    CHECK_EQ(starts, 2);                           // warm relay → immediate
+}
+
+static void test_late_start_is_flagged() {
+    resetDevice();
+    boot();
+    relay_prewarm(1000);                           // event sooner than 3 s warm-up
+    advance(1000);
+    CHECK(!relay_play(1, 30, 1));                  // must wait for the amp
+    CHECK(relay_lateStartActive());                // and this is an active error
+    advance(3000);
+    CHECK_EQ(starts, 1);
+    CHECK(!relay_lateStartActive());               // cleared after the start
+}
+
+static void test_stored_below_minimum_is_normalised() {
+    resetDevice();
+    seedRelay(0, 0, 500);                          // old firmware values
+    boot();
+    CHECK_EQ((int)relay_preMs(), (int)RELAY_MIN_PRE_MS);
+    CHECK_EQ((int)relay_holdMs(), (int)RELAY_MIN_HOLD_MS);
 }
 
 int main() {
@@ -540,6 +631,12 @@ int main() {
         { "longer_warmup_reapplies",         test_longer_warmup_reapplies_to_warm_relay },
         { "failed_start_not_confirmed",      test_failed_start_is_not_confirmed },
         { "start_sets_busy_and_holds",       test_start_sets_busy_and_holds_relay },
+        { "prewarm_lead_matches_warmup",     test_prewarm_lead_matches_warmup },
+        { "prewarm_zero_lead",               test_prewarm_zero_lead_switches_on_at_once },
+        { "prewarm_recomputed",              test_prewarm_recomputed_when_warmup_grows },
+        { "sequential_gongs",                test_sequential_gongs_keep_relay_on },
+        { "late_start_flagged",              test_late_start_is_flagged },
+        { "stored_below_min_normalised",     test_stored_below_minimum_is_normalised },
     };
     for (const Case& c : cases) {
         const int before = failures;

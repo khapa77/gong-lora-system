@@ -96,7 +96,7 @@ static void check(bool condition, const char* what) {
     }
 }
 
-static time_t atDate(int year, int month, int day, int hour = 3, int minute = 0) {
+static time_t atDate(int year, int month, int day, int hour = 3, int minute = 0, int second = 0) {
     std::tm t;
     std::memset(&t, 0, sizeof(t));
     t.tm_year = year - 1900;
@@ -104,6 +104,7 @@ static time_t atDate(int year, int month, int day, int hour = 3, int minute = 0)
     t.tm_mday = day;
     t.tm_hour = hour;
     t.tm_min = minute;
+    t.tm_sec = second;
     t.tm_isdst = 0;
     return std::mktime(&t);
 }
@@ -139,7 +140,6 @@ static void resetRuntime() {
     courseTransitionPending = false;
     courseStore = course_store::CourseStore();
     courseStore.invalidateTemplates();
-    emergency::resetRuntime();
     gRelayPendingTag = 0;
     gRelayLastTag = 0;
     gRelayPrevTag = 0;
@@ -1018,13 +1018,14 @@ static void test_msToNext_lifecycle() {
     const long ms = sched_msToNext();
     check(ms == 2L * 60L * 1000L, "03:58 → 120000 ms to 04:00");
 
-    // After the event fired there is no second event today: no pre-warm.
+    // Nothing is left today, but the SAME event exists tomorrow: the pre-warm
+    // target must cross midnight instead of disappearing.
     host::clock() = atDate(2026, 11, 22, 4, 0);
     sched_check();
-    check(sched_msToNext() == -1, "nothing else today after 04:00");
+    check(sched_msToNext() == 24L * 60L * 60L * 1000L, "next event is tomorrow 04:00");
 }
 
-static void test_msToNext_ignores_disabled_and_handles_emergency() {
+static void test_msToNext_ignores_disabled_and_suspended_course() {
     freshEnvironment();
     host::clock() = atDate(2026, 11, 22, 3, 0);
     check(applyCourse(makeCourse(2)), "apply course");
@@ -1032,22 +1033,20 @@ static void test_msToNext_ignores_disabled_and_handles_emergency() {
     check(sched_activateDay(0), "activate day 0");
     check(sched_msToNext() == 60L * 60L * 1000L, "one hour to 04:00");
 
-    // Disabling the only event removes the pre-warm target.
+    // Disabling today's event: the next target is tomorrow 04:00 (25 h ahead).
     check(sched_edit(1, 4, 0, "day0", 1, 1, false, 10), "disable the event");
-    check(sched_msToNext() == -1, "disabled event: nothing to pre-warm");
+    check(sched_msToNext() == 25L * 60L * 60L * 1000L,
+          "today disabled, tomorrow 04:00 still scheduled (25 h)");
 
-    // Emergency stops normal execution; the relay must not be pre-warmed by a
-    // schedule that will not run.
+    // A SUSPENDED course does not execute, so it must not pre-warm either.
     freshEnvironment();
     host::clock() = atDate(2026, 11, 22, 3, 0);
     check(applyCourse(makeCourse(2)), "apply course");
     sched_setup();
     check(sched_activateDay(0), "activate day 0");
-    emergency::recordFailure(emergency::kBootFailed);
-    emergency::recordFailure(emergency::kBootFailed);
-    emergency::recordFailure(emergency::kBootFailed);
-    check(sched_emergencyActive(), "emergency latched");
-    check(sched_msToNext() == -1, "emergency: no pre-warm");
+    courseSuspended = true;
+    courseRunning = false;
+    check(sched_msToNext() == -1, "suspended: no pre-warm");
 }
 
 // ── Deferred fire (relay warm-up) ──────────────────────────────────────────
@@ -1152,6 +1151,54 @@ static void test_deferred_fire_cancelled_is_not_marked() {
     check(audioCalls == 1, "cancelled gong is not marked: it rings after reboot");
 }
 
+// ── Pre-warm target against the absolute schedule time ──────────────────────
+static void test_prewarm_offsets_at_absolute_time() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 12, 14, 48);
+    check(applyCourse(makeCourse(3, 12, 15)), "apply 12:15 course");
+    sched_setup();
+    check(sched_activateDay(0), "activate day 0");
+    check(sched_msToNext() == 12000, "12:14:48 -> 12000 ms (warm-up 12 s)");
+
+    host::clock() = atDate(2026, 11, 22, 12, 14, 57);
+    check(sched_msToNext() == 3000, "12:14:57 -> 3000 ms (warm-up 3 s)");
+
+    host::clock() = atDate(2026, 11, 22, 12, 14, 40);
+    check(sched_msToNext() == 20000, "12:14:40 -> 20000 ms (warm-up 20 s)");
+
+    // RTC corrected backwards: the target is recomputed, not remembered.
+    host::clock() = atDate(2026, 11, 22, 12, 14, 0);
+    check(sched_msToNext() == 60000, "backward RTC correction -> 60 s");
+
+    // ...and forward: the gong already passed, next one is tomorrow.
+    host::clock() = atDate(2026, 11, 22, 12, 15, 1);
+    check(sched_msToNext() == 86399000L, "just after the gong -> tomorrow 12:15");
+}
+
+static void test_prewarm_crosses_midnight() {
+    freshEnvironment();
+    course::Course c = makeCourse(2, 4, 0);
+    c.days[1].events[0].hour = 0;          // tomorrow starts with 00:00
+    c.days[1].events[0].minute = 0;
+    host::clock() = atDate(2026, 11, 22, 23, 59, 48);
+    check(applyCourse(c), "apply midnight course");
+    sched_setup();
+    check(sched_activateDay(0), "activate day 0");
+    check(sched_msToNext() == 12000, "23:59:48 -> 12000 ms to 00:00 next day");
+}
+
+static void test_prewarm_target_survives_reboot() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 12, 14, 48);
+    check(applyCourse(makeCourse(3, 12, 15)), "apply course");
+    sched_setup();
+    check(sched_activateDay(0), "activate day 0");
+    resetRuntime();                        // reboot right before the event
+    host::clock() = atDate(2026, 11, 22, 12, 14, 50);
+    sched_setup();
+    check(sched_msToNext() == 10000, "after a reboot: still 10 s to the gong");
+}
+
 int main() {
     TestCase tests[] = {
         {"boot_applied_no_calls", test_boot_applied_no_calls},
@@ -1193,11 +1240,14 @@ int main() {
         {"audit_length_one_and_47", test_audit_length_one_and_47},
         {"audit_import_during_running", test_audit_import_during_running},
         {"ms_to_next_lifecycle", test_msToNext_lifecycle},
-        {"ms_to_next_disabled_emergency", test_msToNext_ignores_disabled_and_handles_emergency},
+        {"ms_to_next_disabled_suspended", test_msToNext_ignores_disabled_and_suspended_course},
         {"deferred_fire_commits", test_deferred_fire_commits_after_start},
         {"deferred_fire_cancelled", test_deferred_fire_cancelled_is_not_marked},
         {"deferred_fire_foreign_start", test_deferred_fire_not_credited_to_foreign_start},
         {"deferred_fire_survives_later_start", test_own_start_survives_a_later_foreign_start},
+        {"prewarm_offsets_absolute", test_prewarm_offsets_at_absolute_time},
+        {"prewarm_crosses_midnight", test_prewarm_crosses_midnight},
+        {"prewarm_after_reboot", test_prewarm_target_survives_reboot},
     };
     for (const TestCase& t : tests) {
         const int before = failures;

@@ -48,7 +48,7 @@ def main() -> int:
         str(root / "server/src/course_model.cpp"),
         str(root / "server/src/course_store.cpp"),
         str(root / "server/src/course_editor.cpp"),
-        str(root / "server/src/emergency.cpp"), "-o", str(binary),
+        "-o", str(binary),
     ]
     if args.sanitize:
         sanitizers = "address,undefined" if args.sanitize == "address" else "undefined"
