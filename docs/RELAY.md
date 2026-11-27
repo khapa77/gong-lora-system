@@ -91,7 +91,7 @@ octal PSRAM/Flash конкретного модуля — проверяется
 | Веб «Play» | `/api/play` → `mp3_manualPlay()` → `relay_play()` |
 | Кнопка (3–8 с) | `ButtonHooks.playManual` → `mp3_manualPlay()` → `relay_play()` |
 | Расписание (курс/легаси) | `onScheduleTrigger` → `relay_play()` |
-| Аварийное расписание | `emergency::tick()` → `onScheduleTrigger` → `relay_play()` |
+| Emergency | Удалён из ветки: альтернативного расписания нет, ошибка курса = SUSPENDED + ошибка LED |
 
 Остановка: `/api/stop`, кнопка (STOP) и «стоп всё» в планировщике
 (`courseActivate`, `sched_courseApply`) вызывают `relay_stop()`, поэтому
@@ -236,3 +236,36 @@ scheduler 279, остальные без изменений).
 - `courseSuspend()`/`courseActivate()` отказываются писать устаревшее поколение.
 - Тесты: 3136 / 0; `save_error_reported` проверяет durable NVS через
   `host::nvs().reboot()`.
+
+## 12. Абсолютное предвключение (3000–20000 мс)
+
+Реле включается в `scheduled_gong_time − warmup_ms`, звук стартует ровно в
+`scheduled_gong_time`, удержание считается от **фактического** конца трека:
+
+    relay_on  = scheduled_gong_time - warmup_ms
+    audio_on  = scheduled_gong_time
+    relay_off = actual_audio_end + hold_ms
+
+`sched_msToNext()` возвращает время до ближайшего действительного события,
+включая события **следующих суток** (сканируется день курса `day+1`), поэтому
+предвключение работает через полночь: событие 00:00 с warm-up 12 с включает
+реле в 23:59:48. Цель пересчитывается каждую секунду из живых `entries[]` и
+живых часов: RTC вперёд/назад, Apply/Activate, правка и отмена события, смена
+дня курса и смена warm-up учитываются автоматически; исчезнувшая цель снимает
+прогрев (`relay_cancelPrewarm`).
+
+Политика для объективно невозможного прогрева (устройство включилось прямо
+перед событием): реле включается немедленно, гонг **задерживается** до полного
+warm-up (минимум 3 с), причина пишется в лог, а LED мигает 5 Гц
+(`relay_lateStartActive()`) до фактического старта. Отменить назначенное время
+гонга прогрев не может — задерживается только старт, и только в этом случае.
+
+Точность: prewarm вычисляется на секундном тике `controlTask`, поэтому
+включение реле происходит в `event − warmup ± 1 с`; сам гонг запускается
+секундным `sched_check()` в назначенную минуту (систематической задержки на
+прогрев нет).
+
+Тесты: `prewarm_lead_matches_warmup`, `prewarm_zero_lead`,
+`prewarm_recomputed`, `sequential_gongs`, `late_start_flagged`,
+`prewarm_offsets_absolute` (12:15 / 3–12–20 с), `prewarm_crosses_midnight`
+(23:59:48 → 00:00), `prewarm_after_reboot`.

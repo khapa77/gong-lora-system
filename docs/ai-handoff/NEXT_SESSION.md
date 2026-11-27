@@ -151,3 +151,16 @@ NVS, сброс `warm` при росте `pre`, `sched_msToNext()` возвра�
 поколения в Apply, защита `courseSuspend`/`courseActivate` от устаревшей
 RAM-копии, `relay_setConfig()` для комбинированного POST, `relaySaveSeq` в UI.
 Host: 3136/0; сборки 88.2 % / 89.2 % Flash, 21.1 % / 21.2 % RAM.
+
+## Финальная конфигурация (ветка standalone-max-button)
+
+- Emergency полностью удалён (модуль, состояния, API, UI, тесты). Ошибка курса
+  = `SUSPENDED`, альтернативного расписания нет; восстановление — кнопка
+  «Проверить восстановление» (`POST /api/course/retry`) или перезагрузка.
+- Плата: `board = esp32dev` (классический ESP32 38 PIN). GPIO 32 (кнопка, active LOW), 13 (LED, active HIGH), 27 (реле;
+  полярность НЕ подтверждена, по умолчанию active LOW как в прошивке донора).
+- Relay: warm-up и hold 3000–20000 мс (default 3000). Предвключение
+  абсолютное: ON в `event − warmup`, звук в `event`, hold от фактического
+  конца трека; события следующих суток и полночь учитываются.
+- LED: ERROR (5 Гц) наивысший приоритет, единый `sys_deviceError()`.
+- Тесты: 3122 проверки, 0 падений; ASan/UBSan чисто.

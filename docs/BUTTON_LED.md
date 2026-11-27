@@ -323,3 +323,21 @@ python3 -B tests/run_course_tests.py --build-dir /tmp/gong-course
 python3 -B tests/run_active_day_state_tests.py --build-dir /tmp/gong-active-day
 python3 -B tests/run_emergency_tests.py --build-dir /tmp/gong-emergency
 ```
+
+## Актуальная аппаратная конфигурация (ветка standalone-max-button)
+
+Плата: классический ESP32 DevKit 38 PIN, `platformio.ini` → `board = esp32dev`.
+`BUTTON_PIN = 32` (`INPUT_PULLUP`, active LOW), `STATUS_LED_PIN = 13`
+(active HIGH), `RELAY_PIN = 27`. Кнопка/LED/реле включены по умолчанию — это
+боевая конфигурация, а не compile-check.
+
+## Единый предикат ошибок
+
+`sys_deviceError()` (server/src/deviceerror.h) объединяет: LittleFS, время/RTC,
+`schedule`/курс (`sched_hasError()`, `!sched_isRunning()`), ошибку аудио
+(`mp3_errorActive()`), ошибку записи настроек реле (`relay_configError()`),
+задержку гонга из-за прогрева (`relay_lateStartActive()`) и неудачный сброс
+пароля (`authResetFailed`). Пока предикат истинен — LED мигает 5 Гц в любом
+состоянии; после устранения всех причин индикация сама возвращается к штатной.
+Отклонённый HTTP-запрос, запись в журнале и штатное отсутствие Wi-Fi ошибкой не
+считаются.

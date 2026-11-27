@@ -74,3 +74,13 @@ Current development branch: standalone-max
 
 Do not commit or push without explicit user approval.
 Preserve existing stashes and checkpoints.
+
+## Обновление требований (ветка standalone-max-button)
+
+- Emergency исключён: никакого аварийного расписания, API и UI. Ошибка
+  расписания/курса → SUSPENDED + LED ERROR; восстановление штатное.
+- Плата: классический ESP32 DevKit, `board = esp32dev`, GPIO 32 (кнопка),
+  13 (LED), 27 (реле), I2S 26/25/33, I2C 21/22.
+- Relay: warm-up/hold 3000–20000 мс; предвключение относительно абсолютного
+  времени события (`event − warmup`), звук строго по расписанию.
+- LED: ERROR 5 Гц имеет наивысший приоритет и не маскируется подсказками.
