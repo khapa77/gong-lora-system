@@ -22,18 +22,19 @@
 | Что | Значение |
 |---|---|
 | Ветка | `standalone-max-button` (от `standalone-max` `c5cc32e`) |
-| HEAD ветки | `cc2c9a2` (после `fix(button)` по итогам независимого review) |
+| HEAD ветки | см. `git log -1` (реле: коммиты `feat(relay)` и `feat(web)` поверх `460a1b4`) |
 | Функция кнопки/LED | `e229f4a`, дефекты review закрыты в `cc2c9a2` |
+| Функция реле | `relayhandler` + интеграция + `/api/relay` + карточка Gong & Relay; спецификация — `docs/RELAY.md` |
 | Сборка | `pio run -e esp32dev`: SUCCESS, RAM 21.0 %, Flash 87.7 % |
-| Кнопка/LED в прошивке | **выключены** (`BUTTON_PIN`/`STATUS_LED_PIN` = -1) |
-| Host-тесты | button 508, store 509, editor 739, scheduler 255, course 578, active_day 275, emergency 58 — 0 падений |
+| Кнопка/LED/реле в прошивке | **выключены** (`BUTTON_PIN`/`STATUS_LED_PIN`/`RELAY_PIN` = -1) |
+| Host-тесты | button 532, relay 120 (103+17), store 509, editor 739, scheduler 270, course 578, active_day 275, emergency 58 — 0 падений |
 | ASan/UBSan | button/scheduler/emergency/course — чисто |
 | Прошивка на устройстве | не менялась этой сессией |
 
 `standalone-max` и `standalone` не тронуты. Ветка `standalone` остаётся только
 источником исходной реализации кнопки/LED.
 
-## Блокер №1 — плата (решается до любой прошивки)
+## Блокер №1 — плата и полярность реле (решается до любой прошивки)
 
 В `24447ef` в `server/platformio.ini` строка `board = esp32dev` заменена на
 `board = esp32-s3-devkitc-1`, а устройство по всем отчётам — ESP32-D0WD-V3
@@ -47,8 +48,10 @@
 - `GONG_GPIO_VALID()` в `config.h` блокирует только несуществующие у целевого
   чипа номера (S3: 22–25; ESP32: 40–48), а не номера 32/13;
 - включённый код проверен только компиляцией целевым тулчейном
-  (`PLATFORMIO_BUILD_FLAGS="-DBUTTON_PIN=32 -DSTATUS_LED_PIN=13" pio run -e esp32dev`,
-  SUCCESS; собранный binary предназначен для S3 и на плату не прошивается).
+  (`PLATFORMIO_BUILD_FLAGS="-DRELAY_PIN=27 -DBUTTON_PIN=32 -DSTATUS_LED_PIN=13"
+  pio run -e esp32dev`, SUCCESS; binary для S3, на плату не прошивается);
+- полярность модуля реле не подтверждена: поддержаны оба уровня
+  (`RELAY_ACTIVE_LOW`), пока не выбрано — реле выключено (`RELAY_PIN = -1`).
 
 Решение (возврат `board = esp32dev` или подтверждение S3) принимает оператор:
 это изменение аппаратной конфигурации.
