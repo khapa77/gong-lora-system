@@ -5,4 +5,4 @@
 
 void   web_setup();
 void   web_loop();
-void   web_resetAuth();   // стереть пароль админки (команда в Serial, см. AUTH_RESET_CMD)
+void   web_resetAuth();   // стереть пароль админки (Serial AUTH_RESET_CMD или удержание кнопки при включении; см. authreset.h)
