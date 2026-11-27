@@ -52,6 +52,14 @@ void led_loop() {
     lastMs = now;
     phaseMs = (uint32_t)((phaseMs + (delta % LED_HEARTBEAT_MS)) % LED_HEARTBEAT_MS);
 
+    // ERROR имеет НАИВЫСШИЙ приоритет: состояние неисправности нельзя скрыть
+    // подсказкой кнопки — оператор должен видеть 5 Гц, даже удерживая кнопку.
+    const bool problem = problemSource ? problemSource() : true;
+    if (problem) {
+        writeLed((phaseMs % LED_ERROR_PERIOD_MS) < (LED_ERROR_PERIOD_MS / 2));
+        return;
+    }
+
     if (hint == LedHint::ButtonReady) {
         writeLed(true);
         return;
@@ -62,11 +70,6 @@ void led_loop() {
         return;
     }
 
-    const bool problem = problemSource ? problemSource() : true;
-    if (problem) {
-        writeLed((phaseMs % LED_ERROR_PERIOD_MS) < (LED_ERROR_PERIOD_MS / 2));
-    } else {
-        writeLed((phaseMs % LED_HEARTBEAT_MS) < LED_HEARTBEAT_ON_MS);
-    }
+    writeLed((phaseMs % LED_HEARTBEAT_MS) < LED_HEARTBEAT_ON_MS);
 #endif
 }

@@ -20,7 +20,7 @@ void   sched_setup();
 void   sched_check();     // call every second from main loop
 
 // Milliseconds to the next enabled event of the ACTIVE day, or -1 when nothing
-// will fire (not ready, emergency, time not set, no upcoming event). Used only
+// will fire (not ready, suspended, time not set, no upcoming event). Used only
 // for relay pre-warming: the schedule itself is untouched.
 long   sched_msToNext();
 
@@ -46,13 +46,7 @@ bool   sched_courseEnded();             // true if active day is the last day (D
 bool   sched_hasError();                // file error or persistence failure
 active_day::Status sched_persistenceStatus();
 
-// Emergency schedule (stage 4). The built-in schedule runs when the normal
-// course cannot be loaded three times in a row.
-bool    sched_emergencyActive();
-uint8_t sched_emergencyReason();
-const char* sched_emergencyReasonText();
-uint8_t sched_failureCount();
-bool    sched_emergencyRetry();         // manual recovery check
+bool    sched_courseRetry();            // manual recovery of a SUSPENDED course
 bool   sched_isRunning();
 // Internal only: no HTTP/UI/serial caller in A02.1. Recovery preserves the
 // exact expected record and leaves execution paused; Resume performs no I/O.

@@ -427,11 +427,11 @@ tr:hover td { background: rgba(79,158,248,.04); }
       <div class="row" style="margin-top:14px;align-items:flex-end">
         <div class="col" style="max-width:170px">
           <label>Warm-up (ms)</label>
-          <input type="number" id="relayPre" min="0" max="30000" step="100" oninput="relayMarkDirty(this)">
+          <input type="number" id="relayPre" min="3000" max="20000" step="1000" oninput="relayMarkDirty(this)">
         </div>
         <div class="col" style="max-width:170px">
           <label>Hold after (ms)</label>
-          <input type="number" id="relayHold" min="0" max="20000" step="500" oninput="relayMarkDirty(this)">
+          <input type="number" id="relayHold" min="3000" max="20000" step="1000" oninput="relayMarkDirty(this)">
         </div>
         <div class="col" style="max-width:120px">
           <button class="btn btn-primary btn-sm" id="relaySaveBtn" onclick="saveRelayTiming()">Save</button>
@@ -655,10 +655,11 @@ function applyAlerts(d) {
   const a = [];
   if (schedFetchFailed) a.push('⚠️ Устройству не хватило памяти, чтобы отдать расписание — показан файл активного дня. Гонги звонят как обычно.');
   if (d.fs_ok === false) a.push('❌ Файловая система не смонтирована — нет звука и расписания. Залейте данные: <code>pio run -t uploadfs</code>.');
+  if (d.device_error) a.push('🔴 Есть активная ошибка устройства: индикатор мигает 5 Гц. Проверьте файловую систему, время, курс, аудио и настройки реле.');
   if (d.sched_error) a.push('❌ Файл активного дня не читается — расписание пустое. Активируйте день заново.');
   if (d.waiting_for_course) a.push('ℹ️ Курс не опубликован: звонки не выполняются. Загрузите JSON в карточке <b>Courses</b> и нажмите «Опубликовать (Apply)», затем «Activate this day».');
   else if (d.run_mode === 'legacy') a.push('ℹ️ Работает legacy-расписание (старые файлы дней, без JSON-курса). Чтобы перейти на курс, загрузите JSON в карточке <b>Courses</b>.');
-  if (d.emergency) a.push('🛑 Аварийный режим: ' + esc(d.emergency_reason || 'course unavailable') + '. Работает встроенное аварийное расписание. Устраните причину и нажмите <button class="btn btn-yellow btn-sm" onclick="emergencyRetry()">Проверить восстановление</button>.');
+  if (d.suspended) a.push('⏸️ Курс остановлен после ошибки загрузки — гонги не звонят. Устраните причину и нажмите <button class="btn btn-yellow btn-sm" onclick="courseRetry()">Проверить восстановление</button>.');
   if (!d.time) a.push('❌ Время не установлено — гонги не звучат. Подключите WiFi с интернетом, проверьте батарейку DS3231 или установите время вручную.');
   if (d.crash_count > 0 && d.reset_reason && !/power-on|software|external/.test(d.reset_reason))
     a.push('⚠️ Последний перезапуск: ' + esc(d.reset_reason) + ' (сбоев всего: ' + d.crash_count + ').');
@@ -670,9 +671,9 @@ function applyAlerts(d) {
   el.style.display = a.length ? '' : 'none';
 }
 
-async function emergencyRetry() {
+async function courseRetry() {
   try {
-    const r = await fetch('/api/emergency/retry', {method: 'POST'});
+    const r = await fetch('/api/course/retry', {method: 'POST'});
     if (!r.ok) throw new Error('retry failed');
     await loadStatus();
   } catch {
@@ -1059,6 +1060,9 @@ async function saveRelayTiming() {
   if (!Number.isFinite(pre) || !Number.isFinite(hold)) {
     toast('Warm-up и Hold — числа в миллисекундах', 'err'); return;
   }
+  if (pre < 3000 || pre > 20000 || hold < 3000 || hold > 20000) {
+    toast('Warm-up и Hold: 3000–20000 мс', 'err'); return;
+  }
   const preEl = document.getElementById('relayPre'), holdEl = document.getElementById('relayHold');
   const sentPre = preEl ? preEl.value : null, sentHold = holdEl ? holdEl.value : null;
   const seq = ++relaySaveSeq;
@@ -1209,7 +1213,6 @@ function crRenderStatus(d, err) {
   }
   const flags = [];
   if (d.suspended) flags.push('SUSPENDED');
-  if (d.emergency) flags.push('EMERGENCY');
   flags.push(d.running ? 'RUNNING' : 'APPLIED');
   const day = d.day_index >= 0 ? ' · активный день ' + pad(d.day_index) : '';
   const mode = d.run_mode ? ' · режим: ' + d.run_mode : '';

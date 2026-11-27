@@ -30,6 +30,9 @@ inline uint8_t mp3_manualLoops(int loop) { return (uint8_t)constrain(loop, 1, LO
 
 void    mp3_stop();
 bool    mp3_trackExists(uint8_t track);   // /NNNN.mp3 present on LittleFS
+// Активная ошибка аудиоподсистемы: последний запуск не удался (нет файла или
+// декодер не стартовал). Сбрасывается первым успешным стартом. Для LED/статуса.
+bool    mp3_errorActive();
 void    mp3_setVolume(uint8_t vol);   // 0–30 (внутри маппится на 0–21)
 uint8_t mp3_getVolume();
 bool    mp3_isPlaying();

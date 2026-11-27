@@ -155,7 +155,15 @@ static_assert(VOLUME_LIMIT >= 1 && VOLUME_LIMIT <= 30, "VOLUME_LIMIT: 1–30");
 #define GONG_GPIO_VALID(pin) ((pin) >= 0)
 #endif
 
-#if BUTTON_PIN >= 0 && !GONG_GPIO_VALID(BUTTON_PIN)
+// Классический ESP32: GPIO6–11 заняты SPI flash модуля, GPIO34–39 — input-only
+// (на них нельзя OUTPUT и нет подтяжки), GPIO0/2/5/12/15 — strapping.
+#define GONG_GPIO_IS_FLASH(pin)   ((pin) >= 6 && (pin) <= 11)
+#define GONG_GPIO_INPUT_ONLY(pin) ((pin) >= 34 && (pin) <= 39)
+#define GONG_GPIO_STRAPPING(pin)  ((pin) == 0 || (pin) == 2 || (pin) == 5 || (pin) == 12 || (pin) == 15)
+#define GONG_GPIO_OUTPUT_OK(pin)  (GONG_GPIO_VALID(pin) && !GONG_GPIO_IS_FLASH(pin) && !GONG_GPIO_INPUT_ONLY(pin))
+#define GONG_GPIO_INPUT_PULLUP_OK(pin) (GONG_GPIO_VALID(pin) && !GONG_GPIO_IS_FLASH(pin) && !GONG_GPIO_INPUT_ONLY(pin))
+
+#if BUTTON_PIN >= 0 && !GONG_GPIO_INPUT_PULLUP_OK(BUTTON_PIN)
 #error "BUTTON_PIN does not exist on the configured target: confirm the board in server/platformio.ini first"
 #endif
 
@@ -167,7 +175,7 @@ static_assert(VOLUME_LIMIT >= 1 && VOLUME_LIMIT <= 30, "VOLUME_LIMIT: 1–30");
 //             курс не опубликован);
 //   подсказка кнопки — ровный свет, пока удержание ≥ BUTTON_PLAY_HOLD_MS.
 #ifndef STATUS_LED_PIN
-#define STATUS_LED_PIN          -1
+#define STATUS_LED_PIN          13
 #endif
 #ifndef STATUS_LED_ACTIVE_LOW
 #define STATUS_LED_ACTIVE_LOW   0      // LED2 на плате подключён анодом к GPIO13
@@ -192,7 +200,7 @@ static_assert(LED_HEARTBEAT_ON_MS > 0 && LED_HEARTBEAT_ON_MS < LED_HEARTBEAT_MS,
               "LED_HEARTBEAT_ON_MS must be a short flash inside the period");
 static_assert(LED_ERROR_PERIOD_MS >= 20, "LED_ERROR_PERIOD_MS: too fast to see");
 
-#if STATUS_LED_PIN >= 0 && !GONG_GPIO_VALID(STATUS_LED_PIN)
+#if STATUS_LED_PIN >= 0 && !GONG_GPIO_OUTPUT_OK(STATUS_LED_PIN)
 #error "STATUS_LED_PIN does not exist on the configured target: confirm the board in server/platformio.ini first"
 #endif
 
@@ -207,19 +215,28 @@ static_assert(LED_ERROR_PERIOD_MS >= 20, "LED_ERROR_PERIOD_MS: too fast to see")
 // (R10 100 Ом, R11 pull-down / R12 pull-up), но физическая активация — только
 // после подтверждения модели платы и полярности модуля.
 #ifndef RELAY_PIN
-#define RELAY_PIN               -1
+#define RELAY_PIN               27
 #endif
+// Полярность НЕ подтверждена стендом: схема (R11) и config.h донора говорят
+// active HIGH, а build_flags оригинальной сборки содержали RELAY_ACTIVE_LOW=1.
+// По умолчанию берём конфигурацию РЕАЛЬНОЙ прошивки донора (active LOW);
+// переключение — одной строкой -DRELAY_ACTIVE_LOW=0.
 #ifndef RELAY_ACTIVE_LOW
-#define RELAY_ACTIVE_LOW        0      // 1 — модуль с оптроном, активный LOW
+#define RELAY_ACTIVE_LOW        1
 #endif
 #define RELAY_CONFIG_FILE       "/relay.conf"  // устаревшее: с 6.2 — в NVS
 // AUTO: реле включается ДО звука (внешнему усилителю нужно время выйти на
 // режим) и держится после трека; гонг по расписанию получает предвключение.
-#define RELAY_DEFAULT_PRE_MS    800UL
+// Минимальный прогрев 3 с и минимальное удержание 3 с обязательны: внешний
+// усилитель не выходит на режим быстрее, а гонги короче 3 с иначе теряли бы
+// хвост. Значения < 3000 мс недопустимы и нормализуются при загрузке.
+#define RELAY_MIN_PRE_MS        3000UL
+#define RELAY_DEFAULT_PRE_MS    3000UL
+#define RELAY_MAX_PRE_MS        20000UL
+#define RELAY_MIN_HOLD_MS       3000UL
 #define RELAY_DEFAULT_HOLD_MS   3000UL
-#define RELAY_MAX_PRE_MS        30000UL
-#define RELAY_PREWARM_GRACE_MS  5000UL
 #define RELAY_MAX_HOLD_MS       20000UL
+#define RELAY_PREWARM_GRACE_MS  5000UL
 // Ручное включение кнопкой не сохраняется и само снимается через 30 минут.
 #define RELAY_MANUAL_MAX_MS     (30UL * 60 * 1000)
 // mp3_isPlaying() берёт audioMtx, которую декодер держит на время audio.loop();
@@ -230,8 +247,11 @@ static_assert(LED_ERROR_PERIOD_MS >= 20, "LED_ERROR_PERIOD_MS: too fast to see")
 // ESP32-S3: GPIO22–25 отсутствуют; GPIO26–32 существуют, но на модулях с
 // octal PSRAM/Flash часть из них занята внутри модуля — это проверяется по
 // конкретной плате, а не этой маской.
-#if RELAY_PIN >= 0 && !GONG_GPIO_VALID(RELAY_PIN)
+#if RELAY_PIN >= 0 && !GONG_GPIO_OUTPUT_OK(RELAY_PIN)
 #error "RELAY_PIN does not exist on the configured target: confirm the board in server/platformio.ini first"
+#endif
+#if (RELAY_PIN >= 0 && GONG_GPIO_STRAPPING(RELAY_PIN)) || (BUTTON_PIN >= 0 && GONG_GPIO_STRAPPING(BUTTON_PIN)) || (STATUS_LED_PIN >= 0 && GONG_GPIO_STRAPPING(STATUS_LED_PIN))
+#error "A configured pin is a strapping pin: the board may not boot reliably"
 #endif
 #if RELAY_PIN >= 0 && RELAY_PIN == BUTTON_PIN
 #error "RELAY_PIN and BUTTON_PIN must differ"

@@ -5,7 +5,6 @@
 #include "active_day_state.h"
 #include "course_store.h"
 #include "course_editor.h"
-#include "emergency.h"
 #include "sysstate.h"
 #include <LittleFS.h>
 #include <time.h>
@@ -249,7 +248,7 @@ static bool coursePublishDay(uint8_t day, bool allowCalls) {
     return true;
 }
 
-static void courseSuspend(const char* why, uint8_t reason = emergency::kNone) {
+static void courseSuspend(const char* why) {
     if (courseApplyInProgress) {
         // Never persist a suspend derived from the pre-Apply calendar.
         logPrintf("[COURSE] suspend deferred (%s): Apply in progress\n", why);
@@ -259,11 +258,6 @@ static void courseSuspend(const char* why, uint8_t reason = emergency::kNone) {
     courseSuspended = true;
     courseRunning = false;
     executionRunning = false;
-    if (reason != emergency::kNone) {
-        // A day load failed. Persist the failure counter and either arm a
-        // delayed reboot or enter EMERGENCY after the third failure.
-        emergency::recordFailure(reason);
-    }
     if (courseGeneration != 0) {
         // Never persist a calendar derived from a RAM copy that a concurrent
         // Apply has already replaced in NVS.
@@ -280,8 +274,9 @@ static void courseSuspend(const char* why, uint8_t reason = emergency::kNone) {
         // APPLIED stays set: the course is still published, just not running.
         next.flags = static_cast<uint8_t>(
             (next.flags & course_store::kApplied) | course_store::kSuspended);
-        if (emergency::isActive()) next.flags |= course_store::kEmergency;
-        next.failure_count = emergency::attempts();
+        // No alternative schedule exists: a suspended course simply stops
+        // ringing until the operator (or the boot retry) restores it.
+        next.failure_count = 0;
         std::string err;
         if (!courseStore.saveCalendar(next, err)) {
             logPrintf("[COURSE] save suspended state failed: %s\n", err.c_str());
@@ -343,7 +338,7 @@ static void courseAdvance() {
         return;
     }
     courseTransitionPending = false;
-    if (!coursePublishDay(day, true)) courseSuspend("cannot load next day", emergency::kMidnightFailed);
+    if (!coursePublishDay(day, true)) courseSuspend("cannot load next day");
 }
 
 // Drops the generation replaced by the last Apply once the new active day has
@@ -394,7 +389,6 @@ static bool courseTryBoot() {
         courseSuspended = true;
         courseRunning = false;
         logPrintf("[COURSE] calendar read failed: %s\n", err.c_str());
-        emergency::recordFailure(emergency::kCalendarCorrupt);
         return true;
     }
     courseMode = true;
@@ -405,7 +399,6 @@ static bool courseTryBoot() {
     courseRunning = false;
     if (courseGeneration == 0 || courseLength == 0) {
         courseSuspended = true;
-        emergency::recordFailure(emergency::kGenerationInvalid);
         return true;
     }
     course_store::LastFire lf;
@@ -417,15 +410,14 @@ static bool courseTryBoot() {
         course::Date today;
         uint8_t day = 0;
         if (!courseComputeToday(today, day)) {
-            courseSuspend("cannot compute current day", emergency::kBootFailed);
+            courseSuspend("cannot compute current day");
             return true;
         }
         if (!coursePublishDay(day, true)) {
-            courseSuspend("cannot load active day", emergency::kBootFailed);
+            courseSuspend("cannot load active day");
             return true;
         }
         courseRunning = true;
-        emergency::clearFailure();
         courseReclaimPending();
     } else if (cal.flags & course_store::kSuspended) {
         // The previous activation/midnight load failed. Retry the interrupted
@@ -433,7 +425,7 @@ static bool courseTryBoot() {
         if (courseRecoveryCheck()) {
             courseRunning = true;
         } else {
-            courseSuspend("boot retry failed", emergency::kBootFailed);
+            courseSuspend("boot retry failed");
         }
     } else {
         // Published but not bound: nothing may ring until an explicit Activate.
@@ -460,16 +452,16 @@ static bool courseActivate(uint8_t day) {
     // The generation must resolve completely through its OWN template set
     // before any day is bound.
     if (!courseStore.prepareActiveTemplates(courseGeneration, err)) {
-        courseSuspend("templates unavailable", emergency::kActivateFailed);
+        courseSuspend("templates unavailable");
         return false;
     }
     if (!courseStore.validateGeneration(courseGeneration, courseLength, err)) {
-        courseSuspend("generation validation failed", emergency::kGenerationInvalid);
+        courseSuspend("generation validation failed");
         return false;
     }
     course::Day d;
     if (!courseLoadDay(day, d)) {
-        courseSuspend("selected day missing", emergency::kActivateFailed);
+        courseSuspend("selected day missing");
         return false;
     }
     course::Date today;
@@ -500,7 +492,7 @@ static bool courseActivate(uint8_t day) {
     }
     courseCal = next;
     if (!coursePublishDay(day, false)) {
-        courseSuspend("cannot publish selected day", emergency::kActivateFailed);
+        courseSuspend("cannot publish selected day");
         return false;
     }
     next.flags = static_cast<uint8_t>(course_store::kApplied | course_store::kRunning);
@@ -516,13 +508,12 @@ static bool courseActivate(uint8_t day) {
     courseRunning = true;
     executionRunning = true;
     courseTransitionPending = false;
-    emergency::clearFailure();
     courseReclaimPending();
     logPrintf("[COURSE] activated day %u\n", (unsigned)day);
     return true;
 }
 
-// Separate recovery path used by the emergency module. It validates the
+// Recovery path for a SUSPENDED course (boot retry, operator retry). It validates the
 // persisted course, restores the calendar binding and publishes the current
 // day. It never fires a missed event: the normal scheduler starts from "now".
 static bool courseRecoveryCheck() {
@@ -571,7 +562,6 @@ static bool courseRecoveryCheck() {
     courseRunning = true;
     executionRunning = true;
     courseTransitionPending = false;
-    emergency::clearFailure();
     courseReclaimPending();
     logPrintf("[COURSE] recovered to RUNNING on day %u\n", (unsigned)day);
     return true;
@@ -965,16 +955,6 @@ static void sched_catchup() {
 
 // -------------------------------------------------------
 void sched_setup() {
-    emergency::onLocalNow = localNow;
-    emergency::onRecoveryCheck = courseRecoveryCheck;
-#ifdef ESP32
-    emergency::onReboot = []() { ESP.restart(); };
-#endif
-    emergency::begin();
-    if (emergency::isActive()) {
-        logPrintf("[SCHED] EMERGENCY active, skipping normal course load\n");
-        return;
-    }
     waitingForCourse = false;
     if (!firePrefs.begin("gong", false)) { activeStore.unknown(); return; }
     lastFireTs = firePrefs.getUInt("lastfire", 0);
@@ -1025,9 +1005,9 @@ long sched_msToNext() {
     // While the midnight switch is deferred (a track is still playing), the old
     // day's schedule will not execute — pre-warming for it is pointless.
     if (courseMode && courseTransitionPending) return -1;
-    // Nothing will ring: not running, suspended, emergency, or no course.
+    // Nothing will ring: not running, suspended, or no course.
     if (!schedulerReady()) return -1;
-    if (emergency::isActive()) return -1;
+    if (courseSuspended) return -1;
 
     struct tm ti;
     if (!localNow(ti) || ti.tm_year < 124) return -1;
@@ -1039,7 +1019,25 @@ long sched_msToNext() {
         long d = (long)entries[i].hour * 3600L + (long)entries[i].minute * 60L - nowSec;
         if (d > 0 && (best < 0 || d < best)) best = d;
     }
-    return best < 0 ? -1 : best * 1000L;
+    if (best > 0) return best * 1000L;
+
+    // Ничего не осталось сегодня: цель прогрева может быть уже завтра (в том
+    // числе ровно в 00:00:00). Смотрим календарь следующего дня курса — именно
+    // поэтому предвключение работает через полночь и не ограничено сутками.
+    if (!courseMode) return -1;
+    const uint8_t nextDay = (uint8_t)(courseDay + 1);
+    if (nextDay >= courseLength) return -1;
+    course::Day d2;
+    if (!courseLoadDay(nextDay, d2)) return -1;
+    long bestTomorrow = -1;
+    for (std::size_t i = 0; i < d2.events.size(); ++i) {
+        const course::Event& e = d2.events[i];
+        if (!e.enabled) continue;
+        const long sec = (long)e.hour * 3600L + (long)e.minute * 60L;
+        const long d = (86400L - nowSec) + sec;
+        if (d > 0 && (bestTomorrow < 0 || d < bestTomorrow)) bestTomorrow = d;
+    }
+    return bestTomorrow < 0 ? -1 : bestTomorrow * 1000L;
 }
 
 // -------------------------------------------------------
@@ -1053,13 +1051,7 @@ void sched_check() {
     // A deferred gong (relay warm-up) becomes fired only when the audio really
     // started, or is dropped when the start was cancelled.
     resolveDeferredFire();
-    // A failed day load either arms a delayed reboot or enters EMERGENCY.
-    // The reboot timer must run even while the normal scheduler is not ready.
-    emergency::tickReboot();
-    if (emergency::isActive()) {
-        emergency::tick();
-        return;
-    }
+    // A failed day load leaves the course SUSPENDED; nothing else rings.
     if (!schedulerReady()) return;
     // M-16: flush a save that was deferred while a gong was playing.
     if (schedPendingSave && !mp3_isPlaying()) {
@@ -1359,7 +1351,6 @@ String sched_dayJSON(uint8_t day) {
 }
 
 bool sched_activateDay(uint8_t day) {
-    if (emergency::isActive()) return false;   // recovery is a separate operation
     if (courseMode) return courseActivate(day);
     if (day >= DAY_COUNT) return false;
     const active_day::Status status = activeStore.status();
@@ -1422,7 +1413,6 @@ bool sched_activateDay(uint8_t day) {
 
 int  sched_getActiveDay() { return activeDay; }
 bool sched_hasError() {
-    if (emergency::isActive()) return true;
     if (courseMode) return courseSuspended || scheduleFileState != ScheduleFileState::Ready;
     return scheduleFileState != ScheduleFileState::Ready || activeStore.status() != active_day::Status::Ready;
 }
@@ -1780,14 +1770,10 @@ String sched_courseJSON() {
 }
 
 // -------------------------------------------------------
-// Emergency status / manual retry (stage 4). These are thin wrappers so the
-// Web layer can show the emergency state without including emergency.h.
+// Manual recovery of a SUSPENDED course. There is no alternative schedule:
+// this only re-validates the published course and rebinds the current day.
 // -------------------------------------------------------
-bool sched_emergencyActive() { return emergency::isActive(); }
-uint8_t sched_emergencyReason() { return emergency::reason(); }
-const char* sched_emergencyReasonText() { return emergency::reasonText(emergency::reason()); }
-uint8_t sched_failureCount() { return emergency::attempts(); }
-bool sched_emergencyRetry() { return emergency::checkRecovery(); }
+bool sched_courseRetry() { return courseRecoveryCheck(); }
 
 // -------------------------------------------------------
 // Course editor facade (stage 5). Draft edits never touch the live scheduler;
@@ -1845,7 +1831,6 @@ bool sched_courseInfoJSON(String& out) {
     root["course_mode"] = courseMode;
     root["running"] = courseRunning && !courseSuspended;
     root["suspended"] = courseSuspended;
-    root["emergency"] = emergency::isActive();
     root["day_index"] = activeDay >= 0 ? activeDay : -1;
     root["scheduler_ready"] = schedulerReady();
     // The operator must be able to tell legacy execution from a JSON course.
@@ -1943,7 +1928,7 @@ bool sched_courseApply() {
         applied = course_editor::applyDraft(err);
     } catch (const std::exception& ex) {
         // An allocation failure must not leave the flag set: that would stop the
-        // whole scheduler (including emergency) until reboot.
+        // whole scheduler until reboot.
         courseApplyInProgress = false;
         return courseFail(std::string("draft apply failed: ") + ex.what());
     } catch (...) {

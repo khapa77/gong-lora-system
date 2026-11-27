@@ -27,9 +27,12 @@ uint8_t   pTrack  = 0;
 uint8_t   pVol    = 0;
 uint8_t   pLoop   = 1;
 
-// Предвключение к гонгу расписания.
-bool      prewarm      = false;
-uint32_t  prewarmUntil = 0;
+// Предвключение к гонгу расписания: реле включается в
+// (время_события − preMs), звук стартует ровно во время события.
+bool      prewarm        = false;
+uint32_t  prewarmStartMs = 0;   // когда включить реле
+uint32_t  prewarmEventMs = 0;   // когда должен начаться гонг
+bool      lateStart      = false;  // расписание стартовало без полного прогрева
 
 uint32_t  lastActiveMs = 0;     // последний момент, когда звук играл или ждал старта
 
@@ -55,6 +58,9 @@ uint32_t  startedTags[4] = {0, 0, 0, 0};
 uint8_t   startedIdx     = 0;
 
 bool      ready = false;
+
+// NVS-ошибка конфигурации: активна до первой успешной записи.
+bool      configSaveFailed = false;
 
 const char* modeName(RelayMode m) {
     switch (m) {
@@ -84,11 +90,12 @@ void drive(bool on) {
     warm    = false;            // физическое переключение: прогрев считается заново
     if (on) onSince = millis();
     digitalWrite(RELAY_PIN, (on != (bool)RELAY_ACTIVE_LOW) ? HIGH : LOW);
-    logPrintf("[RELAY] %s\n", on ? "ON" : "OFF");
+    logPrintf("[RELAY] %s @%lu\n", on ? "ON" : "OFF", (unsigned long)millis());
 }
 
 bool timingValid(uint32_t pre, uint32_t hold) {
-    return pre <= RELAY_MAX_PRE_MS && hold <= RELAY_MAX_HOLD_MS;
+    return pre >= RELAY_MIN_PRE_MS && pre <= RELAY_MAX_PRE_MS &&
+           hold >= RELAY_MIN_HOLD_MS && hold <= RELAY_MAX_HOLD_MS;
 }
 
 // Настройки в NVS (раньше /relay.conf). true — все три поля записаны и
@@ -105,6 +112,7 @@ bool saveConfig(RelayMode m, uint32_t pre, uint32_t hold) {
     snprintf(buf, sizeof(buf), "%u:%lu:%lu", (unsigned)m, (unsigned long)pre, (unsigned long)hold);
     const bool ok = p.putString("cfg", String(buf)) != 0;
     p.end();
+    configSaveFailed = !ok;
     if (!ok) logPrintf("[RELAY] NVS save FAILED (cfg)\n");
     return ok;
 }
@@ -139,13 +147,15 @@ bool loadConfigRecord(RelayMode& m, uint32_t& pre, uint32_t& hold) {
 
 void applyTiming(uint32_t pre, uint32_t hold, const char* from) {
     if (!timingValid(pre, hold))
-        logPrintf("[RELAY] %s: pre=%u hold=%u out of range — clamped to %u/%u ms\n", from,
+        logPrintf("[RELAY] %s: pre=%u hold=%u outside %u-%u ms — normalised\n", from,
                   (unsigned)pre, (unsigned)hold,
-                  (unsigned)RELAY_MAX_PRE_MS, (unsigned)RELAY_MAX_HOLD_MS);
-    // No Arduino min() macro: it is not available in the host build and a
-    // macro would also break a std::min spelling on the device.
-    preMs  = pre  <= (uint32_t)RELAY_MAX_PRE_MS  ? pre  : (uint32_t)RELAY_MAX_PRE_MS;
-    holdMs = hold <= (uint32_t)RELAY_MAX_HOLD_MS ? hold : (uint32_t)RELAY_MAX_HOLD_MS;
+                  (unsigned)RELAY_MIN_PRE_MS, (unsigned)RELAY_MAX_PRE_MS);
+    // A stored 0/800 ms (old firmware) or a value above the maximum is clamped
+    // into the supported window; a warning is logged, the boot is not blocked.
+    preMs  = pre  < (uint32_t)RELAY_MIN_PRE_MS  ? (uint32_t)RELAY_MIN_PRE_MS
+           : pre  > (uint32_t)RELAY_MAX_PRE_MS  ? (uint32_t)RELAY_MAX_PRE_MS : pre;
+    holdMs = hold < (uint32_t)RELAY_MIN_HOLD_MS ? (uint32_t)RELAY_MIN_HOLD_MS
+           : hold > (uint32_t)RELAY_MAX_HOLD_MS ? (uint32_t)RELAY_MAX_HOLD_MS : hold;
 }
 
 // Одноразовый импорт /relay.conf (формат 6.1). Файл удаляется только после
@@ -206,6 +216,9 @@ bool startNow(uint8_t track, uint8_t vol, uint8_t loop, uint32_t tag) {
 void relay_setup() {
     pending          = false;
     prewarm          = false;
+    lateStart        = false;
+    prewarmStartMs   = 0;
+    prewarmEventMs   = 0;
     manualOn         = false;
     relayOn          = false;
     warm             = false;
@@ -220,6 +233,7 @@ void relay_setup() {
     holdMs           = RELAY_DEFAULT_HOLD_MS;
     mode             = RelayMode::AUTO;
     ready            = false;
+    configSaveFailed = false;
 
     if (!kRelayPresent) {
         ready = true;   // все вызовы ниже работают как no-op
@@ -276,6 +290,13 @@ bool relay_play(uint8_t track, uint8_t vol, uint8_t loop, uint32_t* outTag) {
     pendingTag = tag;
     pTrack = track; pVol = vol; pLoop = loop;
     lastActiveMs = millis();
+    // Устройство не успело прогреться к назначенному времени (включение перед
+    // событием): гонг задержится до полного warm-up, это активная ошибка.
+    if (prewarm || lateStart) {
+        lateStart = true;
+        logPrintf("[RELAY] WARNING: scheduled gong delayed until the amp is warm (%ums)\n",
+                  (unsigned)(preMs - onFor));
+    }
     return false;   // поставлено в очередь, звук ещё не начался
 }
 
@@ -293,15 +314,15 @@ void relay_stop() {
 
 void relay_prewarm(uint32_t msUntilGong) {
     if (!kRelayPresent || !ready) return;
-    if (mode != RelayMode::AUTO || preMs == 0) return;
+    if (mode != RelayMode::AUTO) return;
     const uint32_t now = millis();
+    const uint32_t lead = msUntilGong > preMs ? msUntilGong - preMs : 0;
+    prewarmStartMs = now + lead;          // ровно event − preMs
+    prewarmEventMs = now + msUntilGong;
     if (!prewarm)
-        logPrintf("[RELAY] Pre-warm: scheduled gong in %ums (warm-up %ums)\n",
-                  (unsigned)msUntilGong, (unsigned)preMs);
-    prewarm      = true;
-    prewarmUntil = now + msUntilGong + RELAY_PREWARM_GRACE_MS;
-    lastActiveMs = now;
-    drive(true);
+        logPrintf("[RELAY] Pre-warm scheduled: relay ON in %ums, gong in %ums (warm-up %ums)\n",
+                  (unsigned)lead, (unsigned)msUntilGong, (unsigned)preMs);
+    prewarm = true;
 }
 
 void relay_cancelPrewarm() {
@@ -323,11 +344,22 @@ void relay_loop() {
     if (!kRelayPresent || !ready) return;
 
     if (pending && (uint32_t)(now - onSince) >= preMs) {
-        pending = false;
-        warm    = true;
+        pending   = false;
+        warm      = true;
+        lateStart = false;      // задержка отработана, ошибка снимается
         startNow(pTrack, pVol, pLoop, pendingTag);
     }
-    if (prewarm && (int32_t)(now - prewarmUntil) >= 0) prewarm = false;
+    // Предвключение действительно только с момента (событие − preMs): до него
+    // реле должно оставаться выключенным, иначе прогрев начинается слишком рано.
+    bool prewarmOn = false;
+    if (prewarm) {
+        prewarmOn = (int32_t)(now - prewarmStartMs) >= 0;
+        if (prewarmOn) drive(true);
+        if ((int32_t)(now - prewarmEventMs) > (int32_t)RELAY_PREWARM_GRACE_MS) {
+            prewarm = false;
+            prewarmOn = false;
+        }
+    }
     if (relayOn && !warm && (uint32_t)(now - onSince) >= preMs) warm = true;
 
     switch (mode) {
@@ -344,7 +376,7 @@ void relay_loop() {
         // lastActiveMs уже обновлён выше, если звук играл.
     }
 
-    if (pending || prewarm || lastAudioPlaying) {
+    if (pending || prewarmOn || lastAudioPlaying) {
         lastActiveMs = now;
         drive(true);
     } else if (relayOn && (uint32_t)(now - lastActiveMs) >= holdMs) {
@@ -435,6 +467,8 @@ bool     relay_isManual()      { return manualOn; }
 bool     relay_isOn()          { return relayOn; }
 bool     relay_isEnabled()     { return kRelayPresent; }
 bool     relay_isPendingStart() { return pending; }
+bool     relay_lateStartActive() { return lateStart; }
+bool     relay_configError() { return configSaveFailed; }
 uint32_t relay_pendingTag()    { return pending ? pendingTag : 0; }
 uint32_t relay_lastStartedTag() { return lastStartedTag; }
 bool     relay_wasStartedTag(uint32_t tag) {

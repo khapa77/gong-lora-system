@@ -5,6 +5,7 @@
 #include "config.h"
 #include "sysstate.h"
 #include "schedule.h"
+#include "deviceerror.h"
 #include "mp3handler.h"
 #include "relayhandler.h"
 #include "authreset.h"
@@ -543,9 +544,7 @@ static String statusJSON() {
     // Health — anything here that is false/true-bad means gongs may not ring.
     doc["fs_ok"]        = sys_fsOk();
     doc["sched_error"]  = sched_hasError();
-    doc["emergency"]        = sched_emergencyActive();
-    doc["emergency_reason"] = sched_emergencyReasonText();
-    doc["failure_count"]    = sched_failureCount();
+    doc["device_error"] = sys_deviceError();
     doc["reset_reason"] = sys_resetReason();
     doc["crash_count"]  = sys_crashCount();
     doc["ap_default_pw"] = strcmp(AP_PASSWORD, "vipassana") == 0;
@@ -623,11 +622,11 @@ static void handleDayActivate() {
     else sendErr("day file missing or unreadable");
 }
 
-// Manual recovery check while in EMERGENCY. Separate from the emergency
-// schedule execution; a success restores the normal course and clears EMERGENCY.
-static void handleEmergencyRetry() {
-    if (sched_emergencyRetry()) sendOK();
-    else sendErr(sched_emergencyReasonText());
+// Manual recovery of a SUSPENDED course. There is no alternative schedule:
+// this re-validates the published course and rebinds the current day.
+static void handleCourseRetry() {
+    if (sched_courseRetry()) sendOK();
+    else sendErr("course still unavailable — check the event log");
 }
 
 static void handleTracksGet() { sendJSON(200, mp3_listTracksJSON()); }
@@ -1027,16 +1026,17 @@ static void handleRelayPOST() {
     long pre  = (long)relay_preMs();
     long hold = (long)relay_holdMs();
     if (hasPre) {
-        if (!doc["pre"].is<long>()) { sendErr("warm-up: integer ms 0-30000"); return; }
+        if (!doc["pre"].is<long>()) { sendErr("warm-up: integer ms 3000-20000"); return; }
         pre = doc["pre"].as<long>();
     }
     if (hasHold) {
-        if (!doc["hold"].is<long>()) { sendErr("hold: integer ms 0-20000"); return; }
+        if (!doc["hold"].is<long>()) { sendErr("hold: integer ms 3000-20000"); return; }
         hold = doc["hold"].as<long>();
     }
     if (hasPre || hasHold) {
-        if (pre < 0 || hold < 0 || pre > (long)RELAY_MAX_PRE_MS || hold > (long)RELAY_MAX_HOLD_MS) {
-            sendErr("warm-up 0-30000 ms, hold 0-20000 ms");
+        if (pre < (long)RELAY_MIN_PRE_MS || hold < (long)RELAY_MIN_HOLD_MS ||
+        pre > (long)RELAY_MAX_PRE_MS || hold > (long)RELAY_MAX_HOLD_MS) {
+            sendErr("warm-up 3000-20000 ms, hold 3000-20000 ms");
             return;
         }
     }
@@ -1141,9 +1141,7 @@ void web_setup() {
     route("/api/days",          HTTP_GET,    handleDaysStatus,     R_AUTH);
     route("/api/day",           HTTP_GET,    handleDayGet,         R_AUTH);
     route("/api/day/activate",  HTTP_POST,   handleDayActivate,    R_WRITE);
-    route("/api/emergency/retry", HTTP_POST, handleEmergencyRetry,  R_WRITE);
-    // Spec 11 spells the same manual recovery check under /api/course.
-    route("/api/course/emergency/retry", HTTP_POST, handleEmergencyRetry, R_WRITE);
+    route("/api/course/retry", HTTP_POST, handleCourseRetry, R_WRITE);
     route("/api/day/entry",     HTTP_POST,   handleDayEntryPOST,   R_WRITE);
     route("/api/day/entry",     HTTP_PUT,    handleDayEntryPUT,    R_WRITE);
     route("/api/day/entry",     HTTP_DELETE, handleDayEntryDELETE, R_WRITE);
@@ -1162,8 +1160,7 @@ void web_setup() {
     // Draft course editor (stage 5). Structural edits touch the draft only;
     // /api/course/apply publishes it and resets the calendar binding.
     route("/api/course/meta",    HTTP_GET,    handleCourseMeta,        R_AUTH);
-    // Spec 11 alias: status is the same snapshot (state, failure_count,
-    // emergency flag), it exists so an operator can ask for it by that name.
+    // Alias: status is the same snapshot (state, day, generation).
     route("/api/course/status",  HTTP_GET,    handleCourseMeta,        R_AUTH);
     // Spec 11 names the draft-day routes /api/course/day. PUT on that path is
     // already the stage-2 whole-day save for the active course, so the draft

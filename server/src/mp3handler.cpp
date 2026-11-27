@@ -123,6 +123,12 @@ uint8_t mp3_getVolume() {
     return v;
 }
 
+// Активная ошибка аудио: последняя попытка запуска не удалась (нет файла или
+// декодер не принял трек). Снимается первым успешным стартом.
+static bool audioErrorLatched = false;
+
+bool mp3_errorActive() { return audioErrorLatched; }
+
 bool mp3_play(uint8_t track, uint8_t loops) {
     if (loops < 1) loops = 1;
     logPrintf("[MP3] mp3_play track=%d loops=%d\n", track, loops);
@@ -130,6 +136,7 @@ bool mp3_play(uint8_t track, uint8_t loops) {
     loopTrack  = track;
     loopRemain = loops - 1;  // first play counts as one
     const bool started = _startPlay(track);
+    audioErrorLatched = !started;
     audioUnlock();
     return started;
 }

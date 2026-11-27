@@ -67,6 +67,11 @@ bool     relay_isBusy();
 // true — тег принадлежит одному из последних реально стартовавших треков.
 bool     relay_wasStartedTag(uint32_t tag);
 bool     relay_isPendingStart();   // трек поставлен в очередь, но ещё не начался
+// true — расписание было вынуждено ждать прогрева: гонг задержан (активная
+// ошибка для LED) до фактического старта.
+bool     relay_lateStartActive();
+// Настройки реле не удалось записать в NVS (активная ошибка до успешной записи).
+bool     relay_configError();
 uint32_t relay_pendingTag();       // тег ожидающего трека (0 — очереди нет)
 uint32_t relay_lastStartedTag();   // тег последнего РЕАЛЬНО стартовавшего трека
 bool     relay_isEnabled();    // RELAY_PIN >= 0

@@ -14,6 +14,7 @@
 #include "device.h"
 #include "buttonhandler.h"
 #include "statusled.h"
+#include "deviceerror.h"
 #include "relayhandler.h"
 
 // -------------------------------------------------------
@@ -47,13 +48,28 @@ static void buttonPlayManual(uint8_t track, uint8_t vol, uint8_t loop) {
 // NOT include "no Wi-Fi": the device rings from DS3231/NTP-corrected time and
 // LittleFS alone. `waiting` (no course published) and `APPLIED` (published but
 // not activated) both mean nothing will ring, and sched_isRunning() is the one
-// predicate that covers them together with file errors and emergency.
-static bool ledProblem() {
-    return !timeIsSet() || !sys_fsOk() || sched_hasError() || !sched_isRunning();
+// predicate that covers them together with schedule and file errors.
+// Сброс пароля — единственная операция, которая может «не дойти»: её ошибка
+// тоже активная неисправность, пока следующий успешный сброс её не снимет.
+static bool authResetFailed = false;
+
+// Единый предикат активных ошибок устройства. Всё, что здесь истинно, означает
+// «гонг может не прозвучать или звучит неверно» — LED мигает 5 Гц (наивысший
+// приоритет), независимо от подсказок кнопки. Исторические записи в логе,
+// отклонённые HTTP-запросы и штатное отсутствие Wi-Fi сюда НЕ входят.
+bool sys_deviceError() {
+    return !sys_fsOk()                 // LittleFS не смонтирована
+        || !timeIsSet()                // нет валидного времени/RTC
+        || sched_hasError()            // расписание/курс не читаются
+        || !sched_isRunning()          // курс не опубликован/не активирован/SUSPENDED
+        || mp3_errorActive()           // аудио не стартовало / нет файла трека
+        || relay_configError()         // настройки реле не сохранились в NVS
+        || relay_lateStartActive()     // расписание дождалось прогрева не вовремя
+        || authResetFailed;            // сброс пароля не выполнен
 }
 
 // -------------------------------------------------------
-// Called when a schedule entry fires (normal course or emergency). Goes through
+// Called when a schedule entry fires. Goes through
 // the relay module: in AUTO it powers the external amplifier first and starts
 // the track once the relay has had its warm-up. MAX98357A is powered all the
 // time, so the gong itself never depends on the relay.
@@ -101,13 +117,14 @@ static void controlTask(void*) {
             // external amplifier is ready and the sound starts exactly on time.
             // +1 s covers the once-per-second clock granularity. The answer is
             // recomputed from the live entries, so day transitions, cancelled
-            // events, Apply/Activate, emergency and clock corrections are all
+            // events, Apply/Activate and clock corrections are all
             // handled by sched_msToNext() itself.
+            // Relay ON at (event − warm-up), audio at the event itself. The
+            // target is handed over for ANY future event, not only the last
+            // preMs: relay_prewarm() computes the absolute switch-on moment.
             const long toGong = sched_msToNext();
-            if (toGong > 0 && (uint32_t)toGong <= relay_preMs() + 1000UL)
-                relay_prewarm((uint32_t)toGong);
-            else
-                relay_cancelPrewarm();   // цель исчезла/сменилась — снять прогрев
+            if (toGong > 0) relay_prewarm((uint32_t)toGong);
+            else relay_cancelPrewarm();   // цель исчезла/сменилась — снять прогрев
             lastSchedCheck = now;
         }
         relay_loop();
@@ -180,6 +197,7 @@ void setup() {
                 // true only if the credentials really went away; the result is
                 // reported instead of assuming success.
                 resetDone = web_resetAuth();
+                authResetFailed = !resetDone;
             }
             if (gate == BootGate::Settled) break;
             // A contact stuck closed must not hold the device in setup()
@@ -206,7 +224,7 @@ void setup() {
                                       buttonPlayManual, buttonStopAudio,
                                       buttonRelayToggle };
     button_setup(buttonHooks);
-    led_setProblemSource(ledProblem);
+    led_setProblemSource(sys_deviceError);
 
 
     onScheduleTrigger = onGongFire;
@@ -240,8 +258,13 @@ static void serialCommands() {
         if (c == '\r' || c == '\n') {
             buf[len] = '\0';
             if (len && strcmp(buf, AUTH_RESET_CMD) == 0) {
-                if (!web_resetAuth())
+                if (web_resetAuth()) {
+                    authResetFailed = false;
+                    logPrintf("[MAIN] Serial reset-auth done — web UI is open\n");
+                } else {
+                    authResetFailed = true;
                     logPrintf("[MAIN] Serial reset-auth FAILED — credentials may survive\n");
+                }
             }
             else if (len) logPrintf("[MAIN] Unknown serial command '%s' (known: " AUTH_RESET_CMD ")\n", buf);
             len = 0;
