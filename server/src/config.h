@@ -85,6 +85,93 @@ static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD короче 8 симв
 static_assert(VOLUME_LIMIT >= 1 && VOLUME_LIMIT <= 30, "VOLUME_LIMIT: 1–30");
 #define DEFAULT_TRACK     1
 
+// ── Физическая кнопка (ручной гонг + восстановление пароля) ────────────────
+// Кнопка между BUTTON_PIN и GND, внутренняя подтяжка включена (INPUT_PULLUP).
+// Поведение — только по удержанию, действие выполняется при отпускании:
+//   простой, удержание < BUTTON_PLAY_HOLD_MS  → игнорируется;
+//   простой, удержание ≥ BUTTON_PLAY_HOLD_MS  → ручной гонг (тот же путь,
+//                                               что /api/play);
+//   звук играет, удержание ≥ BUTTON_STOP_HOLD_MS → стоп (сразу, не дожидаясь
+//                                               отпускания; повтора нет);
+//   удержание ≥ BUTTON_AUTH_RESET_HOLD_MS при включении питания → сброс
+//                                               пароля админки (см. authreset.h).
+//
+// ВАЖНО: -1 = кнопка отключена, и это значение ПО УМОЛЧАНИЮ. Плата, на
+// которой снята принципиальная схема (footprint/schematic_netlist.md —
+// GPIO32 = BUTTON, GPIO13 = STATUS_LED), это классический ESP32
+// (ESP32-D0WD-V3), а текущий env собран под esp32-s3-devkitc-1, где GPIO32
+// не существует. Пока целевая плата не подтверждена, конфигурация GPIO не
+// активируется. Включение — после сверки платы, вместе с нейтральным пином:
+//   build_flags = -DBUTTON_PIN=32 -DSTATUS_LED_PIN=13
+// (см. docs/BUTTON_LED.md, раздел «Аппаратная конфигурация»).
+#ifndef BUTTON_PIN
+#define BUTTON_PIN              -1
+#endif
+#ifndef BUTTON_ACTIVE_LOW
+#define BUTTON_ACTIVE_LOW       1      // кнопка замыкает пин на GND
+#endif
+#ifndef BUTTON_DEBOUNCE_MS
+#define BUTTON_DEBOUNCE_MS      50UL   // уровень должен продержаться столько
+#endif
+#ifndef BUTTON_PLAY_HOLD_MS
+#define BUTTON_PLAY_HOLD_MS     3000UL // порог ручного гонга (по отпусканию)
+#endif
+#ifndef BUTTON_STOP_HOLD_MS
+#define BUTTON_STOP_HOLD_MS     1000UL // порог остановки уже играющего звука
+#endif
+#ifndef BUTTON_AUTH_RESET_HOLD_MS
+#define BUTTON_AUTH_RESET_HOLD_MS 10000UL  // удержание при включении питания
+#endif
+#ifndef BUTTON_STUCK_MS
+#define BUTTON_STUCK_MS         60000UL // залипший контакт: нажатие сбрасывается
+#endif
+// Источник конфигурации ручного гонга с кнопки: те же умолчания, что у
+// /api/play без параметров (track=DEFAULT_TRACK, vol=DEFAULT_VOLUME, loop=1).
+// Переопределяется build_flags, если на устройстве другой «ручной» трек.
+#ifndef BUTTON_TRACK
+#define BUTTON_TRACK            DEFAULT_TRACK
+#endif
+#ifndef BUTTON_VOL
+#define BUTTON_VOL              DEFAULT_VOLUME
+#endif
+#ifndef BUTTON_LOOP
+#define BUTTON_LOOP             1
+#endif
+
+#if BUTTON_PIN >= 0 && defined(CONFIG_IDF_TARGET_ESP32S3) && BUTTON_PIN > 21
+#error "BUTTON_PIN does not exist on ESP32-S3: confirm the board in server/platformio.ini first"
+#endif
+
+// ── Светодиод состояния (statusled.h) ─────────────────────────────────────
+// Отключён по умолчанию по той же причине, что и кнопка (см. выше).
+//   норма   — короткая вспышка LED_HEARTBEAT_ON_MS раз в LED_HEARTBEAT_MS;
+//   ошибка  — мигание 5 Гц (период LED_ERROR_PERIOD_MS), расписание не
+//             выполнится (нет времени / нет LittleFS / ошибка расписания /
+//             курс не опубликован);
+//   подсказка кнопки — ровный свет, пока удержание ≥ BUTTON_PLAY_HOLD_MS.
+#ifndef STATUS_LED_PIN
+#define STATUS_LED_PIN          -1
+#endif
+#ifndef STATUS_LED_ACTIVE_LOW
+#define STATUS_LED_ACTIVE_LOW   0      // LED2 на плате подключён анодом к GPIO13
+#endif
+#ifndef LED_HEARTBEAT_MS
+#define LED_HEARTBEAT_MS        3000UL
+#endif
+#ifndef LED_HEARTBEAT_ON_MS
+#define LED_HEARTBEAT_ON_MS     60UL
+#endif
+#ifndef LED_ERROR_PERIOD_MS
+#define LED_ERROR_PERIOD_MS     200UL  // половина периода = 100 мс → 5 Гц
+#endif
+static_assert(LED_HEARTBEAT_ON_MS > 0 && LED_HEARTBEAT_ON_MS < LED_HEARTBEAT_MS,
+              "LED_HEARTBEAT_ON_MS must be a short flash inside the period");
+static_assert(LED_ERROR_PERIOD_MS >= 20, "LED_ERROR_PERIOD_MS: too fast to see");
+
+#if STATUS_LED_PIN >= 0 && defined(CONFIG_IDF_TARGET_ESP32S3) && STATUS_LED_PIN > 21
+#error "STATUS_LED_PIN does not exist on ESP32-S3: confirm the board in server/platformio.ini first"
+#endif
+
 // ── Расписание ────────────────────────────────────────────────────────────
 #define MAX_SCHEDULES     32
 #define SCHEDULE_FILE     "/gong.conf"   // только первый запуск: засев Дня 00 (дальше — dayNN.conf)
@@ -99,13 +186,19 @@ static_assert(VOLUME_LIMIT >= 1 && VOLUME_LIMIT <= 30, "VOLUME_LIMIT: 1–30");
 
 // ── Аутентификация веб-админки ────────────────────────────────────────────
 #define AUTH_CONFIG_FILE  "/auth.conf"   // устаревшее: с 6.2 — в NVS, файл импортируется один раз
+#define AUTH_NVS_NAMESPACE "auth"        // единственное состояние, которое стирает сброс пароля
+// NVS ограничивает имена 15 символами (NVS_KEY_NAME_MAX_SIZE = 16 с '\0');
+// проверяется здесь, потому что на устройстве ошибка выглядит как «write failed».
+static_assert(sizeof(AUTH_NVS_NAMESPACE) - 1 <= 15, "NVS namespace longer than 15 chars");
 #define AUTH_REALM        "Gong Server"
 #define AUTH_MIN_PASSWORD 8
-// Сброс пароля админки без перепрошивки: по USB в Serial (115200) ввести
-// команду AUTH_RESET_CMD и Enter — пароль стирается, вход снова открыт.
-// Нужен, потому что пока пароль не задан, его может задать любой
-// подключившийся к AP и запереть владельца. Кнопки нет, а стирать NVS
-// целиком нельзя: пропадёт отметка миграции DS3231, и время сдвинется.
+// Сброс пароля админки без перепрошивки — два независимых пути, оба вызывают
+// web_resetAuth(): физическая кнопка (удержание BUTTON_AUTH_RESET_HOLD_MS при
+// включении питания, см. buttonhandler.h) и команда AUTH_RESET_CMD в Serial по
+// USB (115200). Пароль стирается только в NVS-неймспейсе "auth" и в
+// устаревшем /auth.conf; WiFi, курсы, расписания, номер устройства, RTC и
+// громкость не затрагиваются (см. authreset.h). Стереть NVS целиком нельзя:
+// пропадёт отметка миграции DS3231, и время сдвинется.
 #define AUTH_RESET_CMD    "reset-auth"
 
 // ── WiFi STA (подключение к существующей сети) ─────────────────────────────

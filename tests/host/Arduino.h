@@ -74,3 +74,59 @@ inline time_t host_time(time_t* out) {
     return host::clock();
 }
 inline unsigned long millis() { return host::ticks(); }
+
+// ── GPIO simulation ────────────────────────────────────────────────────────
+// Production code (buttonhandler/statusled) touches pins only through these
+// three calls. Input levels are set by the test; output levels are recorded,
+// and the two arrays are separate so a test can drive the button pin while
+// reading the LED pin.
+#ifndef LOW
+#define LOW  0
+#endif
+#ifndef HIGH
+#define HIGH 1
+#endif
+#ifndef INPUT
+#define INPUT 0x01
+#endif
+#ifndef OUTPUT
+#define OUTPUT 0x02
+#endif
+#ifndef INPUT_PULLUP
+#define INPUT_PULLUP 0x05
+#endif
+#ifndef INPUT_PULLDOWN
+#define INPUT_PULLDOWN 0x09
+#endif
+namespace host {
+constexpr int kHostPinCount = 64;
+struct PinModel {
+    uint8_t  mode[kHostPinCount];
+    uint8_t  inLevel[kHostPinCount];
+    uint8_t  outLevel[kHostPinCount];
+    unsigned writes[kHostPinCount];
+    PinModel() { reset(); }
+    void reset() {
+        for (int i = 0; i < kHostPinCount; ++i) {
+            mode[i] = 0;
+            inLevel[i] = HIGH;   // idle level of a pull-up input
+            outLevel[i] = LOW;
+            writes[i] = 0;
+        }
+    }
+};
+inline PinModel& pins() { static PinModel model; return model; }
+}  // namespace host
+inline void pinMode(uint8_t pin, uint8_t mode) {
+    if (pin < host::kHostPinCount) host::pins().mode[pin] = mode;
+}
+inline int digitalRead(uint8_t pin) {
+    return pin < host::kHostPinCount ? host::pins().inLevel[pin] : HIGH;
+}
+inline void digitalWrite(uint8_t pin, uint8_t value) {
+    if (pin < host::kHostPinCount) {
+        host::pins().outLevel[pin] = value;
+        ++host::pins().writes[pin];
+    }
+}
+inline void delay(unsigned long) {}   // never used by the tested modules

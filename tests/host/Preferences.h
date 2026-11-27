@@ -43,9 +43,34 @@ public:
         if (!started_ || nvs_set_str(handle_,key,value.c_str())!=0) return 0;
         return nvs_commit(handle_)==0?value.length():0;
     }
+    // Arduino Preferences stores bool as uint8; the host model has no U8 cell,
+    // so it is represented as U32 with the same 0/1 semantics.
+    size_t putBool(const char* key,bool value) {
+        if (!started_ || nvs_set_u32(handle_,key,value?1u:0u)!=ESP_OK) return 0;
+        return nvs_commit(handle_)==ESP_OK?1u:0u;
+    }
+    bool getBool(const char* key,bool fallback=false) const {
+        uint32_t value=fallback?1u:0u;
+        if (started_ && nvs_get_u32(handle_,key,&value)==ESP_OK) return value!=0;
+        return fallback;
+    }
     bool remove(const char* key) {
         if (!started_ || !isKey(key)) return false;
         if (nvs_erase_key(handle_,key)!=ESP_OK) return false;
+        return nvs_commit(handle_)==ESP_OK;
+    }
+    // Mirrors nvs_erase_all(): every key of THIS namespace only, committed as
+    // one operation. A failed commit restores the previous visible state, just
+    // like the real flash-boundary model in nvs.h.
+    bool clear() {
+        if (!started_) return false;
+        const auto handle = host::nvs().handles.find(handle_);
+        if (handle == host::nvs().handles.end()) return false;
+        const std::string prefix = handle->second + "/";
+        for (auto it = host::nvs().visible.begin(); it != host::nvs().visible.end();) {
+            if (it->first.compare(0, prefix.size(), prefix) == 0) it = host::nvs().visible.erase(it);
+            else ++it;
+        }
         return nvs_commit(handle_)==ESP_OK;
     }
 };

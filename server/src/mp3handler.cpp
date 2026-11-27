@@ -136,6 +136,12 @@ void mp3_start(uint8_t track, uint8_t vol, uint8_t loops) {
     mp3_play(track, loops);
 }
 
+bool mp3_manualPlay(int track, int vol, int loop) {
+    if (!mp3_manualTrackValid(track)) return false;
+    mp3_start((uint8_t)track, mp3_manualVolume(vol), mp3_manualLoops(loop));
+    return true;
+}
+
 void mp3_stop() {
     if (!audioLock()) return;
     if (audio.isRunning()) {

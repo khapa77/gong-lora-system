@@ -12,6 +12,41 @@
 #include "timesync.h"
 #include "wifihandler.h"
 #include "device.h"
+#include "buttonhandler.h"
+#include "statusled.h"
+
+// -------------------------------------------------------
+// Physical button and status LED ports.
+//
+// The button never calls into mp3_*/web_*/schedule_* itself: these three
+// functions are the whole surface it needs, so the button logic stays
+// host-testable and the manual-playback rules live in exactly one place
+// (mp3_manualPlay, shared with /api/play).
+// -------------------------------------------------------
+static bool buttonAudioPlaying() { return mp3_isPlaying(); }
+
+static void buttonStopAudio() { mp3_stop(); }
+
+static void buttonPlayManual(uint8_t track, uint8_t vol, uint8_t loop) {
+    // Diagnostic only: the playback path itself is byte-for-byte the web one.
+    // A configured track that is not on LittleFS would otherwise be a silent
+    // no-op with no explanation anywhere.
+    if (!mp3_trackExists(track)) {
+        logPrintf("[BTN] Manual gong: track %u is not on LittleFS — nothing to play\n",
+                  (unsigned)track);
+        return;
+    }
+    if (!mp3_manualPlay(track, vol, loop))
+        logPrintf("[BTN] Manual gong: request rejected (track %u)\n", (unsigned)track);
+}
+
+// What "the schedule cannot run" means on this architecture. Deliberately does
+// NOT include "no Wi-Fi": the device rings from DS3231/NTP-corrected time and
+// LittleFS alone. `waiting` (no published course, no legacy binding) is a real
+// failure to ring and must be visible from across the room.
+static bool ledProblem() {
+    return !timeIsSet() || !sys_fsOk() || sched_hasError() || sched_waitingForCourse();
+}
 
 // -------------------------------------------------------
 // Called when a schedule entry fires. MAX98357A is powered all the time —
@@ -47,11 +82,16 @@ static void controlTask(void*) {
         sys_lock();
         wifi_loop();
         time_loop();
+        // Polled before sched_check(): a press at an event minute must not be
+        // starved by the scheduler's own work, and the LED hint has to follow
+        // the button within one 10 ms tick.
+        button_loop();
         uint32_t now = millis();
         if (now - lastSchedCheck >= 1000) {
             sched_check();
             lastSchedCheck = now;
         }
+        led_loop();
         sys_unlock();
         vTaskDelay(pdMS_TO_TICKS(CONTROL_PERIOD_MS));
     }
@@ -99,6 +139,47 @@ void setup() {
     if (!fsOk)
         logPrintf("[MAIN] ERROR: no filesystem — NO SOUND, NO SCHEDULE. Not formatting "
                   "(that would erase whatever is left). Re-upload with: pio run -t uploadfs\n");
+
+    // ── Status LED + power-on recovery hold ────────────────────────────────
+    // LED first: it is the only feedback during the hold (10 s is long enough
+    // to need it). The gate only counts a hold that starts at power-on, so a
+    // normal boot with a released button costs one pin sample.
+    led_setup();
+    button_bootBegin();
+    if (button_bootHeldAtPowerOn()) {
+        bool resetDone = false;
+        const uint32_t gateStart = millis();
+        led_set(true);                 // AUTH_RESET indication: steady light
+        for (;;) {
+            const BootGate gate = button_bootTick();
+            if (gate == BootGate::ResetGrant && !resetDone) {
+                web_resetAuth();       // only the auth NVS namespace + /auth.conf
+                resetDone = true;
+            }
+            if (gate == BootGate::Settled) break;
+            // A contact stuck closed must not hold the device in setup()
+            // forever: after BUTTON_STUCK_MS the boot continues and
+            // button_setup() arms the button "already fired" until it is
+            // released, so the stuck press cannot ring a gong.
+            if ((uint32_t)(millis() - gateStart) >= BUTTON_STUCK_MS) {
+                logPrintf("[BTN] Still held after %lus — booting anyway, button waits for release\n",
+                          (unsigned long)(BUTTON_STUCK_MS / 1000));
+                break;
+            }
+            // The task watchdog is armed later in setup(), so this feed is a
+            // no-op today; it keeps the loop correct if it is ever moved.
+            esp_task_wdt_reset();
+            vTaskDelay(pdMS_TO_TICKS(CONTROL_PERIOD_MS));
+        }
+        led_set(false);
+        logPrintf("[BTN] Power-on hold finished: %s\n",
+                  resetDone ? "admin password reset, web UI is open"
+                            : "released before the threshold, nothing changed");
+    }
+
+    const ButtonHooks buttonHooks = { buttonAudioPlaying, buttonPlayManual, buttonStopAudio };
+    button_setup(buttonHooks);
+    led_setProblemSource(ledProblem);
 
 
     onScheduleTrigger = onGongFire;

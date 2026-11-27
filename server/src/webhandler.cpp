@@ -6,6 +6,7 @@
 #include "sysstate.h"
 #include "schedule.h"
 #include "mp3handler.h"
+#include "authreset.h"
 #include "timesync.h"
 #include "wifihandler.h"
 #include "device.h"
@@ -175,7 +176,7 @@ static void setPassword(const String& pwd) {
 
 static void saveAuth() {
     Preferences p;
-    p.begin("auth", false);
+    p.begin(AUTH_NVS_NAMESPACE, false);
     p.putBool("enabled", authEnabled);
     p.putString("salt", authSaltHex);
     p.putString("hash", authHashHex);
@@ -208,7 +209,7 @@ static void importLegacyAuthFile() {
 
 static void loadAuth() {
     Preferences p;
-    p.begin("auth", true);
+    p.begin(AUTH_NVS_NAMESPACE, true);
     bool have = p.isKey("enabled");
     if (have) {
         authEnabled = p.getBool("enabled", false);
@@ -222,16 +223,15 @@ static void loadAuth() {
 }
 
 void web_resetAuth() {
-    Preferences p;
-    p.begin("auth", false);
-    p.clear();
-    p.end();
-    LittleFS.remove(AUTH_CONFIG_FILE);
-    authEnabled = false;
-    authSaltHex = "";
-    authHashHex = "";
+    // Стирается только состояние авторизации (NVS "auth" + /auth.conf);
+    // WiFi, курсы, расписания, RTC и громкость не затрагиваются — см. authreset.h.
+    const bool erased = authreset_eraseCredentials();
+    authEnabled  = false;
+    authSaltHex  = "";
+    authHashHex  = "";
     authCacheValid = false;
-    logPrintf("[AUTH] Admin password RESET by serial command — web UI is open\n");
+    logPrintf("[AUTH] Admin password %s — web UI is open until a new one is set\n",
+              erased ? "RESET" : "reset FAILED (NVS)");
 }
 
 static bool constTimeEqual(const uint8_t* a, const uint8_t* b, size_t n) {
@@ -960,9 +960,9 @@ static void handlePlay() {
     int track = doc["track"] | DEFAULT_TRACK;
     int vol   = doc["vol"]   | DEFAULT_VOLUME;
     int loop  = doc["loop"]  | 1;
-    if (track < 1 || track > 99) { sendErr("track 1-99"); return; }
-    // loop wasn't capped here (the schedule caps at 7): 255 repeats = hours of gong.
-    mp3_start((uint8_t)track, (uint8_t)constrain(vol, 0, 30), (uint8_t)constrain(loop, 1, LOOP_MAX));
+    // Проверка диапазона и ограничения живут в mp3_manualPlay(): тот же путь
+    // вызывает физическая кнопка, поэтому правила не могут разойтись.
+    if (!mp3_manualPlay(track, vol, loop)) { sendErr("track 1-99"); return; }
     sendOK();
 }
 
