@@ -44,6 +44,7 @@ void logPrintf(const char*, ...) {}
 bool mp3_isPlaying() { return audioPlaying; }
 void mp3_stop() { audioPlaying=false; }
 // schedule.cpp calls relay_stop() for a full stop (see run_relay_tests.py).
+void relay_cancelPendingTag(uint32_t) {}
 void relay_stop() { audioPlaying=false; }
 uint32_t relay_pendingTag() { return 0; }
 uint32_t relay_lastStartedTag() { return 0; }

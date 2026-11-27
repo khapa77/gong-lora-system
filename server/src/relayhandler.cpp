@@ -44,6 +44,7 @@ uint32_t  manualSince = 0;
 // (audioMtx), и не чаще RELAY_POLL_PERIOD_MS. Состояние читают LED, JSON,
 // кнопка и hold-таймер — без повторного входа в аудиомьютекс.
 bool      lastAudioPlaying = false;
+bool      prevAudioPlaying = false;
 uint32_t  lastPollMs       = 0;
 
 // Каждый запрос звука получает тег; подтверждение старта привязано к тегу,
@@ -54,7 +55,7 @@ uint32_t  pendingTag     = 0;   // тег трека, ждущего прогр�
 uint32_t  lastStartedTag = 0;   // тег последнего фактически стартовавшего трека
 // Кольцо последних стартов: пока расписание не подтвердило свой гонг, следом
 // может стартовать чужой трек — подтверждение не должно теряться.
-uint32_t  startedTags[4] = {0, 0, 0, 0};
+uint32_t  startedTags[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 uint8_t   startedIdx     = 0;
 
 bool      ready = false;
@@ -107,7 +108,11 @@ bool timingValid(uint32_t pre, uint32_t hold) {
 bool saveConfig(RelayMode m, uint32_t pre, uint32_t hold) {
     if (!kRelayPresent) return true;
     Preferences p;
-    if (!p.begin("relay", false)) return false;
+    if (!p.begin("relay", false)) {
+        configSaveFailed = true;
+        logPrintf("[RELAY] NVS open FAILED\n");
+        return false;
+    }
     char buf[48];
     snprintf(buf, sizeof(buf), "%u:%lu:%lu", (unsigned)m, (unsigned long)pre, (unsigned long)hold);
     const bool ok = p.putString("cfg", String(buf)) != 0;
@@ -123,8 +128,9 @@ bool loadConfigRecord(RelayMode& m, uint32_t& pre, uint32_t& hold) {
     bool have = false;
     const String cfg = p.getString("cfg", "");
     if (cfg.length()) {
-        unsigned mm = 0; unsigned long pp = 0, hh = 0;
-        if (sscanf(cfg.c_str(), "%u:%lu:%lu", &mm, &pp, &hh) == 3 && mm <= 2) {
+        unsigned mm = 0; unsigned long pp = 0, hh = 0; int consumed = 0;
+        if (sscanf(cfg.c_str(), "%u:%lu:%lu%n", &mm, &pp, &hh, &consumed) == 3 &&
+            consumed == (int)cfg.length() && mm <= 2) {
             m = (RelayMode)mm;
             pre = (uint32_t)pp;
             hold = (uint32_t)hh;
@@ -206,7 +212,7 @@ bool startNow(uint8_t track, uint8_t vol, uint8_t loop, uint32_t tag) {
     if (started) {
         lastStartedTag = tag;
         startedTags[startedIdx] = tag;
-        startedIdx = (uint8_t)((startedIdx + 1) % 4);
+        startedIdx = (uint8_t)((startedIdx + 1) % 8);
     }
     return started;
 }
@@ -226,7 +232,7 @@ void relay_setup() {
     pendingTag       = 0;
     lastStartedTag   = 0;
     startedIdx       = 0;
-    for (unsigned i = 0; i < 4; ++i) startedTags[i] = 0;
+    for (unsigned i = 0; i < 8; ++i) startedTags[i] = 0;
     lastActiveMs     = millis();
     lastPollMs       = millis();
     preMs            = RELAY_DEFAULT_PRE_MS;
@@ -304,6 +310,7 @@ void relay_stop() {
     // Отмена pending обязательна: иначе отменённый гонг стартовал бы позже,
     // когда прогрев закончится.
     pending      = false;
+    lateStart    = false;
     mp3_stop();
     // mp3_stop() is synchronous: refresh the cached observation instead of
     // reporting "busy" for up to one poll period after a stop.
@@ -325,6 +332,16 @@ void relay_prewarm(uint32_t msUntilGong) {
     prewarm = true;
 }
 
+void relay_cancelPendingTag(uint32_t tag) {
+    // Отменяется только СВОЙ отложенный старт: чужой (например, ручной с
+    // кнопки) продолжает работать.
+    if (pending && pendingTag == tag) {
+        pending   = false;
+        lateStart = false;
+        logPrintf("[RELAY] queued gong cancelled by its own event edit\n");
+    }
+}
+
 void relay_cancelPrewarm() {
     // Снимается только предвключение: manual/play/hold живут своей жизнью.
     prewarm = false;
@@ -340,6 +357,10 @@ void relay_loop() {
         lastPollMs = now;
     }
     if (lastAudioPlaying) lastActiveMs = now;
+    // Переход playing→false — фактический конец трека: hold отсчитывается от
+    // него, а не от последнего положительного опроса.
+    if (!lastAudioPlaying && prevAudioPlaying) lastActiveMs = now;
+    prevAudioPlaying = lastAudioPlaying;
 
     if (!kRelayPresent || !ready) return;
 
@@ -360,7 +381,9 @@ void relay_loop() {
             prewarmOn = false;
         }
     }
-    if (relayOn && !warm && (uint32_t)(now - onSince) >= preMs) warm = true;
+    // Свежий millis(): drive(true) мог записать onSince уже ПОСЛЕ `now`,
+    // и разность now - onSince дала бы UINT32_MAX (мгновенный «прогрев»).
+    if (relayOn && !warm && (uint32_t)(millis() - onSince) >= preMs) warm = true;
 
     switch (mode) {
         case RelayMode::ON:  drive(true);  return;
@@ -473,7 +496,7 @@ uint32_t relay_pendingTag()    { return pending ? pendingTag : 0; }
 uint32_t relay_lastStartedTag() { return lastStartedTag; }
 bool     relay_wasStartedTag(uint32_t tag) {
     if (tag == 0) return false;
-    for (unsigned i = 0; i < 4; ++i) if (startedTags[i] == tag) return true;
+    for (unsigned i = 0; i < 8; ++i) if (startedTags[i] == tag) return true;
     return false;
 }
 uint32_t relay_preMs()         { return preMs; }

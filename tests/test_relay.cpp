@@ -598,6 +598,54 @@ static void test_stored_below_minimum_is_normalised() {
     CHECK_EQ((int)relay_holdMs(), (int)RELAY_MIN_HOLD_MS);
 }
 
+// ── Second-round relay review regressions ───────────────────────────────────
+static void test_prewarm_does_not_fake_warm() {
+    resetDevice();
+    boot();
+    relay_prewarm(3000);                 // ON in this tick; onSince may be > loop's now
+    advance(10);
+    CHECK(relayActive());
+    // The very next request must still wait for the full 3 s warm-up.
+    CHECK(!relay_play(1, 30, 1));
+}
+
+static void test_hold_starts_at_observed_audio_end() {
+    resetDevice();
+    boot();
+    relay_play(1, 30, 1);
+    advance(3000);
+    CHECK_EQ(starts, 1);
+    advance(200);                        // last positive poll somewhere inside
+    playing = false;                     // track ends
+    advance(10);                         // poll sees the end
+    advance(2900);                       // 2.9 s after the observed end
+    CHECK(relayActive());                // hold must still protect the amp
+    advance(200);
+    CHECK(!relayActive());
+}
+
+static void test_stop_clears_late_start() {
+    resetDevice();
+    boot();
+    relay_prewarm(1000);
+    advance(1000);
+    CHECK(!relay_play(1, 30, 1));        // late: amp not warm yet
+    CHECK(relay_lateStartActive());
+    relay_stop();
+    CHECK(!relay_lateStartActive());     // cancelled request is not an active error
+}
+
+static void test_cfg_with_trailing_junk_is_rejected() {
+    resetDevice();
+    Preferences p;
+    CHECK(p.begin("relay", false));
+    CHECK(p.putString("cfg", String("0:3000:4000junk")) != 0);
+    p.end();
+    boot();
+    CHECK_EQ((int)relay_preMs(), (int)RELAY_DEFAULT_PRE_MS);   // ignored → defaults
+    CHECK_EQ((int)relay_holdMs(), (int)RELAY_DEFAULT_HOLD_MS);
+}
+
 int main() {
     struct Case { const char* name; void (*fn)(); };
     const Case cases[] = {
@@ -637,6 +685,10 @@ int main() {
         { "sequential_gongs",                test_sequential_gongs_keep_relay_on },
         { "late_start_flagged",              test_late_start_is_flagged },
         { "stored_below_min_normalised",     test_stored_below_minimum_is_normalised },
+        { "prewarm_no_fake_warm",            test_prewarm_does_not_fake_warm },
+        { "hold_from_observed_end",          test_hold_starts_at_observed_audio_end },
+        { "stop_clears_late_start",          test_stop_clears_late_start },
+        { "cfg_trailing_junk",               test_cfg_with_trailing_junk_is_rejected },
     };
     for (const Case& c : cases) {
         const int before = failures;

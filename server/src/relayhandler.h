@@ -49,6 +49,10 @@ void   relay_prewarm(uint32_t msUntilGong);
 // затрагиваются.
 void   relay_cancelPrewarm();
 
+// Отменить отложенный старт с указанным тегом (событие отключено/удалено/
+// изменено). Manual и чужие запросы не затрагиваются.
+void   relay_cancelPendingTag(uint32_t tag);
+
 bool   relay_setMode(RelayMode mode);
 bool   relay_setTiming(uint32_t pre, uint32_t hold);
 // mode+pre+hold одной записью NVS (веб применяет комбинированный POST атомарно).

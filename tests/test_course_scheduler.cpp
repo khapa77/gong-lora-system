@@ -70,6 +70,9 @@ bool mp3_isPlaying() { return audioPlaying; }
 void mp3_stop() { audioPlaying = false; }
 // schedule.cpp routes "stop everything" through relay_stop() (it also cancels a
 // pending warm-up); the relay itself is exercised by run_relay_tests.py.
+void relay_cancelPendingTag(uint32_t tag) {
+    if (gRelayPendingTag == tag) gRelayPendingTag = 0;
+}
 void relay_stop() { audioPlaying = false; }
 // Schedule asks the relay whether a queued gong actually started.
 uint32_t relay_pendingTag() { return gRelayPendingTag; }
@@ -1199,6 +1202,39 @@ static void test_prewarm_target_survives_reboot() {
     check(sched_msToNext() == 10000, "after a reboot: still 10 s to the gong");
 }
 
+static void test_ms_to_next_wraps_last_day() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 23, 0);
+    check(applyCourse(makeCourse(1, 0, 0)), "single-day course with 00:00");
+    sched_setup();
+    check(sched_activateDay(0), "activate day 0");
+    // Last day → day 0 again: the next 00:00 is today's, one hour away.
+    check(sched_msToNext() == 3600000L, "cyclic course keeps the next 00:00 target");
+}
+
+static void test_deferred_cancelled_by_event_edit() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 4, 0);
+    check(applyCourse(makeCourse(3)), "apply course");
+    sched_setup();
+    check(sched_activateDay(0), "activate day 0");
+    audioCalls = 0;
+    gDeferCallback = true;
+    sched_check();                       // queued (relay cold)
+    const uint32_t tag = gRelayPendingTag;
+    check(tag != 0, "queued with a tag");
+
+    // The operator disables the event while the amp is warming up.
+    check(sched_edit(1, 4, 0, "day0", 1, 1, false, 10), "disable during warm-up");
+    check(gRelayPendingTag == 0, "queued start cancelled by the edit");
+    gDeferCallback = false;
+    sched_check();
+    resetRuntime();
+    sched_setup();
+    sched_check();
+    check(audioCalls == 0, "cancelled gong never rings");
+}
+
 int main() {
     TestCase tests[] = {
         {"boot_applied_no_calls", test_boot_applied_no_calls},
@@ -1248,6 +1284,8 @@ int main() {
         {"prewarm_offsets_absolute", test_prewarm_offsets_at_absolute_time},
         {"prewarm_crosses_midnight", test_prewarm_crosses_midnight},
         {"prewarm_after_reboot", test_prewarm_target_survives_reboot},
+        {"ms_to_next_wraps_last_day", test_ms_to_next_wraps_last_day},
+        {"deferred_cancelled_by_edit", test_deferred_cancelled_by_event_edit},
     };
     for (const TestCase& t : tests) {
         const int before = failures;

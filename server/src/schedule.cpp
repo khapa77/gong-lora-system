@@ -491,6 +491,7 @@ static bool courseActivate(uint8_t day) {
         return false;
     }
     courseCal = next;
+    courseLastFireValid = false;
     if (!coursePublishDay(day, false)) {
         courseSuspend("cannot publish selected day");
         return false;
@@ -833,6 +834,9 @@ struct DeferredFire {
     uint8_t  day      = 0;
     uint32_t date     = 0;
     time_t   timestamp = 0;
+    uint8_t  track    = 0;
+    uint8_t  loop     = 1;
+    uint8_t  vol      = 0;
     bool     course   = false;
 };
 static DeferredFire deferred;
@@ -880,6 +884,28 @@ static void resolveDeferredFire() {
     }
 }
 
+// Событие отложенного гонга отключили/удалили/изменили во время прогрева:
+// отменяем ИМЕННО его отложенный старт, иначе старый трек прозвучит после
+// правки и подтвердит watermark.
+static void cancelDeferredIfEventChanged() {
+    if (!deferred.active) return;
+    bool matches = false;
+    for (uint8_t i = 0; i < count; i++) {
+        if (entries[i].id != deferred.eventId) continue;
+        matches = entries[i].enabled &&
+                  (int)(entries[i].hour * 60 + entries[i].minute) == deferred.key &&
+                  entries[i].track == deferred.track &&
+                  entries[i].loop  == deferred.loop &&
+                  entries[i].vol   == deferred.vol;
+        break;
+    }
+    if (!matches) {
+        relay_cancelPendingTag(deferred.tag);
+        deferred.active = false;
+        logPrintf("[SCHED] queued gong cancelled: its event was edited away\n");
+    }
+}
+
 static void doFire(const ScheduleEntry& e, const char* why) {
     logPrintf("[SCHED] %s %02d:%02d '%s' track=%d loop=%d vol=%d\n",
               why, e.hour, e.minute, e.description.c_str(), e.track, e.loop, e.vol);
@@ -899,6 +925,9 @@ static void doFire(const ScheduleEntry& e, const char* why) {
         deferred.generation = courseGeneration;
         deferred.day        = courseDay;
         deferred.date       = courseDateNumber(courseDateFromClockNow());
+        deferred.track      = e.track;
+        deferred.loop       = e.loop;
+        deferred.vol        = e.vol;
         deferred.timestamp  = now;
         logPrintf("[SCHED] queued for relay warm-up — watermark deferred\n");
         return;
@@ -1025,8 +1054,10 @@ long sched_msToNext() {
     // числе ровно в 00:00:00). Смотрим календарь следующего дня курса — именно
     // поэтому предвключение работает через полночь и не ограничено сутками.
     if (!courseMode) return -1;
-    const uint8_t nextDay = (uint8_t)(courseDay + 1);
-    if (nextDay >= courseLength) return -1;
+    // Курс циклический: после последнего дня снова день 0, поэтому цель не
+    // теряется на стыке (иначе 00:00 последнего→нулевого дня не прогревалась).
+    if (courseLength == 0) return -1;
+    const uint8_t nextDay = (uint8_t)((courseDay + 1) % courseLength);
     course::Day d2;
     if (!courseLoadDay(nextDay, d2)) return -1;
     long bestTomorrow = -1;
@@ -1109,9 +1140,11 @@ void sched_check() {
 
     if (courseMode) {
         const time_t now = mktime(&ti);
-        if (courseLastFireValid) {
+        if (courseLastFireValid && courseLastFire.generation == courseGeneration) {
             // Clock moved backwards: do not replay a gong that may already
-            // have fired before the correction.
+            // have fired before the correction. A DIFFERENT generation must not
+            // be blocked by the old watermark (RTC was corrected, course B was
+            // applied long after A rang).
             if ((uint32_t)now < courseLastFire.timestamp) return;
             const uint32_t today = (uint32_t)(ti.tm_year + 1900) * 10000u +
                 (uint32_t)(ti.tm_mon + 1) * 100u + (uint32_t)ti.tm_mday;
@@ -1161,6 +1194,7 @@ bool sched_edit(uint32_t id, uint8_t h, uint8_t m,
         if (entries[i].id == id) {
             entries[i] = { id, h, m, track, loop, vol, enabled, desc };
             sched_save();
+            cancelDeferredIfEventChanged();
             return true;
         }
     }
@@ -1174,6 +1208,7 @@ bool sched_del(uint32_t id) {
             for (uint8_t j = i; j < count - 1; j++) entries[j] = entries[j + 1];
             count--;
             sched_save();
+            cancelDeferredIfEventChanged();
             return true;
         }
     }
@@ -1987,6 +2022,7 @@ bool sched_courseApply() {
     }
     courseMode = true;
     waitingForCourse = false;
+    courseLastFireValid = false;   // нового поколения ещё нет в NVS
     courseGeneration = courseCal.active_generation;
     courseLength = courseCal.course_length;
     courseRunning = false;
