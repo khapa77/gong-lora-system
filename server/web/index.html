@@ -386,13 +386,16 @@ tr:hover td { background: rgba(79,158,248,.04); }
     </div>
   </div>
 
-  <!-- ── Gong ── -->
+  <!-- ── Gong & Relay ── -->
   <div class="card" id="sectionControl">
     <div class="card-title">
       <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0">
-        <span style="color:#4f9ef8">Gong</span>
+        <span style="color:#4f9ef8">Gong &amp; Relay</span>
       </div>
-      <button class="collapse-btn" onclick="toggleCard('sectionControl')">&#9662;</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="relayBadge" class="tag" style="font-size:.72rem"></span>
+        <button class="collapse-btn" onclick="toggleCard('sectionControl')">&#9662;</button>
+      </div>
     </div>
     <div class="card-body">
       <div class="row" style="margin-bottom:16px;align-items:flex-end">
@@ -413,6 +416,28 @@ tr:hover td { background: rgba(79,158,248,.04); }
         <button class="btn btn-green" onclick="playGong()">&#9654; Play</button>
         <button class="btn btn-red"   onclick="stopAll()">&#9632;&#9632; Stop</button>
       </div>
+
+      <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
+      <label>Relay mode</label>
+      <div class="btn-group" style="margin-top:6px">
+        <button id="relayAuto" class="btn btn-sm btn-ghost" onclick="setRelayMode('auto')">Auto</button>
+        <button id="relayOn"   class="btn btn-sm btn-ghost" onclick="setRelayMode('on')">Always ON</button>
+        <button id="relayOff"  class="btn btn-sm btn-ghost" onclick="setRelayMode('off')">Always OFF</button>
+      </div>
+      <div class="row" style="margin-top:14px;align-items:flex-end">
+        <div class="col" style="max-width:170px">
+          <label>Warm-up (ms)</label>
+          <input type="number" id="relayPre" min="0" max="30000" step="100">
+        </div>
+        <div class="col" style="max-width:170px">
+          <label>Hold after (ms)</label>
+          <input type="number" id="relayHold" min="0" max="20000" step="500">
+        </div>
+        <div class="col" style="max-width:120px">
+          <button class="btn btn-primary btn-sm" onclick="saveRelayTiming()">Save</button>
+        </div>
+      </div>
+      <div id="relayInfo" style="font-size:.8rem;color:var(--muted);margin-top:10px"></div>
     </div>
   </div>
 
@@ -681,6 +706,7 @@ function applyStatus(d) {
       if (dateInput && document.activeElement !== dateInput) dateInput.value = d.date;
     }
     applyAlerts(d);
+    applyRelay(d.relay);
     const ntpInfo = document.getElementById('ntpInfo');
     if (ntpInfo) {
       const age = d.ntp_age ?? -1;
@@ -968,6 +994,59 @@ async function playGong() {
 async function stopAll() {
   const r = await postJSON('/api/stop', {});
   toast(r && r.ok ? 'Stopped' : (r?.err || 'Error'), r && r.ok ? 'ok' : 'err');
+}
+
+// ─────────────────────────────────────────────
+// Relay (external amplifier)
+// ─────────────────────────────────────────────
+function applyRelay(d) {
+  const badge = document.getElementById('relayBadge');
+  const info  = document.getElementById('relayInfo');
+  if (!badge || !info) return;
+  if (!d || d.enabled === false) {
+    badge.textContent = 'relay: not fitted';
+    badge.style.background = 'rgba(154,163,178,.12)';
+    badge.style.color = 'var(--muted)';
+    ['relayAuto', 'relayOn', 'relayOff'].forEach(id => {
+      const b = document.getElementById(id); if (b) b.disabled = true;
+    });
+    info.textContent = 'Реле отключено в прошивке (RELAY_PIN = -1): гонг звучит напрямую, без прогрева.';
+    return;
+  }
+  const label = { idle: 'idle', warmup: 'warm-up', prewarm: 'pre-warm', playing: 'playing',
+                  hold: 'hold', manual: 'manual', forced_on: 'Always ON', forced_off: 'Always OFF' }[d.state] || d.state;
+  badge.textContent = 'relay: ' + (d.on ? 'ON' : 'off') + ' \u00b7 ' + label;
+  badge.style.background = d.on ? 'rgba(52,201,126,.15)' : 'rgba(154,163,178,.12)';
+  badge.style.color = d.on ? 'var(--green)' : 'var(--muted)';
+  [['auto', 'relayAuto'], ['on', 'relayOn'], ['off', 'relayOff']].forEach(([m, id]) => {
+    const b = document.getElementById(id); if (!b) return;
+    b.classList.toggle('btn-primary', d.mode === m);
+    b.classList.toggle('btn-ghost', d.mode !== m);
+  });
+  const pre = document.getElementById('relayPre'), hold = document.getElementById('relayHold');
+  if (pre && document.activeElement !== pre) pre.value = d.pre;
+  if (hold && document.activeElement !== hold) hold.value = d.hold;
+  let line = 'GPIO ' + d.pin + ' \u00b7 active ' + (d.active_low ? 'LOW' : 'HIGH');
+  if (d.manual && d.manual_left != null)
+    line += ' \u00b7 кнопка: ' + Math.round(d.manual_left / 60) + ' мин до автоотключения';
+  info.textContent = line;
+}
+
+async function setRelayMode(mode) {
+  const r = await postJSON('/api/relay', { mode });
+  if (r && r.mode) { applyRelay(r); toast('Relay: ' + mode, 'ok'); }
+  else toast(r?.err || 'Error', 'err');
+}
+
+async function saveRelayTiming() {
+  const pre  = parseInt(document.getElementById('relayPre').value);
+  const hold = parseInt(document.getElementById('relayHold').value);
+  if (!Number.isFinite(pre) || !Number.isFinite(hold)) {
+    toast('Warm-up и Hold — числа в миллисекундах', 'err'); return;
+  }
+  const r = await postJSON('/api/relay', { pre, hold });
+  if (r && r.mode) { applyRelay(r); toast('Relay timing saved', 'ok'); }
+  else toast(r?.err || 'Error', 'err');
 }
 
 // ─────────────────────────────────────────────

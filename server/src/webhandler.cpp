@@ -6,6 +6,7 @@
 #include "sysstate.h"
 #include "schedule.h"
 #include "mp3handler.h"
+#include "relayhandler.h"
 #include "authreset.h"
 #include "timesync.h"
 #include "wifihandler.h"
@@ -505,7 +506,9 @@ static void handleTimeSet() {
 // schedule/days/wifi/auth into one response for the UI's poll loop.
 // -------------------------------------------------------
 static String statusJSON() {
-    DynamicJsonDocument doc(1152);
+    // 1536: a 1152-byte pool silently dropped fields once the relay object was
+    // added (ArduinoJson returns null on overflow instead of failing loudly).
+    DynamicJsonDocument doc(1536);
     doc["mode"]   = WiFi.status() == WL_CONNECTED ? "AP+STA" : "AP";
     doc["ip"]     = wifi_apIP();
     doc["ssid"]   = device_ssid();
@@ -546,6 +549,8 @@ static String statusJSON() {
     doc["reset_reason"] = sys_resetReason();
     doc["crash_count"]  = sys_crashCount();
     doc["ap_default_pw"] = strcmp(AP_PASSWORD, "vipassana") == 0;
+    // Relay state is a pre-built JSON object: one place owns the field list.
+    doc["relay"] = serialized(relay_toJSON());
 
     String s;
     serializeJson(doc, s);
@@ -986,8 +991,38 @@ static void handleDevicePOST() {
 }
 
 static void handleStop() {
-    mp3_stop();
+    // relay_stop(), not mp3_stop(): an armed warm-up must be cancelled too, or
+    // the stopped gong would start by itself once the warm-up expires.
+    relay_stop();
     sendOK();
+}
+
+// -------------------------------------------------------
+// /api/relay — GET state; POST {"mode":"auto|on|off"} and/or {"pre":ms,"hold":ms}
+// -------------------------------------------------------
+static void handleRelayGET() { sendJSON(200, relay_toJSON()); }
+
+static void handleRelayPOST() {
+    if (!relay_isEnabled()) { sendErr("relay not fitted (RELAY_PIN = -1)"); return; }
+    DynamicJsonDocument doc(256);
+    if (!parseBody(doc)) return;
+    if (doc.containsKey("pre") || doc.containsKey("hold")) {
+        const long pre  = doc["pre"]  | (long)relay_preMs();
+        const long hold = doc["hold"] | (long)relay_holdMs();
+        if (pre < 0 || hold < 0 || !relay_setTiming((uint32_t)pre, (uint32_t)hold)) {
+            sendErr("warm-up 0-30000 ms, hold 0-20000 ms");
+            return;
+        }
+    }
+    if (doc.containsKey("mode")) {
+        RelayMode m;
+        if (!relay_parseMode(String((const char*)(doc["mode"] | "")), m)) {
+            sendErr("mode: auto|on|off");
+            return;
+        }
+        relay_setMode(m);
+    }
+    sendJSON(200, relay_toJSON());
 }
 
 // -------------------------------------------------------
@@ -1090,6 +1125,8 @@ void web_setup() {
 
     route("/api/play",          HTTP_POST,   handlePlay,           R_WRITE);
     route("/api/stop",          HTTP_POST,   handleStop,           R_WRITE);
+    route("/api/relay",         HTTP_GET,    handleRelayGET,       R_AUTH);
+    route("/api/relay",         HTTP_POST,   handleRelayPOST,      R_WRITE);
 
 
     route("/api/course",        HTTP_GET,    handleCourseGET,      R_AUTH);
