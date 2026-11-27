@@ -67,6 +67,7 @@ void relay_stop() { audioPlaying = false; }
 // Schedule asks the relay whether a queued gong actually started.
 uint32_t relay_pendingTag() { return 0; }
 uint32_t relay_lastStartedTag() { return 0; }
+bool relay_wasStartedTag(uint32_t) { return false; }
 bool mp3_trackExists(uint8_t) { return true; }
 bool sys_fsOk() { return true; }
 void sys_lock() {}

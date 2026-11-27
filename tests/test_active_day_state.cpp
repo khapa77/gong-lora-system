@@ -47,6 +47,7 @@ void mp3_stop() { audioPlaying=false; }
 void relay_stop() { audioPlaying=false; }
 uint32_t relay_pendingTag() { return 0; }
 uint32_t relay_lastStartedTag() { return 0; }
+bool relay_wasStartedTag(uint32_t) { return false; }
 bool sys_fsOk() { return filesystemAvailable; }
 void sys_lock() { ++lockDepth; }
 void sys_unlock() { if (!lockDepth) std::abort(); --lockDepth; }

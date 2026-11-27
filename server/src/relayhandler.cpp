@@ -49,6 +49,10 @@ uint32_t  lastPollMs       = 0;
 uint32_t  tagCounter     = 0;
 uint32_t  pendingTag     = 0;   // тег трека, ждущего прогрева
 uint32_t  lastStartedTag = 0;   // тег последнего фактически стартовавшего трека
+// Кольцо последних стартов: пока расписание не подтвердило свой гонг, следом
+// может стартовать чужой трек — подтверждение не должно теряться.
+uint32_t  startedTags[4] = {0, 0, 0, 0};
+uint8_t   startedIdx     = 0;
 
 bool      ready = false;
 
@@ -89,18 +93,48 @@ bool timingValid(uint32_t pre, uint32_t hold) {
 
 // Настройки в NVS (раньше /relay.conf). true — все три поля записаны и
 // подтверждены; при ошибке ни одна настройка не считается сохранённой.
-// Пишет ВСЕ три ключа из аргументов (не из RAM), чтобы при отказе посередине
-// не осталось смеси новых и старых значений: RAM меняется только после успеха.
+// Вся конфигурация хранится ОДНИМ ключом "cfg" ("m:pre:hold"): одна запись и
+// один commit, поэтому отказа посередине быть не может и смесь новых и старых
+// значений после перезагрузки невозможна. Ключи mode/pre/hold читаются только
+// как legacy-формат прошлых прошивок этой же ветки.
 bool saveConfig(RelayMode m, uint32_t pre, uint32_t hold) {
     if (!kRelayPresent) return true;
     Preferences p;
     if (!p.begin("relay", false)) return false;
-    const bool ok = p.putUChar("mode", (uint8_t)m) != 0 &&
-                    p.putUInt("pre",  pre) != 0 &&
-                    p.putUInt("hold", hold) != 0;
+    char buf[48];
+    snprintf(buf, sizeof(buf), "%u:%lu:%lu", (unsigned)m, (unsigned long)pre, (unsigned long)hold);
+    const bool ok = p.putString("cfg", String(buf)) != 0;
     p.end();
-    if (!ok) logPrintf("[RELAY] NVS save FAILED (mode/pre/hold)\n");
+    if (!ok) logPrintf("[RELAY] NVS save FAILED (cfg)\n");
     return ok;
+}
+
+bool loadConfigRecord(RelayMode& m, uint32_t& pre, uint32_t& hold) {
+    Preferences p;
+    if (!p.begin("relay", true)) return false;
+    bool have = false;
+    const String cfg = p.getString("cfg", "");
+    if (cfg.length()) {
+        unsigned mm = 0; unsigned long pp = 0, hh = 0;
+        if (sscanf(cfg.c_str(), "%u:%lu:%lu", &mm, &pp, &hh) == 3 && mm <= 2) {
+            m = (RelayMode)mm;
+            pre = (uint32_t)pp;
+            hold = (uint32_t)hh;
+            have = true;
+        }
+    }
+    if (!have && p.isKey("mode") && p.isKey("pre") && p.isKey("hold")) {
+        // Legacy record of an earlier build: all three keys were written together.
+        const uint8_t mm = p.getUChar("mode", (uint8_t)RelayMode::AUTO);
+        if (mm <= (uint8_t)RelayMode::OFF) {
+            m = (RelayMode)mm;
+            pre  = p.getUInt("pre",  RELAY_DEFAULT_PRE_MS);
+            hold = p.getUInt("hold", RELAY_DEFAULT_HOLD_MS);
+            have = true;
+        }
+    }
+    p.end();
+    return have;
 }
 
 void applyTiming(uint32_t pre, uint32_t hold, const char* from) {
@@ -140,21 +174,14 @@ void importLegacyConfig() {
 }
 
 void loadConfig() {
-    Preferences p;
-    bool have = false;
-    if (p.begin("relay", true)) {
-        // All three keys are written together; a partial record is treated as
-        // absent so a half-written store cannot mix new mode with old timings.
-        have = p.isKey("mode") && p.isKey("pre") && p.isKey("hold");
-        if (have) {
-            const uint8_t m = p.getUChar("mode", (uint8_t)RelayMode::AUTO);
-            if (m <= (uint8_t)RelayMode::OFF) mode = (RelayMode)m;
-            applyTiming(p.getUInt("pre",  RELAY_DEFAULT_PRE_MS),
-                        p.getUInt("hold", RELAY_DEFAULT_HOLD_MS), "NVS");
-        }
-        p.end();
+    RelayMode m = RelayMode::AUTO;
+    uint32_t pre = RELAY_DEFAULT_PRE_MS, hold = RELAY_DEFAULT_HOLD_MS;
+    if (loadConfigRecord(m, pre, hold)) {
+        mode = m;
+        applyTiming(pre, hold, "NVS");
+    } else {
+        importLegacyConfig();
     }
-    if (!have) importLegacyConfig();
 }
 
 // true — декодер реально стартовал (файл найден и connecttoFS успешен).
@@ -166,7 +193,11 @@ bool startNow(uint8_t track, uint8_t vol, uint8_t loop, uint32_t tag) {
     // и реле с hold=0 успевает выключиться в момент старта.
     lastAudioPlaying = started;
     lastPollMs       = millis();
-    if (started) lastStartedTag = tag;
+    if (started) {
+        lastStartedTag = tag;
+        startedTags[startedIdx] = tag;
+        startedIdx = (uint8_t)((startedIdx + 1) % 4);
+    }
     return started;
 }
 
@@ -181,6 +212,8 @@ void relay_setup() {
     lastAudioPlaying = false;
     pendingTag       = 0;
     lastStartedTag   = 0;
+    startedIdx       = 0;
+    for (unsigned i = 0; i < 4; ++i) startedTags[i] = 0;
     lastActiveMs     = millis();
     lastPollMs       = millis();
     preMs            = RELAY_DEFAULT_PRE_MS;
@@ -336,6 +369,29 @@ bool relay_setMode(RelayMode m) {
     return true;
 }
 
+bool relay_setConfig(RelayMode m, uint32_t pre, uint32_t hold) {
+    if (!kRelayPresent) return false;
+    if (!timingValid(pre, hold)) return false;
+    // One NVS record for mode+pre+hold: либо применяется всё, либо ничего.
+    if (!saveConfig(m, pre, hold)) {
+        logPrintf("[RELAY] Config NOT changed: NVS save failed\n");
+        return false;
+    }
+    const bool longerWarmUp = pre > preMs;
+    mode   = m;
+    preMs  = pre;
+    holdMs = hold;
+    manualOn = false;
+    prewarm  = false;
+    if (pending && m != RelayMode::AUTO) { pending = false; startNow(pTrack, pVol, pLoop, pendingTag); }
+    lastActiveMs = millis();
+    if (longerWarmUp && relayOn && (uint32_t)(millis() - onSince) < preMs) warm = false;
+    relay_loop();
+    logPrintf("[RELAY] Config: mode=%s pre=%ums hold=%ums\n", modeName(mode),
+              (unsigned)preMs, (unsigned)holdMs);
+    return true;
+}
+
 bool relay_setTiming(uint32_t pre, uint32_t hold) {
     if (!kRelayPresent) return false;
     if (!timingValid(pre, hold)) return false;
@@ -366,6 +422,8 @@ bool relay_setManual(bool on) {
     return true;
 }
 
+RelayMode relay_currentMode() { return mode; }
+
 bool relay_parseMode(const String& s, RelayMode& out) {
     if (s == "auto") { out = RelayMode::AUTO; return true; }
     if (s == "on")   { out = RelayMode::ON;   return true; }
@@ -379,6 +437,11 @@ bool     relay_isEnabled()     { return kRelayPresent; }
 bool     relay_isPendingStart() { return pending; }
 uint32_t relay_pendingTag()    { return pending ? pendingTag : 0; }
 uint32_t relay_lastStartedTag() { return lastStartedTag; }
+bool     relay_wasStartedTag(uint32_t tag) {
+    if (tag == 0) return false;
+    for (unsigned i = 0; i < 4; ++i) if (startedTags[i] == tag) return true;
+    return false;
+}
 uint32_t relay_preMs()         { return preMs; }
 uint32_t relay_holdMs()        { return holdMs; }
 

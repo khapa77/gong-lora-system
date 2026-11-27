@@ -51,7 +51,10 @@ void   relay_cancelPrewarm();
 
 bool   relay_setMode(RelayMode mode);
 bool   relay_setTiming(uint32_t pre, uint32_t hold);
+// mode+pre+hold одной записью NVS (веб применяет комбинированный POST атомарно).
+bool   relay_setConfig(RelayMode mode, uint32_t pre, uint32_t hold);
 bool   relay_parseMode(const String& s, RelayMode& out);
+RelayMode relay_currentMode();
 
 // false — режим не AUTO (ON/OFF из веба главнее кнопки) или реле отключено.
 bool   relay_setManual(bool on);
@@ -61,6 +64,8 @@ bool     relay_isOn();
 // Звук играет или ждёт прогрева. Состояние звука берётся из кэша relay_loop
 // (не чаще RELAY_POLL_PERIOD_MS), а не из audioMtx на каждый вызов.
 bool     relay_isBusy();
+// true — тег принадлежит одному из последних реально стартовавших треков.
+bool     relay_wasStartedTag(uint32_t tag);
 bool     relay_isPendingStart();   // трек поставлен в очередь, но ещё не начался
 uint32_t relay_pendingTag();       // тег ожидающего трека (0 — очереди нет)
 uint32_t relay_lastStartedTag();   // тег последнего РЕАЛЬНО стартовавшего трека

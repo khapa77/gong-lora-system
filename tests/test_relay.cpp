@@ -119,17 +119,28 @@ static void test_setup_defaults() {
     CHECK(!relay_isBusy());
 }
 
+// The configuration lives in ONE NVS record ("cfg" = "m:pre:hold").
+struct SavedCfg { bool ok = false; unsigned mode = 99; unsigned long pre = 0, hold = 0; };
+static SavedCfg readCfg() {
+    SavedCfg c;
+    Preferences p;
+    if (!p.begin("relay", true)) return c;
+    const String v = p.getString("cfg", "");
+    if (v.length() && sscanf(v.c_str(), "%u:%lu:%lu", &c.mode, &c.pre, &c.hold) == 3) c.ok = true;
+    p.end();
+    return c;
+}
+
 static void test_setup_never_restores_always_on() {
     resetDevice();
     seedRelay(1 /*ON*/, 800, 3000);
     boot();
     CHECK(!relay_isOn());                        // Q2: OFF at boot
     CHECK_EQ(relayLevel(), kInactiveLevel);
-    // The persisted mode was corrected to AUTO.
-    Preferences p;
-    CHECK(p.begin("relay", true));
-    CHECK_EQ((int)p.getUChar("mode", 9), 0);
-    p.end();
+    // The persisted mode was corrected to AUTO in the single record.
+    const SavedCfg c = readCfg();
+    CHECK(c.ok);
+    CHECK_EQ((int)c.mode, 0);
 }
 
 static void test_setup_clamps_stored_timing() {
@@ -147,10 +158,9 @@ static void test_legacy_config_import() {
     CHECK_EQ((int)relay_preMs(), 1200);
     CHECK_EQ((int)relay_holdMs(), 4000);
     CHECK(host::files().count("/relay.conf") == 0);
-    Preferences p;
-    CHECK(p.begin("relay", true));
-    CHECK_EQ((int)p.getUChar("mode", 9), 2 /*OFF*/);
-    p.end();
+    const SavedCfg c = readCfg();
+    CHECK(c.ok);
+    CHECK_EQ((int)c.mode, 2 /*OFF*/);
 }
 
 static void test_play_cold_relay_waits_for_warmup() {
@@ -309,11 +319,10 @@ static void test_timing_validation() {
     CHECK(relay_setTiming(2000, 5000));
     CHECK_EQ((int)relay_preMs(), 2000);
     CHECK_EQ((int)relay_holdMs(), 5000);
-    Preferences p;
-    CHECK(p.begin("relay", true));
-    CHECK_EQ((int)p.getUInt("pre", 0), 2000);
-    CHECK_EQ((int)p.getUInt("hold", 0), 5000);
-    p.end();
+    const SavedCfg c = readCfg();
+    CHECK(c.ok);
+    CHECK_EQ((int)c.pre, 2000);
+    CHECK_EQ((int)c.hold, 5000);
 }
 
 static void test_mode_parsing() {
@@ -387,25 +396,26 @@ static void test_no_audio_still_releases_relay() {
 static void test_save_error_is_reported() {
     resetDevice();
     boot();
-    // The "pre" write fails: the setter must not claim success.
-    host::nvs().inject("set", "pre", host::Action::ErrorBefore);
+    // The single "cfg" record cannot be written: the setter must not claim success.
+    host::nvs().inject("set", "cfg", host::Action::ErrorBefore);
     CHECK(!relay_setTiming(2000, 4000));
     // RAM is NOT updated on a failed save: otherwise the device would run with a
     // new warm-up and, after reboot, silently fall back to a mixed configuration.
     CHECK_EQ((int)relay_preMs(), RELAY_DEFAULT_PRE_MS);
     CHECK_EQ((int)relay_holdMs(), RELAY_DEFAULT_HOLD_MS);
 
-    // A failure on the second key must not leave 2000/3000 behind either.
+    // A saved configuration stays fully intact when the update is rejected.
     resetDevice();
     boot();
-    host::nvs().inject("set", "hold", host::Action::ErrorBefore);
+    CHECK(relay_setTiming(900, 3500));
+    host::nvs().inject("set", "cfg", host::Action::ErrorBefore);
     CHECK(!relay_setTiming(2000, 4000));
-    CHECK_EQ((int)relay_preMs(), RELAY_DEFAULT_PRE_MS);
-    CHECK_EQ((int)relay_holdMs(), RELAY_DEFAULT_HOLD_MS);
-    resetDevice();                       // reboot: nothing half-written is loaded
-    boot();
-    CHECK_EQ((int)relay_preMs(), RELAY_DEFAULT_PRE_MS);
-    CHECK_EQ((int)relay_holdMs(), RELAY_DEFAULT_HOLD_MS);
+    CHECK_EQ((int)relay_preMs(), 900);
+    CHECK_EQ((int)relay_holdMs(), 3500);
+    host::nvs().reboot();                // power cycle: durable NVS survives
+    relay_setup();                       // module re-init only
+    CHECK_EQ((int)relay_preMs(), 900);   // no 2000/3500 mix
+    CHECK_EQ((int)relay_holdMs(), 3500);
 }
 
 static void test_failed_start_is_not_confirmed() {
@@ -447,7 +457,7 @@ static void test_longer_warmup_reapplies_to_warm_relay() {
 static void test_legacy_import_keeps_file_when_save_fails() {
     resetDevice();
     host::files()["/relay.conf"] = "{\"mode\":\"auto\",\"pre\":1200,\"hold\":4000}";
-    host::nvs().inject("set", "pre", host::Action::ErrorBefore);
+    host::nvs().inject("set", "cfg", host::Action::ErrorBefore);
     boot();
     CHECK_EQ((int)relay_preMs(), 1200);              // RAM has the imported value
     CHECK(host::files().count("/relay.conf") == 1);  // but the file was NOT deleted

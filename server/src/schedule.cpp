@@ -265,6 +265,17 @@ static void courseSuspend(const char* why, uint8_t reason = emergency::kNone) {
         emergency::recordFailure(reason);
     }
     if (courseGeneration != 0) {
+        // Never persist a calendar derived from a RAM copy that a concurrent
+        // Apply has already replaced in NVS.
+        course_store::CalendarState fresh;
+        std::string freshErr;
+        if (courseStore.loadCalendar(fresh, freshErr) &&
+            fresh.active_generation != courseCal.active_generation) {
+            logPrintf("[COURSE] suspend skipped: RAM generation %u, stored %u\n",
+                      (unsigned)courseCal.active_generation,
+                      (unsigned)fresh.active_generation);
+            return;
+        }
         course_store::CalendarState next = courseCal;
         // APPLIED stays set: the course is still published, just not running.
         next.flags = static_cast<uint8_t>(
@@ -463,6 +474,19 @@ static bool courseActivate(uint8_t day) {
     }
     course::Date today;
     if (!courseDateFromClock(today)) return false;
+    // The RAM calendar must still be the published generation: a failed Apply
+    // leaves it stale, and writing it back would resurrect the previous course.
+    course_store::CalendarState fresh;
+    std::string freshErr;
+    if (!courseStore.loadCalendar(fresh, freshErr) ||
+        fresh.active_generation != courseCal.active_generation) {
+        logPrintf("[COURSE] activate refused: RAM calendar generation %u is stale\n",
+                  (unsigned)courseCal.active_generation);
+        courseSuspended = true;
+        courseRunning = false;
+        executionRunning = false;
+        return false;
+    }
     course_store::CalendarState next = courseCal;
     next.day_index = day;
     next.activation_date = courseDateNumber(today);
@@ -851,7 +875,7 @@ static void commitFire(int key, uint32_t eventId, bool course, uint32_t generati
 static void resolveDeferredFire() {
     if (!deferred.active) return;
     // Стартовал ИМЕННО наш трек (тот же тег) — фиксируем.
-    if (relay_lastStartedTag() == deferred.tag) {
+    if (relay_wasStartedTag(deferred.tag)) {
         commitFire(deferred.key, deferred.eventId, deferred.course, deferred.generation,
                    deferred.day, deferred.date, deferred.timestamp);
         logPrintf("[SCHED] queued gong started — watermark committed\n");
@@ -1914,10 +1938,29 @@ bool sched_courseApply() {
     schedCourseError = "";
     std::string err;
     courseApplyInProgress = true;
-    if (!course_editor::applyDraft(err)) {
+    bool applied = false;
+    try {
+        applied = course_editor::applyDraft(err);
+    } catch (const std::exception& ex) {
+        // An allocation failure must not leave the flag set: that would stop the
+        // whole scheduler (including emergency) until reboot.
+        courseApplyInProgress = false;
+        return courseFail(std::string("draft apply failed: ") + ex.what());
+    } catch (...) {
+        courseApplyInProgress = false;
+        return courseFail("draft apply failed (unknown exception)");
+    }
+    if (!applied) {
         courseApplyInProgress = false;
         return courseFail(err);
     }
+
+    // Generation that applyDraft() has just published: the RAM copy must match it
+    // exactly, otherwise a stale calendar would be presented as applied.
+    course_editor::Info appliedInfo;
+    std::string infoErr;
+    uint32_t expectedGeneration = 0;
+    if (course_editor::info(appliedInfo, infoErr)) expectedGeneration = appliedInfo.activeGeneration;
     // Apply replaces the calendar binding with APPLIED: no day is bound and
     // nothing may ring until an explicit Activate. The whole switch — stop (which
     // also cancels an armed warm-up), calendar reload and RAM publication — is
@@ -1927,7 +1970,24 @@ bool sched_courseApply() {
     // the same recursive mutex, so the NVS read stays inside this section.
     sys_lock();
     relay_stop();
-    const bool reloaded = courseReloadCalendar();
+    // Explicit load instead of courseReloadCalendar(): the latter returns early
+    // (success) when hasCalendar() itself fails, which would mask a broken NVS.
+    course_store::CalendarState cal;
+    std::string reloadErr;
+    bool reloaded = false;
+    try {
+        reloaded = courseStore.loadCalendar(cal, reloadErr);
+    } catch (...) {
+        reloaded = false;
+        reloadErr = "exception while reading the calendar";
+    }
+    if (reloaded && cal.active_generation != expectedGeneration) {
+        logPrintf("[COURSE] apply: published generation %u but read back %u\n",
+                  (unsigned)expectedGeneration, (unsigned)cal.active_generation);
+        reloaded = false;
+        reloadErr = "generation mismatch after publish";
+    }
+    if (reloaded) courseCal = cal;
     if (!reloaded) {
         // The new generation is published in NVS but cannot be read back: do not
         // claim success and do not publish a stale RAM copy as if it were applied.
@@ -1937,7 +1997,8 @@ bool sched_courseApply() {
         courseDayValid = false;
         sys_unlock();
         courseApplyInProgress = false;
-        return courseFail("applied, but the new calendar could not be reloaded — reboot required");
+        return courseFail(std::string("applied, but the calendar could not be reloaded (") +
+                          reloadErr + ") — reboot required");
     }
     courseMode = true;
     waitingForCourse = false;

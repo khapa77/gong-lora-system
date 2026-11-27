@@ -1041,14 +1041,11 @@ static void handleRelayPOST() {
         }
     }
 
-    // Apply: timings first (validated), then the mode — a NVS failure is
-    // reported instead of pretending the setting was stored.
-    if ((hasPre || hasHold) && !relay_setTiming((uint32_t)pre, (uint32_t)hold)) {
-        sendErr("relay timing not saved (NVS)");
-        return;
-    }
-    if (hasMode && !relay_setMode(m)) {
-        sendErr("relay mode not saved (NVS)");
+    // Apply: mode and timings go through ONE NVS record, so a combined request
+    // can never be half-applied.
+    if (!hasMode) m = relay_currentMode();
+    if (!relay_setConfig(m, (uint32_t)pre, (uint32_t)hold)) {
+        sendErr("relay settings not saved (NVS)");
         return;
     }
     sendJSON(200, relay_toJSON());

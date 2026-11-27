@@ -999,6 +999,7 @@ async function stopAll() {
 // ─────────────────────────────────────────────
 // Relay (external amplifier)
 // ─────────────────────────────────────────────
+let relaySaveSeq = 0;
 function relayMarkDirty(el) { if (el) el.dataset.dirty = '1'; }
 
 function applyRelay(d) {
@@ -1060,7 +1061,10 @@ async function saveRelayTiming() {
   }
   const preEl = document.getElementById('relayPre'), holdEl = document.getElementById('relayHold');
   const sentPre = preEl ? preEl.value : null, sentHold = holdEl ? holdEl.value : null;
+  const seq = ++relaySaveSeq;
   const r = await postJSON('/api/relay', { pre, hold });
+  // A late answer of an older Save must not repaint a newer one.
+  if (seq !== relaySaveSeq) return;
   if (r && r.mode) {
     // Clear the dirty flag only if the field still holds what was sent: a value
     // typed while the request was in flight must survive the Save response.

@@ -74,6 +74,11 @@ void relay_stop() { audioPlaying = false; }
 // Schedule asks the relay whether a queued gong actually started.
 uint32_t relay_pendingTag() { return gRelayPendingTag; }
 uint32_t relay_lastStartedTag() { return gRelayLastTag; }
+// Ring of the last starts: a foreign start after ours must not hide ours.
+uint32_t gRelayPrevTag = 0;
+bool relay_wasStartedTag(uint32_t tag) {
+    return tag != 0 && (tag == gRelayLastTag || tag == gRelayPrevTag);
+}
 bool mp3_trackExists(uint8_t) { return true; }
 bool sys_fsOk() { return true; }
 void sys_lock() {}
@@ -137,6 +142,7 @@ static void resetRuntime() {
     emergency::resetRuntime();
     gRelayPendingTag = 0;
     gRelayLastTag = 0;
+    gRelayPrevTag = 0;
     gDeferCallback = false;
     onScheduleTrigger = audioCallback;
     audioCalls = 0;
@@ -1059,7 +1065,8 @@ static void test_deferred_fire_commits_after_start() {
     sched_check();                         // same minute: no repeat while queued
     check(audioCalls == 1, "no repeat while queued");
 
-    gRelayLastTag = gRelayPendingTag;      // the relay really started OUR track
+    gRelayPrevTag = gRelayPendingTag;      // our track really started
+    gRelayLastTag = gRelayPendingTag;
     gRelayPendingTag = 0;
     gDeferCallback = false;
     sched_check();                         // deferred fire resolves + commits
@@ -1092,6 +1099,35 @@ static void test_deferred_fire_not_credited_to_foreign_start() {
     sched_setup();
     sched_check();
     check(audioCalls == 1, "foreign start must not mark our event as fired");
+}
+
+static void test_own_start_survives_a_later_foreign_start() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 4, 0);
+    check(applyCourse(makeCourse(14)), "apply course");
+    sched_setup();
+    check(sched_activateDay(0), "activate day 0");
+
+    audioCalls = 0;
+    gDeferCallback = true;
+    sched_check();
+    const uint32_t ours = gRelayPendingTag;
+    check(ours != 0, "queued with a tag");
+
+    // OUR gong starts...
+    gRelayPrevTag = ours;
+    gRelayLastTag = ours;
+    gRelayPendingTag = 0;
+    gDeferCallback = false;
+    // ...and another track starts before the next sched_check().
+    gRelayPrevTag = ours;
+    gRelayLastTag = ours + 1;
+    sched_check();                       // must still credit our event
+
+    resetRuntime();
+    sched_setup();
+    sched_check();
+    check(audioCalls == 0, "our started gong stays marked after a later foreign start");
 }
 
 static void test_deferred_fire_cancelled_is_not_marked() {
@@ -1161,6 +1197,7 @@ int main() {
         {"deferred_fire_commits", test_deferred_fire_commits_after_start},
         {"deferred_fire_cancelled", test_deferred_fire_cancelled_is_not_marked},
         {"deferred_fire_foreign_start", test_deferred_fire_not_credited_to_foreign_start},
+        {"deferred_fire_survives_later_start", test_own_start_survives_a_later_foreign_start},
     };
     for (const TestCase& t : tests) {
         const int before = failures;
