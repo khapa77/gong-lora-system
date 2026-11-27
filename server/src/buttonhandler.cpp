@@ -19,6 +19,11 @@ struct Debounce {
     uint8_t  stable    = LEVEL_IDLE;
     uint32_t edgeAtMs  = 0;
 
+    void reset(uint8_t level, uint32_t now) {
+        raw = stable = level;
+        edgeAtMs = now;
+    }
+
     // true — stable только что изменился. Дельты беззнаковые: переполнение
     // millis() не влияет на результат.
     bool feed(uint8_t level, uint32_t now) {
@@ -39,7 +44,8 @@ Debounce debounce;
 
 bool     pressed      = false;  // идёт обработанное нажатие
 bool     fired        = false;  // это нажатие уже выполнило действие
-bool     pressWasStop = false;  // действие этого нажатия — стоп (решено при нажатии)
+bool     pressWasStop = false;  // действие этого нажатия — стоп
+bool     rawWasStop   = false;  // то же решение, снятое на СЫРОМ фронте нажатия
 uint32_t pressedAtMs  = 0;      // время сырого фронта нажатия
 ButtonHooks hooks{};
 bool     hooksValid   = false;
@@ -50,17 +56,18 @@ void button_setup(const ButtonHooks& port) {
     hooks      = port;
     hooksValid = port.audioPlaying && port.playManual && port.stopAudio;
 
+    // Идемпотентно: button_bootProbe() уже настроил вход, но button_setup()
+    // обязан работать и без него (host-тесты, повторная инициализация).
     pinMode(BUTTON_PIN, INPUT_PULLUP);
 
     const uint32_t now   = millis();
     const uint8_t  level = (uint8_t)digitalRead(BUTTON_PIN);
-    debounce.raw      = level;
-    debounce.stable   = level;
-    debounce.edgeAtMs = now;
+    debounce.reset(level, now);
 
     pressed      = false;
     fired        = false;
     pressWasStop = false;
+    rawWasStop   = false;
     pressedAtMs  = now;
     led_hint(LedHint::None);
 
@@ -103,7 +110,7 @@ void onStablePress() {
     pressed      = true;
     fired        = false;
     pressedAtMs  = debounce.edgeAtMs;   // сырой фронт нажатия, без задержки дребезга
-    pressWasStop = hooksValid && hooks.audioPlaying();
+    pressWasStop = rawWasStop;          // решение, снятое на сыром фронте
     led_hint(LedHint::None);
 }
 
@@ -119,14 +126,33 @@ void onStableRelease() {
         fired = false;
         return;
     }
-    if (pressWasStop) {
-        // Звук играл в момент нажатия и стих сам, пока кнопку держали:
-        // превращать это нажатие в запуск гонга нельзя.
-        logPrintf("[BTN] Released after %lums — audio ended while held, no action\n",
+
+    // Отпускание ровно на границе залипания: нажатие уже нельзя считать
+    // намеренным (иначе зажатый на минуту контакт дал бы гонг при отпускании).
+    if (heldMs >= BUTTON_STUCK_MS) {
+        logPrintf("[BTN] Released after %lums — abandoned (stuck contact?)\n",
                   (unsigned long)heldMs);
         pressWasStop = false;
         return;
     }
+
+    if (pressWasStop) {
+        pressWasStop = false;
+        if (heldMs >= BUTTON_STOP_HOLD_MS && hooksValid && hooks.audioPlaying()) {
+            // Отпускание пришлось ровно на порог: живой путь не увидел закрытый
+            // контакт на 1000-й мс, но жест был именно «стоп». Стоп выдаём
+            // только если звук ещё играет — иначе команда бессмысленна.
+            logPrintf("[BTN] Released at %lums — stop\n", (unsigned long)heldMs);
+            hooks.stopAudio();
+            return;
+        }
+        // Звук играл в момент нажатия и стих сам, пока кнопку держали:
+        // превращать это нажатие в запуск гонга нельзя.
+        logPrintf("[BTN] Released after %lums — audio ended while held, no action\n",
+                  (unsigned long)heldMs);
+        return;
+    }
+
     if (heldMs < BUTTON_PLAY_HOLD_MS) {
         logPrintf("[BTN] Released after %lums — below %lums threshold, ignored\n",
                   (unsigned long)heldMs, (unsigned long)BUTTON_PLAY_HOLD_MS);
@@ -141,28 +167,39 @@ void button_loop() {
     const uint32_t now   = millis();
     const uint8_t  level = (uint8_t)digitalRead(BUTTON_PIN);
 
-    if (debounce.feed(level, now)) {
+    const uint8_t previousRaw = debounce.raw;
+    const bool    changed     = debounce.feed(level, now);
+
+    // Решение «стоп или действие» принимается на СЫРОМ фронте нажатия, до
+    // дребезга: если трек закончился в первые 50 мс удержания, жест всё равно
+    // остаётся стопом, а не превращается в запуск.
+    if (previousRaw != LEVEL_PRESSED && debounce.raw == LEVEL_PRESSED)
+        rawWasStop = hooksValid && hooks.audioPlaying();
+
+    if (changed) {
         if (debounce.stable == LEVEL_PRESSED) onStablePress();
         else                                  onStableRelease();
+        // onStableRelease() мог только что выполнить действие — дальше в этом
+        // тике делать нечего.
+        return;
     }
 
-    // The action threshold is only evaluated while the contact is CLOSED. In the
-    // release debounce window (up to BUTTON_DEBOUNCE_MS) the stable level is
-    // still "pressed" while the raw level is already idle — evaluating here
-    // would fire a stop after the operator let go. Found by the
-    // audio_ends_during_hold host test.
+    // Живой путь: пороги считаются только пока контакт ЗАКРЫТ. В окне
+    // дребезга отпускания stable ещё «нажата», а raw уже «отпущена» — иначе
+    // стоп срабатывал бы после того, как оператор отпустил кнопку.
     if (!pressed || fired || debounce.raw != LEVEL_PRESSED) return;
 
     const uint32_t heldMs = (uint32_t)(now - pressedAtMs);
 
     if (pressWasStop) {
         // Стоп срабатывает сразу, не дожидаясь отпускания: оператору нужно
-        // немедленно прекратить звук.
-        if (heldMs >= BUTTON_STOP_HOLD_MS) {
+        // немедленно прекратить звук. Если трек уже закончился сам — стопить
+        // нечего, нажатие останется без последствий.
+        if (heldMs >= BUTTON_STOP_HOLD_MS && hooksValid && hooks.audioPlaying()) {
             fired = true;
             led_hint(LedHint::None);
             logPrintf("[BTN] Held %lums — stop\n", (unsigned long)heldMs);
-            if (hooksValid) hooks.stopAudio();
+            hooks.stopAudio();
         }
         return;
     }
@@ -186,22 +223,27 @@ void button_loop() {
 namespace {
 
 Debounce bootDebounce;
-bool     bootHeld     = false;  // кнопка зажата в первом сэмпле
-bool     bootGranted  = false;  // ResetGrant уже выдан (фронт, не уровень)
-uint32_t bootPressedAt = 0;
+bool     bootHeld      = false;  // кнопка зажата в первом сэмпле
+bool     bootGranted   = false;  // ResetGrant уже выдан (фронт, не уровень)
+bool     bootProbed    = false;
+uint32_t bootPressedAt = 0;      // момент подачи питания (первая строка setup)
 
 }  // namespace
 
-void button_bootBegin() {
+void button_bootProbe() {
+    // Вход обязан быть настроен ДО первого чтения: у ненастроенного вывода
+    // входной буфер может быть выключен, и digitalRead() вернёт 0 — при
+    // active-low это выглядело бы как вечно зажатая кнопка.
+    pinMode(BUTTON_PIN, INPUT_PULLUP);
+
     const uint32_t now   = millis();
     const uint8_t  level = (uint8_t)digitalRead(BUTTON_PIN);
 
-    bootDebounce.raw      = level;
-    bootDebounce.stable   = level;
-    bootDebounce.edgeAtMs = now;
-    bootHeld     = (level == LEVEL_PRESSED);
-    bootGranted  = false;
-    bootPressedAt = now;
+    bootDebounce.reset(level, now);
+    bootHeld      = (level == LEVEL_PRESSED);
+    bootGranted   = false;
+    bootProbed    = true;
+    bootPressedAt = now;   // отсчёт удержания идёт от подачи питания
 
     if (bootHeld)
         logPrintf("[BTN] GPIO%d held at power-on — keep holding %lus to reset the admin password\n",
@@ -211,13 +253,18 @@ void button_bootBegin() {
 bool button_bootHeldAtPowerOn() { return bootHeld; }
 
 BootGate button_bootTick() {
-    if (!bootHeld) return BootGate::Settled;
+    if (!bootProbed || !bootHeld) return BootGate::Settled;
 
     const uint32_t now = millis();
     bootDebounce.feed((uint8_t)digitalRead(BUTTON_PIN), now);
 
-    // Отпустили (в том числе раньше порога) — обычная загрузка.
+    // Стабильное отпускание — обычная загрузка.
     if (bootDebounce.stable == LEVEL_IDLE) return BootGate::Settled;
+
+    // Контакт уже разомкнут, но дребезг ещё не подтвердил отпускание: порог
+    // считать нельзя, иначе отпускание на 9990 мс дало бы сброс на 10000-й.
+    if (bootDebounce.raw != LEVEL_PRESSED)
+        return bootGranted ? BootGate::WaitRelease : BootGate::Holding;
 
     if (!bootGranted &&
         (uint32_t)(now - bootPressedAt) >= BUTTON_AUTH_RESET_HOLD_MS) {
@@ -236,7 +283,7 @@ void button_setup(const ButtonHooks& port) {
 
 void button_loop() {}
 
-void     button_bootBegin() {}
+void     button_bootProbe() {}
 
 bool     button_bootHeldAtPowerOn() { return false; }
 

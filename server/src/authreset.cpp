@@ -26,7 +26,7 @@ bool authreset_eraseCredentials() {
               AUTH_CONFIG_FILE,
               hadFile ? (fileRemoved ? "removed" : "REMOVE FAILED") : "absent");
 
-    // Файл — не ошибка: его может не быть штатно. Ошибкой считаем только
-    // неудачную очистку NVS, потому что именно она оставляет пароль рабочим.
-    return ok;
+    // Неудалённый legacy-файл делает сброс мнимым: loadAuth() при пустом NVS
+    // импортирует его обратно. Поэтому это ошибка, а не предупреждение.
+    return ok && fileRemoved;
 }

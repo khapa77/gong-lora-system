@@ -22,10 +22,10 @@
 | Что | Значение |
 |---|---|
 | Ветка | `standalone-max-button` (от `standalone-max` `c5cc32e`) |
-| Функция кнопки/LED | `e229f4a` |
-| Сборка | `pio run -e esp32dev`: SUCCESS, RAM 21.0 %, Flash 87.6 % |
+| Функция кнопки/LED | `e229f4a`, затем `fix(button)` по итогам независимого review (см. `git log`) |
+| Сборка | `pio run -e esp32dev`: SUCCESS, RAM 21.0 %, Flash 87.7 % |
 | Кнопка/LED в прошивке | **выключены** (`BUTTON_PIN`/`STATUS_LED_PIN` = -1) |
-| Host-тесты | button 273, store 509, editor 739, scheduler 255, course 578, active_day 275, emergency 58 — 0 падений |
+| Host-тесты | button 508, store 509, editor 739, scheduler 255, course 578, active_day 275, emergency 58 — 0 падений |
 | ASan/UBSan | button/scheduler/emergency/course — чисто |
 | Прошивка на устройстве | не менялась этой сессией |
 
@@ -36,16 +36,18 @@
 
 В `24447ef` в `server/platformio.ini` строка `board = esp32dev` заменена на
 `board = esp32-s3-devkitc-1`, а устройство по всем отчётам — ESP32-D0WD-V3
-(классический ESP32). На S3 GPIO32 не существует, а схема
+(классический ESP32). Номера GPIO32/13 существуют у обоих чипов, но прошивка,
+собранная под S3, на этой плате не запустится; схема
 (`footprint/schematic_netlist.md`) использует GPIO32 = BUTTON и GPIO13 = STATUS_LED.
 
 Пока плата не подтверждена оператором:
 
 - кнопка и LED выключены (`-1`), прошивка собирается и работает как раньше;
-- `#error` в `config.h` блокирует сборку `-DBUTTON_PIN=32` под S3-таргет;
-- включённый код проверен только компиляцией
-  (`PLATFORMIO_BUILD_FLAGS="-DBUTTON_PIN=13 -DSTATUS_LED_PIN=14" pio run -e esp32dev`);
-  такие пины — НЕ рекомендация, прошивать такую сборку нельзя.
+- `GONG_GPIO_VALID()` в `config.h` блокирует только несуществующие у целевого
+  чипа номера (S3: 22–25; ESP32: 40–48), а не номера 32/13;
+- включённый код проверен только компиляцией целевым тулчейном
+  (`PLATFORMIO_BUILD_FLAGS="-DBUTTON_PIN=32 -DSTATUS_LED_PIN=13" pio run -e esp32dev`,
+  SUCCESS; собранный binary предназначен для S3 и на плату не прошивается).
 
 Решение (возврат `board = esp32dev` или подтверждение S3) принимает оператор:
 это изменение аппаратной конфигурации.

@@ -28,24 +28,20 @@ static bool buttonAudioPlaying() { return mp3_isPlaying(); }
 static void buttonStopAudio() { mp3_stop(); }
 
 static void buttonPlayManual(uint8_t track, uint8_t vol, uint8_t loop) {
-    // Diagnostic only: the playback path itself is byte-for-byte the web one.
-    // A configured track that is not on LittleFS would otherwise be a silent
-    // no-op with no explanation anywhere.
-    if (!mp3_trackExists(track)) {
-        logPrintf("[BTN] Manual gong: track %u is not on LittleFS — nothing to play\n",
-                  (unsigned)track);
-        return;
-    }
+    // Тот же путь, что /api/play: никаких собственных проверок поверх
+    // mp3_manualPlay(), иначе кнопка и веб разойдутся (например, когда файла
+    // запрошенного трека нет, а _startPlay() играет DEFAULT_TRACK).
     if (!mp3_manualPlay(track, vol, loop))
         logPrintf("[BTN] Manual gong: request rejected (track %u)\n", (unsigned)track);
 }
 
 // What "the schedule cannot run" means on this architecture. Deliberately does
 // NOT include "no Wi-Fi": the device rings from DS3231/NTP-corrected time and
-// LittleFS alone. `waiting` (no published course, no legacy binding) is a real
-// failure to ring and must be visible from across the room.
+// LittleFS alone. `waiting` (no course published) and `APPLIED` (published but
+// not activated) both mean nothing will ring, and sched_isRunning() is the one
+// predicate that covers them together with file errors and emergency.
 static bool ledProblem() {
-    return !timeIsSet() || !sys_fsOk() || sched_hasError() || sched_waitingForCourse();
+    return !timeIsSet() || !sys_fsOk() || sched_hasError() || !sched_isRunning();
 }
 
 // -------------------------------------------------------
@@ -98,6 +94,12 @@ static void controlTask(void*) {
 }
 
 void setup() {
+    // The physical button is sampled FIRST, before Serial, the core-dump check
+    // and the LittleFS mount: the 10 s recovery hold is counted from power-on,
+    // not from the end of initialisation, and the pin must be configured
+    // (INPUT_PULLUP) before the first digitalRead().
+    button_bootProbe();
+
     Serial.begin(115200);
     delay(500);
 
@@ -141,11 +143,9 @@ void setup() {
                   "(that would erase whatever is left). Re-upload with: pio run -t uploadfs\n");
 
     // ── Status LED + power-on recovery hold ────────────────────────────────
-    // LED first: it is the only feedback during the hold (10 s is long enough
-    // to need it). The gate only counts a hold that starts at power-on, so a
-    // normal boot with a released button costs one pin sample.
+    // The pin was already sampled in the first line of setup(); the gate runs
+    // here because the reset deletes /auth.conf and needs a mounted LittleFS.
     led_setup();
-    button_bootBegin();
     if (button_bootHeldAtPowerOn()) {
         bool resetDone = false;
         const uint32_t gateStart = millis();
@@ -153,8 +153,9 @@ void setup() {
         for (;;) {
             const BootGate gate = button_bootTick();
             if (gate == BootGate::ResetGrant && !resetDone) {
-                web_resetAuth();       // only the auth NVS namespace + /auth.conf
-                resetDone = true;
+                // true only if the credentials really went away; the result is
+                // reported instead of assuming success.
+                resetDone = web_resetAuth();
             }
             if (gate == BootGate::Settled) break;
             // A contact stuck closed must not hold the device in setup()
@@ -166,15 +167,15 @@ void setup() {
                           (unsigned long)(BUTTON_STUCK_MS / 1000));
                 break;
             }
-            // The task watchdog is armed later in setup(), so this feed is a
-            // no-op today; it keeps the loop correct if it is ever moved.
-            esp_task_wdt_reset();
+            // The task watchdog is armed later in setup(); feeding it before
+            // that is an error return, not a feed. Only feed when registered.
+            if (esp_task_wdt_status(nullptr) == ESP_OK) esp_task_wdt_reset();
             vTaskDelay(pdMS_TO_TICKS(CONTROL_PERIOD_MS));
         }
         led_set(false);
         logPrintf("[BTN] Power-on hold finished: %s\n",
                   resetDone ? "admin password reset, web UI is open"
-                            : "released before the threshold, nothing changed");
+                            : "credentials NOT reset (released early or erase failed)");
     }
 
     const ButtonHooks buttonHooks = { buttonAudioPlaying, buttonPlayManual, buttonStopAudio };
@@ -211,7 +212,10 @@ static void serialCommands() {
         char c = (char)Serial.read();
         if (c == '\r' || c == '\n') {
             buf[len] = '\0';
-            if (len && strcmp(buf, AUTH_RESET_CMD) == 0) web_resetAuth();
+            if (len && strcmp(buf, AUTH_RESET_CMD) == 0) {
+                if (!web_resetAuth())
+                    logPrintf("[MAIN] Serial reset-auth FAILED — credentials may survive\n");
+            }
             else if (len) logPrintf("[MAIN] Unknown serial command '%s' (known: " AUTH_RESET_CMD ")\n", buf);
             len = 0;
         } else if (len < sizeof(buf) - 1) {

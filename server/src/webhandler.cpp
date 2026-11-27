@@ -222,7 +222,7 @@ static void loadAuth() {
     logPrintf("[AUTH] %s\n", authEnabled ? "enabled" : "disabled");
 }
 
-void web_resetAuth() {
+bool web_resetAuth() {
     // Стирается только состояние авторизации (NVS "auth" + /auth.conf);
     // WiFi, курсы, расписания, RTC и громкость не затрагиваются — см. authreset.h.
     const bool erased = authreset_eraseCredentials();
@@ -231,7 +231,8 @@ void web_resetAuth() {
     authHashHex  = "";
     authCacheValid = false;
     logPrintf("[AUTH] Admin password %s — web UI is open until a new one is set\n",
-              erased ? "RESET" : "reset FAILED (NVS)");
+              erased ? "RESET" : "RESET FAILED (credentials may survive)");
+    return erased;
 }
 
 static bool constTimeEqual(const uint8_t* a, const uint8_t* b, size_t n) {

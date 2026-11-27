@@ -14,10 +14,14 @@ static inline void writeLed(bool on) {
 static bool (*problemSource)() = nullptr;
 static LedHint hint = LedHint::None;
 
-// Накопленное время работы модуля. Считается разницей (now - last), поэтому
-// покрывает полный оборот millis() без скачков фазы.
-static uint32_t phaseMs  = 0;
-static uint32_t lastMs   = 0;
+// Фаза индикации. Хранится как остаток по модулю LED_HEARTBEAT_MS (он кратен
+// LED_ERROR_PERIOD_MS), поэтому и heartbeat, и 5 Гц считаются из одного числа,
+// а накопитель не может переполниться вовсе: разница millis() складывается уже
+// приведённой к периоду. Ни 32-, ни 64-битного «счётчика с начала работы» нет.
+static_assert(LED_HEARTBEAT_MS % LED_ERROR_PERIOD_MS == 0,
+              "LED_HEARTBEAT_MS must be a multiple of LED_ERROR_PERIOD_MS");
+static uint32_t phaseMs = 0;   // всегда < LED_HEARTBEAT_MS
+static uint32_t lastMs  = 0;
 
 void led_set(bool on) {
 #if STATUS_LED_PIN >= 0
@@ -43,9 +47,10 @@ void led_setup() {
 
 void led_loop() {
 #if STATUS_LED_PIN >= 0
-    const uint32_t now = millis();
-    phaseMs += (uint32_t)(now - lastMs);
+    const uint32_t now   = millis();
+    const uint32_t delta = (uint32_t)(now - lastMs);
     lastMs = now;
+    phaseMs = (uint32_t)((phaseMs + (delta % LED_HEARTBEAT_MS)) % LED_HEARTBEAT_MS);
 
     if (hint == LedHint::ButtonReady) {
         writeLed(true);

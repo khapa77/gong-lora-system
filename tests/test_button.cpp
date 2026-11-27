@@ -474,7 +474,7 @@ static void freshBoot(bool pressed) {
     host::pins().reset();
     host::pins().inLevel[BUTTON_PIN] = pressed ? LOW : HIGH;
     host::ticks() = 500;
-    button_bootBegin();
+    button_bootProbe();
 }
 
 // Drives the gate like main.cpp does and returns true when a reset was granted.
@@ -681,14 +681,16 @@ static void test_authreset_file_absent() {
     CHECK(!nvsHas("auth/enabled"));
 }
 
-static void test_authreset_survives_file_error() {
+static void test_authreset_unremovable_legacy_file() {
     seedNvs();
     host::files().clear();
-    host::files()["/auth.conf"] = "{}";
+    host::files()["/auth.conf"] = "{\"enabled\":true,\"hash\":\"deadbeef\"}";
     host::fs().removeErrorPath = "/auth.conf"; // LittleFS refuses the remove
-    CHECK(authreset_eraseCredentials());       // NVS still cleared → success
-    CHECK(!nvsHas("auth/enabled"));
-    CHECK(host::files().count("/auth.conf") == 1);   // logged, not fatal
+    // Clearing NVS is not enough: loadAuth() would re-import this file and the
+    // password would come back. The call must report failure.
+    CHECK(!authreset_eraseCredentials());
+    CHECK(!nvsHas("auth/enabled"));            // NVS part still cleared
+    CHECK(host::files().count("/auth.conf") == 1);
     host::fs().removeErrorPath.clear();
 }
 
@@ -702,6 +704,117 @@ static void test_authreset_nvs_failure() {
     CHECK(!authreset_eraseCredentials());
     CHECK(nvsHas("auth/enabled"));
     CHECK(nvsHas("auth/hash"));
+}
+
+static void test_led_phase_rollover() {
+    // More than 2^32 ms of uptime must not reset the phase (the reviewer's
+    // original accumulator was uint32 and wrapped after 49.7 days).
+    freshLed(1000, false);
+    uint64_t elapsed = 0;
+    uint32_t t = 1000;
+    for (int i = 0; i < 220; ++i) {
+        t += 21474836u;                // ~2^32 / 200
+        elapsed += 21474836u;
+        ledSampleAt(t);
+        CHECK(ledOn() == ((elapsed % LED_HEARTBEAT_MS) < LED_HEARTBEAT_ON_MS));
+    }
+    CHECK(elapsed > 0xFFFFFFFFull);
+    for (int i = 0; i < 300; ++i) {
+        t += 10;
+        elapsed += 10;
+        ledSampleAt(t);
+        if (ledOn() != ((elapsed % LED_HEARTBEAT_MS) < LED_HEARTBEAT_ON_MS)) {
+            CHECK(false);
+            return;
+        }
+    }
+    CHECK(true);
+}
+
+// ── Boundary cases found by the independent review ─────────────────────────
+
+static void test_probe_configures_pin() {
+    freshBoot(false);
+    // The input must be configured before the first digitalRead(): an
+    // unconfigured pad can read 0 regardless of the real level.
+    CHECK_EQ((int)host::pins().mode[BUTTON_PIN], (int)INPUT_PULLUP);
+}
+
+static void test_boot_released_just_before_threshold() {
+    // Released at 9990 ms, first gate sample at 10000 ms: the debounced level is
+    // still "pressed", but the contact is open — no reset may be granted.
+    freshBoot(true);
+    host::ticks() = 500 + 9990;
+    releaseAt(500 + 9990);
+    bool granted = false;
+    for (uint32_t at = 500 + 10000; at <= 500 + 10100; at += 10) {
+        host::ticks() = at;
+        if (button_bootTick() == BootGate::ResetGrant) granted = true;
+    }
+    CHECK(!granted);
+}
+
+static void test_stop_release_exactly_at_threshold() {
+    freshButton();
+    rig.audio = true;
+    pressAt(1000);
+    tickAt(1051);                     // debounced press, stop gesture armed
+    tickAt(1990);                     // 990 ms held, still no stop
+    CHECK_EQ(rig.stops, 0);
+    releaseAt(2000);                  // release exactly at the 1000 ms boundary
+    tickAt(2051);                     // debounced release
+    CHECK_EQ(rig.stops, 1);
+    CHECK_EQ(rig.plays, 0);
+}
+
+static void test_release_before_stop_threshold() {
+    freshButton();
+    rig.audio = true;
+    pressAt(1000);
+    tickAt(1051);
+    releaseAt(1900);                  // only 900 ms
+    tickAt(1951);
+    CHECK_EQ(rig.stops, 0);
+    CHECK_EQ(rig.plays, 0);
+}
+
+static void test_stop_not_fired_after_release() {
+    // The original defect: a tick during the release debounce window saw the
+    // stable level still "pressed" and fired a stop after the operator let go.
+    freshButton();
+    rig.audio = true;
+    pressAt(1000);
+    tickAt(1051);
+    releaseAt(1055);                  // let go immediately
+    tickAt(1105);                     // debounced release
+    CHECK_EQ(rig.stops, 0);
+    CHECK_EQ(rig.plays, 0);
+}
+
+static void test_stuck_release_exactly_at_limit() {
+    freshButton();
+    const uint32_t t = 1000;
+    pressAt(t);
+    tickAt(t + 51);
+    releaseAt(t + BUTTON_STUCK_MS);   // exactly 60 s
+    tickAt(t + BUTTON_STUCK_MS + 51);
+    CHECK_EQ(rig.plays, 0);           // abandoned, not a gong
+    CHECK_EQ(rig.stops, 0);
+}
+
+static void test_eof_during_debounce_stays_stop() {
+    // Audio was playing at the raw press edge but finished inside the 50 ms
+    // debounce window: the gesture must stay a stop, never become a gong.
+    freshButton();
+    rig.audio = true;
+    pressAt(1000);
+    rig.audio = false;                // decoder finished before the debounce
+    tickAt(1051);                     // stable press; rawWasStop was captured at 1000
+    tickAt(4000);
+    releaseAt(4010);
+    tickAt(4061);
+    CHECK_EQ(rig.plays, 0);
+    CHECK_EQ(rig.stops, 0);           // nothing is playing → no bogus stop either
 }
 
 // ── main ───────────────────────────────────────────────────────────────────
@@ -727,15 +840,23 @@ int main() {
         { "led_hint_priority",              test_led_hint_priority },
         { "led_no_false_ready",             test_led_no_false_ready },
         { "led_wrap",                       test_led_wrap },
+        { "led_phase_rollover",             test_led_phase_rollover },
         { "led_direct_override",            test_led_overrides_direct },
+        { "probe_configures_pin",           test_probe_configures_pin },
         { "boot_no_press",                  test_boot_no_press },
         { "boot_thresholds",                test_boot_thresholds },
+        { "boot_release_just_before",       test_boot_released_just_before_threshold },
         { "boot_early_release_and_bounce",  test_boot_early_release_and_bounce },
         { "no_gong_after_reset",            test_no_gong_after_reset },
+        { "stop_release_at_threshold",      test_stop_release_exactly_at_threshold },
+        { "release_before_stop_threshold",  test_release_before_stop_threshold },
+        { "stop_not_fired_after_release",   test_stop_not_fired_after_release },
+        { "stuck_release_at_limit",         test_stuck_release_exactly_at_limit },
+        { "eof_during_debounce",            test_eof_during_debounce_stays_stop },
         { "authreset_scope",                test_authreset_scope },
         { "authreset_idempotent",           test_authreset_idempotent },
         { "authreset_file_absent",          test_authreset_file_absent },
-        { "authreset_survives_file_error",  test_authreset_survives_file_error },
+        { "authreset_unremovable_file",     test_authreset_unremovable_legacy_file },
         { "authreset_nvs_failure",          test_authreset_nvs_failure },
     };
     for (const Case& c : cases) {

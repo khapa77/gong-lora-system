@@ -96,14 +96,17 @@ static_assert(VOLUME_LIMIT >= 1 && VOLUME_LIMIT <= 30, "VOLUME_LIMIT: 1–30");
 //   удержание ≥ BUTTON_AUTH_RESET_HOLD_MS при включении питания → сброс
 //                                               пароля админки (см. authreset.h).
 //
-// ВАЖНО: -1 = кнопка отключена, и это значение ПО УМОЛЧАНИЮ. Плата, на
-// которой снята принципиальная схема (footprint/schematic_netlist.md —
-// GPIO32 = BUTTON, GPIO13 = STATUS_LED), это классический ESP32
-// (ESP32-D0WD-V3), а текущий env собран под esp32-s3-devkitc-1, где GPIO32
-// не существует. Пока целевая плата не подтверждена, конфигурация GPIO не
-// активируется. Включение — после сверки платы, вместе с нейтральным пином:
+// ВАЖНО: -1 = кнопка отключена, и это значение ПО УМОЛЧАНИЮ. Схема
+// (footprint/schematic_netlist.md: GPIO32 = BUTTON, GPIO13 = STATUS_LED) снята
+// с классического ESP32 (ESP32-D0WD-V3), а server/platformio.ini собирает
+// esp32-s3-devkitc-1 — двоичная прошивка другого чипа на этой плате не
+// запустится. Пока целевая плата не подтверждена, конфигурация GPIO не
+// активируется. Включение — после сверки платы:
 //   build_flags = -DBUTTON_PIN=32 -DSTATUS_LED_PIN=13
 // (см. docs/BUTTON_LED.md, раздел «Аппаратная конфигурация»).
+// Номера 32 и 13 существуют и на ESP32, и на ESP32-S3: проверка
+// GONG_GPIO_VALID() ниже отсекает только несуществующие у целевого чипа
+// выводы, а не подтверждает разводку конкретной платы.
 #ifndef BUTTON_PIN
 #define BUTTON_PIN              -1
 #endif
@@ -138,8 +141,19 @@ static_assert(VOLUME_LIMIT >= 1 && VOLUME_LIMIT <= 30, "VOLUME_LIMIT: 1–30");
 #define BUTTON_LOOP             1
 #endif
 
-#if BUTTON_PIN >= 0 && defined(CONFIG_IDF_TARGET_ESP32S3) && BUTTON_PIN > 21
-#error "BUTTON_PIN does not exist on ESP32-S3: confirm the board in server/platformio.ini first"
+// Проверка номера вывода для ЦЕЛЕВОГО чипа (не рекомендация пина и не
+// подтверждение разводки платы): ESP32-S3 — GPIO0–21 и 26–48 (номера 22–25 не
+// существуют), классический ESP32 — GPIO0–39. -1 = функция выключена.
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#define GONG_GPIO_VALID(pin) ((pin) >= 0 && (pin) <= 48 && !((pin) >= 22 && (pin) <= 25))
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+#define GONG_GPIO_VALID(pin) ((pin) >= 0 && (pin) <= 39)
+#else
+#define GONG_GPIO_VALID(pin) ((pin) >= 0)
+#endif
+
+#if BUTTON_PIN >= 0 && !GONG_GPIO_VALID(BUTTON_PIN)
+#error "BUTTON_PIN does not exist on the configured target: confirm the board in server/platformio.ini first"
 #endif
 
 // ── Светодиод состояния (statusled.h) ─────────────────────────────────────
@@ -168,8 +182,8 @@ static_assert(LED_HEARTBEAT_ON_MS > 0 && LED_HEARTBEAT_ON_MS < LED_HEARTBEAT_MS,
               "LED_HEARTBEAT_ON_MS must be a short flash inside the period");
 static_assert(LED_ERROR_PERIOD_MS >= 20, "LED_ERROR_PERIOD_MS: too fast to see");
 
-#if STATUS_LED_PIN >= 0 && defined(CONFIG_IDF_TARGET_ESP32S3) && STATUS_LED_PIN > 21
-#error "STATUS_LED_PIN does not exist on ESP32-S3: confirm the board in server/platformio.ini first"
+#if STATUS_LED_PIN >= 0 && !GONG_GPIO_VALID(STATUS_LED_PIN)
+#error "STATUS_LED_PIN does not exist on the configured target: confirm the board in server/platformio.ini first"
 #endif
 
 // ── Расписание ────────────────────────────────────────────────────────────
