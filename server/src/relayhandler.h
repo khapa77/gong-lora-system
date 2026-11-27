@@ -32,13 +32,20 @@ enum class RelayMode : uint8_t { AUTO, ON, OFF };
 void   relay_setup();    // до первого relay_play(); настройки из NVS
 void   relay_loop();     // каждый проход controlTask
 
-void   relay_play(uint8_t track, uint8_t vol, uint8_t loop);
+// true — звук начался сразу; false — трек поставлен в очередь на прогрев
+// (расписание использует это, чтобы не отмечать событие прозвучавшим раньше
+// фактического старта).
+bool   relay_play(uint8_t track, uint8_t vol, uint8_t loop);
 void   relay_stop();     // стоп звука + отмена отложенного старта
 
 // Предвключение (только AUTO): включить реле за msUntilGong до гонга, чтобы к
 // его времени внешний усилитель был готов. Вызывается раз в секунду, пока до
 // события <= preMs (+1 с на секундную точность часов).
 void   relay_prewarm(uint32_t msUntilGong);
+
+// Снять активное предвключение (цель исчезла/сменилась). Manual/play/hold не
+// затрагиваются.
+void   relay_cancelPrewarm();
 
 bool   relay_setMode(RelayMode mode);
 bool   relay_setTiming(uint32_t pre, uint32_t hold);
@@ -49,7 +56,11 @@ bool   relay_setManual(bool on);
 bool   relay_isManual();
 
 bool     relay_isOn();
-bool     relay_isBusy();       // звук играет или ждёт окончания прогрева
+// Звук играет или ждёт прогрева. Состояние звука берётся из кэша relay_loop
+// (не чаще RELAY_POLL_PERIOD_MS), а не из audioMtx на каждый вызов.
+bool     relay_isBusy();
+bool     relay_isPendingStart();   // трек поставлен в очередь, но ещё не начался
+uint32_t relay_startCount();       // монотонный счётчик фактических стартов
 bool     relay_isEnabled();    // RELAY_PIN >= 0
 uint32_t relay_preMs();
 uint32_t relay_holdMs();

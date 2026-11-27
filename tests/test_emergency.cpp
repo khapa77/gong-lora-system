@@ -48,11 +48,12 @@ static int lastVolume = 0;
 static int rebootCalls = 0;
 static bool audioPlaying = false;
 
-static void audioCallback(uint8_t track, uint8_t plays, uint8_t volume) {
+static bool audioCallback(uint8_t track, uint8_t plays, uint8_t volume) {
     ++audioCalls;
     lastTrack = track;
     lastPlays = plays;
     lastVolume = volume;
+    return true;
 }
 
 static void rebootCallback() { ++rebootCalls; }
@@ -63,6 +64,9 @@ void mp3_stop() { audioPlaying = false; }
 // schedule.cpp routes "stop everything" through relay_stop() (it also cancels a
 // pending warm-up); the relay itself is exercised by run_relay_tests.py.
 void relay_stop() { audioPlaying = false; }
+// Schedule asks the relay whether a queued gong actually started.
+uint32_t relay_startCount() { return 0; }
+bool relay_isPendingStart() { return false; }
 bool mp3_trackExists(uint8_t) { return true; }
 bool sys_fsOk() { return true; }
 void sys_lock() {}

@@ -552,6 +552,8 @@ static String statusJSON() {
     // Relay state is a pre-built JSON object: one place owns the field list.
     doc["relay"] = serialized(relay_toJSON());
 
+    if (doc.overflowed())
+        logPrintf("[WEB] status JSON overflow — some fields are missing\n");
     String s;
     serializeJson(doc, s);
     return s;
@@ -1006,21 +1008,48 @@ static void handleRelayPOST() {
     if (!relay_isEnabled()) { sendErr("relay not fitted (RELAY_PIN = -1)"); return; }
     DynamicJsonDocument doc(256);
     if (!parseBody(doc)) return;
-    if (doc.containsKey("pre") || doc.containsKey("hold")) {
-        const long pre  = doc["pre"]  | (long)relay_preMs();
-        const long hold = doc["hold"] | (long)relay_holdMs();
-        if (pre < 0 || hold < 0 || !relay_setTiming((uint32_t)pre, (uint32_t)hold)) {
+
+    // Validate the whole request BEFORE applying anything: a partial update of a
+    // rejected request must not leave the device in a half-changed state.
+    const bool hasMode = doc.containsKey("mode");
+    const bool hasPre  = doc.containsKey("pre");
+    const bool hasHold = doc.containsKey("hold");
+
+    RelayMode m = RelayMode::AUTO;
+    if (hasMode) {
+        if (!doc["mode"].is<const char*>() ||
+            !relay_parseMode(String((const char*)doc["mode"]), m)) {
+            sendErr("mode: auto|on|off");
+            return;
+        }
+    }
+
+    long pre  = (long)relay_preMs();
+    long hold = (long)relay_holdMs();
+    if (hasPre) {
+        if (!doc["pre"].is<long>()) { sendErr("warm-up: integer ms 0-30000"); return; }
+        pre = doc["pre"].as<long>();
+    }
+    if (hasHold) {
+        if (!doc["hold"].is<long>()) { sendErr("hold: integer ms 0-20000"); return; }
+        hold = doc["hold"].as<long>();
+    }
+    if (hasPre || hasHold) {
+        if (pre < 0 || hold < 0 || pre > (long)RELAY_MAX_PRE_MS || hold > (long)RELAY_MAX_HOLD_MS) {
             sendErr("warm-up 0-30000 ms, hold 0-20000 ms");
             return;
         }
     }
-    if (doc.containsKey("mode")) {
-        RelayMode m;
-        if (!relay_parseMode(String((const char*)(doc["mode"] | "")), m)) {
-            sendErr("mode: auto|on|off");
-            return;
-        }
-        relay_setMode(m);
+
+    // Apply: timings first (validated), then the mode — a NVS failure is
+    // reported instead of pretending the setting was stored.
+    if ((hasPre || hasHold) && !relay_setTiming((uint32_t)pre, (uint32_t)hold)) {
+        sendErr("relay timing not saved (NVS)");
+        return;
+    }
+    if (hasMode && !relay_setMode(m)) {
+        sendErr("relay mode not saved (NVS)");
+        return;
     }
     sendJSON(200, relay_toJSON());
 }

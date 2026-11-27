@@ -903,8 +903,32 @@ static void test_led_relay_hint() {
     releaseAt(2000 + 8600);
     tickAt(2000 + 8600 + BUTTON_DEBOUNCE_MS + 1);
     CHECK_EQ(rig.toggles, 1);
-    ledSampleAt(2000 + 8700);
-    CHECK(!ledOn() || ledOn());         // hint cleared; heartbeat phase decides
+    // Hint is gone: at this phase the heartbeat is off (elapsed 9651 ms → 651 in
+    // the 3000 ms period), so a lit LED would mean the hint leaked.
+    ledSampleAt(2000 + 8600 + BUTTON_DEBOUNCE_MS + 1);
+    CHECK(!ledOn());
+}
+
+static void test_busy_appears_during_idle_hold() {
+    // The press started while idle; the schedule armed a warm-up mid-hold.
+    freshButton();
+    pressAt(1000);
+    tickAt(1051);
+    rig.pending = true;
+    releaseAt(4000);                    // 3 s hold, but the device is busy now
+    tickAt(4051);
+    CHECK_EQ(rig.plays, 0);             // the queued gong is not replaced
+    CHECK_EQ(rig.toggles, 0);
+
+    // Same for the relay gesture: audio started while the button was held.
+    freshButton();
+    pressAt(1000);
+    tickAt(1051);
+    rig.audio = true;
+    releaseAt(9000);
+    tickAt(9051);
+    CHECK_EQ(rig.toggles, 0);           // no relay toggle during playback
+    CHECK_EQ(rig.plays, 0);
 }
 
 // ── main ───────────────────────────────────────────────────────────────────
@@ -925,6 +949,7 @@ int main() {
         { "relay_ignored_when_not_auto",    test_relay_toggle_ignored_when_not_auto },
         { "stop_while_warmup_pending",      test_stop_while_warmup_pending },
         { "led_relay_hint",                 test_led_relay_hint },
+        { "busy_appears_during_hold",       test_busy_appears_during_idle_hold },
         { "stuck_contact",                  test_stuck_contact },
         { "pressed_at_setup",               test_pressed_at_setup },
         { "web_starts_audio_while_held",    test_web_starts_audio_while_held },

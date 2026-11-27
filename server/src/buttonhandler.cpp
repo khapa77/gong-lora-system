@@ -155,6 +155,15 @@ void onStableRelease() {
         return;
     }
 
+    // Нажатие началось в простое, но за время удержания устройство стало busy
+    // (расписание, веб или прогрев запустили звук): не подменяем чужой гонг и не
+    // переключаем реле. Классификация STOP по сырому фронту уже отработана выше.
+    if (hooksValid && hooks.busy()) {
+        logPrintf("[BTN] Released after %lums — device became busy while held, ignored\n",
+                  (unsigned long)heldMs);
+        return;
+    }
+
     if (heldMs >= BUTTON_RELAY_HOLD_MS) {
         // Переключение реле без звука (только в режиме AUTO; режим ON/OFF из
         // веба главнее — модуль сам вернёт false).

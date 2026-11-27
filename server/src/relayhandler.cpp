@@ -18,6 +18,7 @@ RelayMode mode    = RelayMode::AUTO;
 uint32_t  preMs   = RELAY_DEFAULT_PRE_MS;
 uint32_t  holdMs  = RELAY_DEFAULT_HOLD_MS;
 bool      relayOn = false;
+bool      warm    = false;      // реле проработало >= preMs; сбрасывается при OFF
 uint32_t  onSince = 0;          // от него считается прогрев
 
 // Отложенный старт: реле включено, ждём preMs от onSince.
@@ -36,8 +37,17 @@ uint32_t  lastActiveMs = 0;     // последний момент, когда �
 bool      manualOn    = false;
 uint32_t  manualSince = 0;
 
-uint32_t  lastPollMs  = 0;
-bool      ready       = false;
+// Наблюдение за звуком: единственное место, где вызывается mp3_isPlaying()
+// (audioMtx), и не чаще RELAY_POLL_PERIOD_MS. Состояние читают LED, JSON,
+// кнопка и hold-таймер — без повторного входа в аудиомьютекс.
+bool      lastAudioPlaying = false;
+uint32_t  lastPollMs       = 0;
+
+// Монотонный счётчик фактических стартов: расписание отличает «поставлено в
+// очередь» от «звук реально начался».
+uint32_t  startCount = 0;
+
+bool      ready = false;
 
 const char* modeName(RelayMode m) {
     switch (m) {
@@ -55,7 +65,7 @@ const char* stateName() {
     if (manualOn)                 return "manual";
     if (pending)                  return "warmup";
     if (prewarm)                  return "prewarm";
-    if (mp3_isPlaying())          return "playing";
+    if (lastAudioPlaying)         return "playing";
     if (relayOn)                  return "hold";
     return "idle";
 }
@@ -64,6 +74,7 @@ void drive(bool on) {
     if (!kRelayPresent) return;
     if (on == relayOn) return;
     relayOn = on;
+    warm    = false;            // физическое переключение: прогрев считается заново
     if (on) onSince = millis();
     digitalWrite(RELAY_PIN, (on != (bool)RELAY_ACTIVE_LOW) ? HIGH : LOW);
     logPrintf("[RELAY] %s\n", on ? "ON" : "OFF");
@@ -73,16 +84,18 @@ bool timingValid(uint32_t pre, uint32_t hold) {
     return pre <= RELAY_MAX_PRE_MS && hold <= RELAY_MAX_HOLD_MS;
 }
 
-// Настройки в NVS (раньше /relay.conf): uploadfs перезаписывает весь раздел
-// LittleFS и раньше сбрасывал их вместе со всем остальным.
-void saveConfig() {
-    if (!kRelayPresent) return;
+// Настройки в NVS (раньше /relay.conf). true — все три поля записаны и
+// подтверждены; при ошибке ни одна настройка не считается сохранённой.
+bool saveConfig() {
+    if (!kRelayPresent) return true;
     Preferences p;
-    if (!p.begin("relay", false)) return;
-    p.putUChar("mode", (uint8_t)mode);
-    p.putUInt("pre",  preMs);
-    p.putUInt("hold", holdMs);
+    if (!p.begin("relay", false)) return false;
+    const bool ok = p.putUChar("mode", (uint8_t)mode) != 0 &&
+                    p.putUInt("pre",  preMs) != 0 &&
+                    p.putUInt("hold", holdMs) != 0;
     p.end();
+    if (!ok) logPrintf("[RELAY] NVS save FAILED (mode/pre/hold)\n");
+    return ok;
 }
 
 void applyTiming(uint32_t pre, uint32_t hold, const char* from) {
@@ -96,7 +109,8 @@ void applyTiming(uint32_t pre, uint32_t hold, const char* from) {
     holdMs = hold <= (uint32_t)RELAY_MAX_HOLD_MS ? hold : (uint32_t)RELAY_MAX_HOLD_MS;
 }
 
-// Одноразовый импорт /relay.conf (формат 6.1). Ошибки не фатальны.
+// Одноразовый импорт /relay.conf (формат 6.1). Файл удаляется только после
+// подтверждённой записи в NVS: иначе настройки терялись бы при отказе записи.
 void importLegacyConfig() {
     File f = LittleFS.open(RELAY_CONFIG_FILE, "r");
     if (!f) return;
@@ -104,15 +118,18 @@ void importLegacyConfig() {
     const bool ok = !deserializeJson(doc, f);
     f.close();
     if (!ok) {
-        logPrintf("[RELAY] %s is corrupt — using defaults\n", RELAY_CONFIG_FILE);
-        LittleFS.remove(RELAY_CONFIG_FILE);
+        logPrintf("[RELAY] %s is corrupt — using defaults (file kept)\n", RELAY_CONFIG_FILE);
         return;
     }
     RelayMode m = RelayMode::AUTO;
     if (relay_parseMode(String((const char*)(doc["mode"] | "auto")), m)) mode = m;
     applyTiming(doc["pre"]  | RELAY_DEFAULT_PRE_MS,
                 doc["hold"] | RELAY_DEFAULT_HOLD_MS, RELAY_CONFIG_FILE);
-    saveConfig();
+    if (!saveConfig()) {
+        logPrintf("[RELAY] %s import not committed — file kept for the next boot\n",
+                  RELAY_CONFIG_FILE);
+        return;
+    }
     LittleFS.remove(RELAY_CONFIG_FILE);
     logPrintf("[RELAY] Imported %s into NVS\n", RELAY_CONFIG_FILE);
 }
@@ -121,7 +138,9 @@ void loadConfig() {
     Preferences p;
     bool have = false;
     if (p.begin("relay", true)) {
-        have = p.isKey("mode");
+        // All three keys are written together; a partial record is treated as
+        // absent so a half-written store cannot mix new mode with old timings.
+        have = p.isKey("mode") && p.isKey("pre") && p.isKey("hold");
         if (have) {
             const uint8_t m = p.getUChar("mode", (uint8_t)RelayMode::AUTO);
             if (m <= (uint8_t)RelayMode::OFF) mode = (RelayMode)m;
@@ -137,21 +156,25 @@ void startNow(uint8_t track, uint8_t vol, uint8_t loop) {
     mp3_setVolume(vol);
     mp3_play(track, loop);
     lastActiveMs = millis();
+    ++startCount;
 }
 
 }  // namespace
 
 void relay_setup() {
-    pending      = false;
-    prewarm      = false;
-    manualOn     = false;
-    relayOn      = false;
-    lastActiveMs = millis();
-    lastPollMs   = millis();
-    preMs        = RELAY_DEFAULT_PRE_MS;
-    holdMs       = RELAY_DEFAULT_HOLD_MS;
-    mode         = RelayMode::AUTO;
-    ready        = false;
+    pending          = false;
+    prewarm          = false;
+    manualOn         = false;
+    relayOn          = false;
+    warm             = false;
+    lastAudioPlaying = false;
+    startCount       = 0;
+    lastActiveMs     = millis();
+    lastPollMs       = millis();
+    preMs            = RELAY_DEFAULT_PRE_MS;
+    holdMs           = RELAY_DEFAULT_HOLD_MS;
+    mode             = RelayMode::AUTO;
+    ready            = false;
 
     if (!kRelayPresent) {
         ready = true;   // все вызовы ниже работают как no-op
@@ -171,7 +194,8 @@ void relay_setup() {
     // только явная команда оператора после старта.
     if (mode == RelayMode::ON) {
         mode = RelayMode::AUTO;
-        saveConfig();
+        if (!saveConfig())
+            logPrintf("[RELAY] Could not persist AUTO after reboot — mode is RAM-only\n");
         logPrintf("[RELAY] Always ON was persisted — not restored after reboot (safe OFF)\n");
     }
 
@@ -181,19 +205,20 @@ void relay_setup() {
               (unsigned)preMs, (unsigned)holdMs);
 }
 
-void relay_play(uint8_t track, uint8_t vol, uint8_t loop) {
-    if (!kRelayPresent) {          // без реле — ровно тот же звук, без задержки
+bool relay_play(uint8_t track, uint8_t vol, uint8_t loop) {
+    if (!kRelayPresent || !ready) {   // без реле — тот же звук, без задержки
         startNow(track, vol, loop);
-        return;
+        return true;
     }
-    if (!ready) { startNow(track, vol, loop); return; }
 
     // ON/OFF — реле от звука не зависит, ждать нечего.
-    if (mode != RelayMode::AUTO) { startNow(track, vol, loop); return; }
+    if (mode != RelayMode::AUTO) { startNow(track, vol, loop); return true; }
 
     drive(true);
     const uint32_t onFor = (uint32_t)(millis() - onSince);
-    if (!pending && onFor >= preMs) { startNow(track, vol, loop); return; }
+    // `warm` снимает зависимость от переполнения onSince: реле, проработавшее
+    // дольше preMs, остаётся готовым до физического выключения.
+    if (!pending && (warm || onFor >= preMs)) { startNow(track, vol, loop); return true; }
 
     // Повторный запрос во время ожидания заменяет параметры, но не сдвигает
     // момент старта: таймер идёт от включения реле.
@@ -203,6 +228,7 @@ void relay_play(uint8_t track, uint8_t vol, uint8_t loop) {
     pending = true;
     pTrack = track; pVol = vol; pLoop = loop;
     lastActiveMs = millis();
+    return false;   // поставлено в очередь, звук ещё не начался
 }
 
 void relay_stop() {
@@ -210,7 +236,11 @@ void relay_stop() {
     // когда прогрев закончится.
     pending      = false;
     mp3_stop();
-    lastActiveMs = millis();
+    // mp3_stop() is synchronous: refresh the cached observation instead of
+    // reporting "busy" for up to one poll period after a stop.
+    lastAudioPlaying = false;
+    lastPollMs       = millis();
+    lastActiveMs     = millis();
 }
 
 void relay_prewarm(uint32_t msUntilGong) {
@@ -226,16 +256,31 @@ void relay_prewarm(uint32_t msUntilGong) {
     drive(true);
 }
 
-void relay_loop() {
-    if (!kRelayPresent || !ready) return;
+void relay_cancelPrewarm() {
+    // Снимается только предвключение: manual/play/hold живут своей жизнью.
+    prewarm = false;
+}
 
+void relay_loop() {
     const uint32_t now = millis();
+
+    // Единственное наблюдение за звуком (audioMtx), не чаще RELAY_POLL_PERIOD_MS.
+    // Работает и без реле: состояние нужно кнопке и LED.
+    if ((uint32_t)(now - lastPollMs) >= RELAY_POLL_PERIOD_MS) {
+        lastAudioPlaying = mp3_isPlaying();
+        lastPollMs = now;
+    }
+    if (lastAudioPlaying) lastActiveMs = now;
+
+    if (!kRelayPresent || !ready) return;
 
     if (pending && (uint32_t)(now - onSince) >= preMs) {
         pending = false;
+        warm    = true;
         startNow(pTrack, pVol, pLoop);
     }
     if (prewarm && (int32_t)(now - prewarmUntil) >= 0) prewarm = false;
+    if (relayOn && !warm && (uint32_t)(now - onSince) >= preMs) warm = true;
 
     switch (mode) {
         case RelayMode::ON:  drive(true);  return;
@@ -248,13 +293,10 @@ void relay_loop() {
         manualOn = false;
         logPrintf("[RELAY] Manual ON expired after %u min — back to auto\n",
                   (unsigned)(RELAY_MANUAL_MAX_MS / 60000));
-        // lastActiveMs не трогаем: если звука давно не было — отпустит сразу.
+        // lastActiveMs уже обновлён выше, если звук играл.
     }
 
-    if (!pending && (uint32_t)(now - lastPollMs) < RELAY_POLL_PERIOD_MS) return;
-    lastPollMs = now;
-
-    if (pending || prewarm || mp3_isPlaying()) {
+    if (pending || prewarm || lastAudioPlaying) {
         lastActiveMs = now;
         drive(true);
     } else if (relayOn && (uint32_t)(now - lastActiveMs) >= holdMs) {
@@ -270,10 +312,10 @@ bool relay_setMode(RelayMode m) {
     // Уход из AUTO во время ожидания — звук запускаем сразу, а не теряем.
     if (pending && m != RelayMode::AUTO) { pending = false; startNow(pTrack, pVol, pLoop); }
     lastActiveMs = millis();   // AUTO после ON — отпустить через holdMs, не мгновенно
-    saveConfig();
+    const bool saved = saveConfig();
     relay_loop();
-    logPrintf("[RELAY] Mode = %s\n", modeName(mode));
-    return true;
+    logPrintf("[RELAY] Mode = %s%s\n", modeName(mode), saved ? "" : " (NVS save FAILED)");
+    return saved;
 }
 
 bool relay_setTiming(uint32_t pre, uint32_t hold) {
@@ -281,9 +323,10 @@ bool relay_setTiming(uint32_t pre, uint32_t hold) {
     if (!timingValid(pre, hold)) return false;
     preMs  = pre;
     holdMs = hold;
-    saveConfig();
-    logPrintf("[RELAY] Timing: pre=%ums hold=%ums\n", (unsigned)preMs, (unsigned)holdMs);
-    return true;
+    const bool saved = saveConfig();
+    logPrintf("[RELAY] Timing: pre=%ums hold=%ums%s\n", (unsigned)preMs, (unsigned)holdMs,
+              saved ? "" : " (NVS save FAILED)");
+    return saved;
 }
 
 bool relay_setManual(bool on) {
@@ -304,15 +347,18 @@ bool relay_parseMode(const String& s, RelayMode& out) {
     return false;
 }
 
-bool     relay_isManual()  { return manualOn; }
-bool     relay_isOn()      { return relayOn; }
-bool     relay_isEnabled() { return kRelayPresent; }
-uint32_t relay_preMs()     { return preMs; }
-uint32_t relay_holdMs()    { return holdMs; }
+bool     relay_isManual()      { return manualOn; }
+bool     relay_isOn()          { return relayOn; }
+bool     relay_isEnabled()     { return kRelayPresent; }
+bool     relay_isPendingStart() { return pending; }
+uint32_t relay_startCount()    { return startCount; }
+uint32_t relay_preMs()         { return preMs; }
+uint32_t relay_holdMs()        { return holdMs; }
 
 bool relay_isBusy() {
-    if (!kRelayPresent) return mp3_isPlaying();
-    return pending || mp3_isPlaying();
+    // Кэш, а не прямой mp3_isPlaying(): иначе кнопка/JSON/LED дёргали бы
+    // audioMtx на каждом тике.
+    return pending || lastAudioPlaying;
 }
 
 String relay_toJSON() {

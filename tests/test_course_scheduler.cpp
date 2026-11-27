@@ -48,7 +48,18 @@ void convertToJson(const String& src, ArduinoJson::JsonVariant dst) {
 static unsigned int audioCalls = 0;
 static bool audioPlaying = false;
 
-static void audioCallback(uint8_t, uint8_t, uint8_t) { ++audioCalls; }
+// Relay stubs: the scheduler must commit a gong only after the audio really
+// started. gRelayStarts simulates relay_startCount(), gRelayPending the queue.
+static uint32_t gRelayStarts = 0;
+static bool     gRelayPending = false;
+static bool     gDeferCallback = false;
+
+static bool audioCallback(uint8_t, uint8_t, uint8_t) {
+    ++audioCalls;
+    if (gDeferCallback) { gRelayPending = true; return false; }
+    ++gRelayStarts;
+    return true;
+}
 
 void logPrintf(const char*, ...) {}
 bool mp3_isPlaying() { return audioPlaying; }
@@ -56,6 +67,9 @@ void mp3_stop() { audioPlaying = false; }
 // schedule.cpp routes "stop everything" through relay_stop() (it also cancels a
 // pending warm-up); the relay itself is exercised by run_relay_tests.py.
 void relay_stop() { audioPlaying = false; }
+// Schedule asks the relay whether a queued gong actually started.
+uint32_t relay_startCount() { return gRelayStarts; }
+bool relay_isPendingStart() { return gRelayPending; }
 bool mp3_trackExists(uint8_t) { return true; }
 bool sys_fsOk() { return true; }
 void sys_lock() {}
@@ -117,6 +131,9 @@ static void resetRuntime() {
     courseStore = course_store::CourseStore();
     courseStore.invalidateTemplates();
     emergency::resetRuntime();
+    gRelayStarts = 0;
+    gRelayPending = false;
+    gDeferCallback = false;
     onScheduleTrigger = audioCallback;
     audioCalls = 0;
     audioPlaying = false;
@@ -1023,6 +1040,54 @@ static void test_msToNext_ignores_disabled_and_handles_emergency() {
     check(sched_msToNext() == -1, "emergency: no pre-warm");
 }
 
+// ── Deferred fire (relay warm-up) ──────────────────────────────────────────
+static void test_deferred_fire_commits_after_start() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 4, 0);
+    check(applyCourse(makeCourse(14)), "apply course");
+    sched_setup();
+    check(sched_activateDay(0), "activate day 0");
+
+    audioCalls = 0;
+    gDeferCallback = true;                 // relay is cold: the gong is queued
+    sched_check();
+    check(audioCalls == 1, "trigger invoked");
+    sched_check();                         // same minute: no repeat while queued
+    check(audioCalls == 1, "no repeat while queued");
+
+    ++gRelayStarts;                        // the relay really started the track
+    gRelayPending = false;
+    gDeferCallback = false;
+    sched_check();                         // deferred fire resolves + commits
+
+    resetRuntime();                        // reboot in the same minute
+    sched_setup();
+    sched_check();
+    check(audioCalls == 0, "watermark committed: no replay after reboot");
+}
+
+static void test_deferred_fire_cancelled_is_not_marked() {
+    freshEnvironment();
+    host::clock() = atDate(2026, 11, 22, 4, 0);
+    check(applyCourse(makeCourse(14)), "apply course");
+    sched_setup();
+    check(sched_activateDay(0), "activate day 0");
+
+    audioCalls = 0;
+    gDeferCallback = true;
+    sched_check();                         // queued
+    check(audioCalls == 1, "trigger invoked");
+
+    gRelayPending = false;                 // STOP cancelled the warm-up
+    gDeferCallback = false;
+    sched_check();                         // resolves as cancelled, no watermark
+
+    resetRuntime();                        // reboot in the same minute
+    sched_setup();
+    sched_check();
+    check(audioCalls == 1, "cancelled gong is not marked: it rings after reboot");
+}
+
 int main() {
     TestCase tests[] = {
         {"boot_applied_no_calls", test_boot_applied_no_calls},
@@ -1065,6 +1130,8 @@ int main() {
         {"audit_import_during_running", test_audit_import_during_running},
         {"ms_to_next_lifecycle", test_msToNext_lifecycle},
         {"ms_to_next_disabled_emergency", test_msToNext_ignores_disabled_and_handles_emergency},
+        {"deferred_fire_commits", test_deferred_fire_commits_after_start},
+        {"deferred_fire_cancelled", test_deferred_fire_cancelled_is_not_marked},
     };
     for (const TestCase& t : tests) {
         const int before = failures;

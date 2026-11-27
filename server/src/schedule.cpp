@@ -27,7 +27,7 @@
 // are sized by the file (dayPoolSize) so they fit a fragmented heap.
 #define SCHED_JSON_CAPACITY 12288
 
-void (*onScheduleTrigger)(uint8_t track, uint8_t loop, uint8_t vol) = nullptr;
+bool (*onScheduleTrigger)(uint8_t track, uint8_t loop, uint8_t vol) = nullptr;
 
 static ScheduleEntry entries[MAX_SCHEDULES];
 static uint8_t       count   = 0;
@@ -793,13 +793,84 @@ static void checkDateAdvance() {
 // Fire one entry: callback + anti-double-trigger bookkeeping + M-14 persisted
 // watermark, shared by the normal per-second check and the boot catch-up.
 // -------------------------------------------------------
+// Событие, поставленное в очередь на прогрев реле. Watermark пишется только
+// после фактического старта звука, поэтому reboot в окне прогрева не «съедает»
+// гонг, а STOP до старта не помечает событие прозвучавшим.
+struct DeferredFire {
+    bool     active   = false;
+    int      key      = -1;
+    uint32_t baseline = 0;      // relay_startCount() на момент постановки
+    uint32_t eventId  = 0;
+    uint32_t generation = 0;
+    uint8_t  day      = 0;
+    uint32_t date     = 0;
+    time_t   timestamp = 0;
+    bool     course   = false;
+};
+static DeferredFire deferred;
+
+// Пишет anti-double-trigger bookkeeping (RAM + NVS). Вынесено из doFire, чтобы
+// отложенный гонг фиксировался тем же кодом после реального старта.
+static void commitFire(int key, uint32_t eventId, bool course, uint32_t generation,
+                       uint8_t day, uint32_t date, time_t timestamp) {
+    lastFiredKey    = key;
+    lastFiredMillis = millis();
+    if (course) {
+        courseLastFire.generation = generation;
+        courseLastFire.day_index  = day;
+        courseLastFire.minute     = (uint16_t)key;
+        courseLastFire.event_id   = eventId;
+        courseLastFire.date       = date;
+        courseLastFire.timestamp  = (uint32_t)timestamp;
+        courseLastFireValid       = true;
+        std::string err;
+        if (!courseStore.saveLastFire(courseLastFire, err))
+            logPrintf("[COURSE] last_fire save failed: %s\n", err.c_str());
+    } else if ((uint32_t)timestamp > TIME_VALID_EPOCH) {
+        lastFireTs = (uint32_t)timestamp;
+        firePrefs.putUInt("lastfire", lastFireTs);
+    }
+}
+
+// Разрешение отложенного гонга: старт произошёл (счётчик стартов изменился) —
+// фиксируем; старт отменён (pending снят STOP/Apply/Activate) — не фиксируем.
+static void resolveDeferredFire() {
+    if (!deferred.active) return;
+    if (deferred.baseline != relay_startCount()) {
+        commitFire(deferred.key, deferred.eventId, deferred.course, deferred.generation,
+                   deferred.day, deferred.date, deferred.timestamp);
+        logPrintf("[SCHED] queued gong started — watermark committed\n");
+        deferred.active = false;
+        return;
+    }
+    if (!relay_isPendingStart()) {
+        logPrintf("[SCHED] queued gong cancelled before start — not marked as fired\n");
+        deferred.active = false;
+    }
+}
+
 static void doFire(const ScheduleEntry& e, const char* why) {
     logPrintf("[SCHED] %s %02d:%02d '%s' track=%d loop=%d vol=%d\n",
               why, e.hour, e.minute, e.description.c_str(), e.track, e.loop, e.vol);
-    if (onScheduleTrigger) onScheduleTrigger(e.track, e.loop, e.vol);
+    const bool started = onScheduleTrigger ? onScheduleTrigger(e.track, e.loop, e.vol) : false;
     lastFiredKey    = e.hour * 60 + e.minute;
     lastFiredMillis = millis();
     const time_t now = time(nullptr);
+    if (!started) {
+        // Реле ещё греется: звук начнётся через preMs. Идентичность запоминаем,
+        // persisted watermark — только после старта.
+        deferred.active     = true;
+        deferred.key        = e.hour * 60 + e.minute;
+        deferred.baseline   = relay_startCount();
+        deferred.eventId    = e.id;
+        deferred.course     = courseMode;
+        deferred.generation = courseGeneration;
+        deferred.day        = courseDay;
+        deferred.date       = courseDateNumber(courseDateFromClockNow());
+        deferred.timestamp  = now;
+        logPrintf("[SCHED] queued for relay warm-up — watermark deferred\n");
+        return;
+    }
     if (courseMode) {
         // Sound first, then the persisted identity. A failed write is logged
         // and the sound is not repeated (see spec 7).
@@ -932,6 +1003,9 @@ long sched_msToNext() {
 // in the web UI — see timesync.h.
 // -------------------------------------------------------
 void sched_check() {
+    // A deferred gong (relay warm-up) becomes fired only when the audio really
+    // started, or is dropped when the start was cancelled.
+    resolveDeferredFire();
     // A failed day load either arms a delayed reboot or enters EMERGENCY.
     // The reboot timer must run even while the normal scheduler is not ready.
     emergency::tickReboot();
@@ -1817,11 +1891,15 @@ bool sched_courseApply() {
     std::string err;
     if (!course_editor::applyDraft(err)) return courseFail(err);
     // Apply replaces the calendar binding with APPLIED: no day is bound and
-    // nothing may ring until an explicit Activate.
-    // relay_stop() (not mp3_stop()) so an armed warm-up cannot fire later.
+    // nothing may ring until an explicit Activate. The whole switch — stop (which
+    // also cancels an armed warm-up), calendar reload and RAM publication — is
+    // done under ONE sys_lock: otherwise controlTask could run sched_check()
+    // between the stop and `courseRunning=false` and arm a gong from the old
+    // schedule, which would then start after Apply. courseReloadCalendar() takes
+    // the same recursive mutex, so the NVS read stays inside this section.
+    sys_lock();
     relay_stop();
     courseReloadCalendar();
-    sys_lock();
     courseMode = true;
     waitingForCourse = false;
     courseGeneration = courseCal.active_generation;

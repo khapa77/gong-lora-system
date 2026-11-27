@@ -45,12 +45,16 @@ bool mp3_isPlaying() { return audioPlaying; }
 void mp3_stop() { audioPlaying=false; }
 // schedule.cpp calls relay_stop() for a full stop (see run_relay_tests.py).
 void relay_stop() { audioPlaying=false; }
+uint32_t relay_startCount() { return 0; }
+bool relay_isPendingStart() { return false; }
 bool sys_fsOk() { return filesystemAvailable; }
 void sys_lock() { ++lockDepth; }
 void sys_unlock() { if (!lockDepth) std::abort(); --lockDepth; }
 bool mp3_trackExists(uint8_t track) { return track==1 || track==2; }
-static void audioCallback(uint8_t track,uint8_t,uint8_t) {
-    ++audioCalls; audioTracks.push_back(track);
+static bool audioCallback(uint8_t track,uint8_t,uint8_t) {
+    ++audioCalls;
+    audioTracks.push_back(track);
+    return true;
 }
 static time_t at(int day,int hour=12,int minute=0,int second=0) {
     struct tm t={}; t.tm_year=126; t.tm_mon=10; t.tm_mday=day;

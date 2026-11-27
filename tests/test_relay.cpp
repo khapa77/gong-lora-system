@@ -331,6 +331,7 @@ static void test_busy_semantics() {
     relay_play(1, 30, 1);                        // pending warm-up
     CHECK(relay_isBusy());
     advance(800);
+    advance(60);                                 // let the 50 ms audio poll see it
     CHECK(relay_isBusy());                       // playing
     playing = false;
     advance(3100 + 100);                         // hold expired
@@ -378,6 +379,71 @@ static void test_no_audio_still_releases_relay() {
     CHECK(!relayActive());
 }
 
+// ── Review regressions ─────────────────────────────────────────────────────
+
+static void test_save_error_is_reported() {
+    resetDevice();
+    boot();
+    // The "pre" write fails: the setter must not claim success.
+    host::nvs().inject("set", "pre", host::Action::ErrorBefore);
+    CHECK(!relay_setTiming(2000, 4000));
+    // The in-RAM value is applied, but the caller was told the store failed.
+    CHECK_EQ((int)relay_preMs(), 2000);
+}
+
+static void test_legacy_import_keeps_file_when_save_fails() {
+    resetDevice();
+    host::files()["/relay.conf"] = "{\"mode\":\"auto\",\"pre\":1200,\"hold\":4000}";
+    host::nvs().inject("set", "pre", host::Action::ErrorBefore);
+    boot();
+    CHECK_EQ((int)relay_preMs(), 1200);              // RAM has the imported value
+    CHECK(host::files().count("/relay.conf") == 1);  // but the file was NOT deleted
+
+    // Next boot (fault cleared) imports it again and only then drops the file.
+    resetDevice();
+    host::files()["/relay.conf"] = "{\"mode\":\"auto\",\"pre\":1200,\"hold\":4000}";
+    boot();
+    CHECK_EQ((int)relay_preMs(), 1200);
+    CHECK(host::files().count("/relay.conf") == 0);
+}
+
+static void test_manual_does_not_hide_audio_hold() {
+    resetDevice();
+    boot();
+    CHECK(relay_setManual(true));
+    advance(1000);                       // relay is warm
+    relay_play(1, 30, 1);
+    CHECK_EQ(starts, 1);
+    playing = true;
+    advance(5000);                       // audio plays while manual is on
+    playing = false;
+    advance(60);                         // poll sees the end of the track
+    CHECK(relay_setManual(false));       // manual released right after EOF
+    advance(10);
+    CHECK(relayActive());                // hold window still protects the amp
+    advance((uint32_t)RELAY_DEFAULT_HOLD_MS + 200);
+    CHECK(!relayActive());
+}
+
+static void test_prewarm_can_be_cancelled() {
+    resetDevice();
+    boot();
+    relay_prewarm(20000);
+    CHECK(relayActive());
+    relay_cancelPrewarm();               // target disappeared
+    advance((uint32_t)RELAY_DEFAULT_HOLD_MS + 200);
+    CHECK(!relayActive());
+}
+
+static void test_play_reports_deferral() {
+    resetDevice();
+    boot();
+    CHECK(!relay_play(1, 30, 1));        // queued for warm-up
+    advance(800);
+    CHECK(relay_play(2, 30, 1));         // warm now: starts synchronously
+    CHECK_EQ((int)lastTrack, 2);
+}
+
 int main() {
     struct Case { const char* name; void (*fn)(); };
     const Case cases[] = {
@@ -403,6 +469,11 @@ int main() {
         { "millis_wrap",                     test_millis_wrap },
         { "json_fields",                     test_json_fields },
         { "no_audio_releases_relay",         test_no_audio_still_releases_relay },
+        { "save_error_reported",             test_save_error_is_reported },
+        { "legacy_import_keeps_file",        test_legacy_import_keeps_file_when_save_fails },
+        { "manual_keeps_audio_hold",         test_manual_does_not_hide_audio_hold },
+        { "prewarm_cancel",                  test_prewarm_can_be_cancelled },
+        { "play_reports_deferral",           test_play_reports_deferral },
     };
     for (const Case& c : cases) {
         const int before = failures;
