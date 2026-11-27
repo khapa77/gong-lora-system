@@ -22,7 +22,8 @@
 | Что | Значение |
 |---|---|
 | Ветка | `standalone-max-button` (от `standalone-max` `c5cc32e`) |
-| Функция кнопки/LED | `e229f4a`, затем `fix(button)` по итогам независимого review (см. `git log`) |
+| HEAD ветки | `cc2c9a2` (после `fix(button)` по итогам независимого review) |
+| Функция кнопки/LED | `e229f4a`, дефекты review закрыты в `cc2c9a2` |
 | Сборка | `pio run -e esp32dev`: SUCCESS, RAM 21.0 %, Flash 87.7 % |
 | Кнопка/LED в прошивке | **выключены** (`BUTTON_PIN`/`STATUS_LED_PIN` = -1) |
 | Host-тесты | button 508, store 509, editor 739, scheduler 255, course 578, active_day 275, emergency 58 — 0 падений |
